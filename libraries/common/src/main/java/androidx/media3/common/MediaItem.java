@@ -25,6 +25,7 @@ import androidx.annotation.IntRange;
 import androidx.annotation.Nullable;
 import androidx.media3.common.util.Assertions;
 import androidx.media3.common.util.BundleableUtil;
+import androidx.media3.common.util.DrmCallbacks;
 import androidx.media3.common.util.UnstableApi;
 import androidx.media3.common.util.Util;
 import com.google.common.collect.ImmutableList;
@@ -632,6 +633,9 @@ public final class MediaItem implements Bundleable {
       private boolean forceDefaultLicenseUri;
       private ImmutableList<@C.TrackType Integer> forcedSessionTrackTypes;
       @Nullable private byte[] keySetId;
+      private boolean isSigmaDrm;
+      private DrmCallbacks drmCallback;
+      private boolean enableDrmOffline;
 
       /**
        * Constructs an instance.
@@ -663,6 +667,9 @@ public final class MediaItem implements Bundleable {
         this.forceDefaultLicenseUri = drmConfiguration.forceDefaultLicenseUri;
         this.forcedSessionTrackTypes = drmConfiguration.forcedSessionTrackTypes;
         this.keySetId = drmConfiguration.keySetId;
+        this.isSigmaDrm = drmConfiguration.isSigmaDrm;
+        this.drmCallback = drmConfiguration.drmCallback;
+        this.enableDrmOffline = drmConfiguration.enableDrmOffline;
       }
 
       /** Sets the {@link UUID} of the protection scheme. */
@@ -792,6 +799,21 @@ public final class MediaItem implements Bundleable {
         return this;
       }
 
+      public Builder setIsSigmaDrm(Boolean isSigmaDrm) {
+        this.isSigmaDrm = isSigmaDrm;
+        return this;
+      }
+
+      public Builder setDrmCallbacks(DrmCallbacks drmCallback) {
+        this.drmCallback = drmCallback;
+        return this;
+      }
+
+      public Builder setEnableDrmOffline(boolean enableDrmOffline) {
+        this.enableDrmOffline = enableDrmOffline;
+        return this;
+      }
+
       public DrmConfiguration build() {
         return new DrmConfiguration(this);
       }
@@ -846,6 +868,10 @@ public final class MediaItem implements Bundleable {
 
     @Nullable private final byte[] keySetId;
 
+    public final boolean isSigmaDrm;
+    public final DrmCallbacks drmCallback;
+    public final Boolean enableDrmOffline;
+
     @SuppressWarnings("deprecation") // Setting deprecated field
     private DrmConfiguration(Builder builder) {
       checkState(!(builder.forceDefaultLicenseUri && builder.licenseUri == null));
@@ -863,6 +889,9 @@ public final class MediaItem implements Bundleable {
           builder.keySetId != null
               ? Arrays.copyOf(builder.keySetId, builder.keySetId.length)
               : null;
+      this.isSigmaDrm = builder.isSigmaDrm;
+      this.drmCallback = builder.drmCallback;
+      this.enableDrmOffline = builder.enableDrmOffline;
     }
 
     /** Returns the key set ID of the offline license. */

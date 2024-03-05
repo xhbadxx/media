@@ -36,6 +36,7 @@ import androidx.media3.common.DrmInitData.SchemeData;
 import androidx.media3.common.Format;
 import androidx.media3.common.MimeTypes;
 import androidx.media3.common.PlaybackException;
+import androidx.media3.common.util.DrmCallbacks;
 import androidx.media3.common.util.Log;
 import androidx.media3.common.util.UnstableApi;
 import androidx.media3.common.util.Util;
@@ -325,6 +326,7 @@ public class DefaultDrmSessionManager implements DrmSessionManager {
   private int mode;
   @Nullable private byte[] offlineLicenseKeySetId;
   private @MonotonicNonNull PlayerId playerId;
+  private DrmCallbacks drmCallback;
 
   /* package */ @Nullable volatile MediaDrmHandler mediaDrmHandler;
 
@@ -721,7 +723,8 @@ public class DefaultDrmSessionManager implements DrmSessionManager {
             callback,
             checkNotNull(playbackLooper),
             loadErrorHandlingPolicy,
-            checkNotNull(playerId));
+            checkNotNull(playerId),
+            drmCallback);
     // Acquire the session once on behalf of the caller to DrmSessionManager - this is the
     // reference 'assigned' to the caller which they're responsible for releasing. Do this first,
     // to ensure that eventDispatcher receives all events related to the initial
@@ -989,5 +992,9 @@ public class DefaultDrmSessionManager implements DrmSessionManager {
             isReleased = true;
           });
     }
+  }
+
+  public void setDrmCallback(DrmCallbacks drmCallback) {
+    this.drmCallback = drmCallback;
   }
 }

@@ -15,6 +15,7 @@
  */
 package androidx.media3.exoplayer.drm;
 
+import android.util.Log;
 import android.util.Pair;
 import androidx.annotation.Nullable;
 import androidx.media3.common.C;
@@ -43,6 +44,7 @@ public final class WidevineUtil {
   @Nullable
   public static Pair<Long, Long> getLicenseDurationRemainingSec(DrmSession drmSession) {
     Map<String, String> keyStatus = drmSession.queryKeyStatus();
+//    Log.d("EventLogger", "doLicense -> getLicenseDurationRemainingSec: " + keyStatus);
     if (keyStatus == null) {
       return null;
     }
@@ -55,6 +57,7 @@ public final class WidevineUtil {
     if (keyStatus != null) {
       try {
         String value = keyStatus.get(property);
+//        Log.d("EventLogger", "doLicense -> getDurationRemainingSec: " + value);
         if (value != null) {
           return Long.parseLong(value);
         }

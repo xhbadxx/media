@@ -16,8 +16,10 @@
 package androidx.media3.exoplayer.drm;
 
 import static androidx.media3.common.util.Assertions.checkNotNull;
+import static androidx.media3.exoplayer.drm.DefaultDrmSessionManager.MODE_DOWNLOAD;
 import static androidx.media3.exoplayer.drm.DefaultDrmSessionManager.MODE_PLAYBACK;
 
+import android.util.Log;
 import androidx.annotation.GuardedBy;
 import androidx.annotation.Nullable;
 import androidx.annotation.RequiresApi;
@@ -102,16 +104,31 @@ public final class DefaultDrmSessionManagerProvider implements DrmSessionManager
     for (Map.Entry<String, String> entry : drmConfiguration.licenseRequestHeaders.entrySet()) {
       httpDrmCallback.setKeyRequestProperty(entry.getKey(), entry.getValue());
     }
-    DefaultDrmSessionManager drmSessionManager =
-        new DefaultDrmSessionManager.Builder()
-            .setUuidAndExoMediaDrmProvider(
-                drmConfiguration.scheme, FrameworkMediaDrm.DEFAULT_PROVIDER)
-            .setMultiSession(drmConfiguration.multiSession)
-            .setPlayClearSamplesWithoutKeys(drmConfiguration.playClearContentWithoutKey)
-            .setUseDrmSessionsForClearContent(
-                Ints.toArray(drmConfiguration.forcedSessionTrackTypes))
-            .build(httpDrmCallback);
-    drmSessionManager.setMode(MODE_PLAYBACK, drmConfiguration.getKeySetId());
+    DefaultDrmSessionManager.Builder builder = new DefaultDrmSessionManager.Builder()
+        .setUuidAndExoMediaDrmProvider(
+            drmConfiguration.scheme, FrameworkMediaDrm.DEFAULT_PROVIDER)
+        .setMultiSession(drmConfiguration.multiSession)
+        .setPlayClearSamplesWithoutKeys(drmConfiguration.playClearContentWithoutKey)
+        .setUseDrmSessionsForClearContent(
+            Ints.toArray(drmConfiguration.forcedSessionTrackTypes));
+    Log.d("EventLogger", "DrmConfiguration.isSigmaDrm: " + drmConfiguration.isSigmaDrm);
+    if (drmConfiguration.isSigmaDrm) { // Needed update libs from Sigma
+//      builder.setUuidAndExoMediaDrmProvider(drmConfiguration.scheme, SigmaMediaDrm.DEFAULT_PROVIDER);
+      builder.setUuidAndExoMediaDrmProvider(drmConfiguration.scheme, FrameworkMediaDrm.DEFAULT_PROVIDER);
+    } else {
+      builder.setUuidAndExoMediaDrmProvider(drmConfiguration.scheme, FrameworkMediaDrm.DEFAULT_PROVIDER);
+    }
+    DefaultDrmSessionManager drmSessionManager = builder.build(httpDrmCallback);
+    drmSessionManager.setDrmCallback(drmConfiguration.drmCallback);
+    if (drmConfiguration.enableDrmOffline){
+      if (drmConfiguration.getKeySetId() == null) {
+        drmSessionManager.setMode(MODE_DOWNLOAD, null);
+      }else{
+        drmSessionManager.setMode(MODE_PLAYBACK, drmConfiguration.getKeySetId());
+      }
+    }else{
+      drmSessionManager.setMode(MODE_PLAYBACK, drmConfiguration.getKeySetId());
+    }
     return drmSessionManager;
   }
 }
