@@ -17,6 +17,7 @@ package androidx.media3.exoplayer.drm;
 
 import android.net.Uri;
 import android.text.TextUtils;
+import android.util.Base64;
 import androidx.annotation.Nullable;
 import androidx.media3.common.C;
 import androidx.media3.common.util.Assertions;
@@ -29,12 +30,17 @@ import androidx.media3.datasource.HttpDataSource.InvalidResponseCodeException;
 import androidx.media3.datasource.StatsDataSource;
 import androidx.media3.exoplayer.drm.ExoMediaDrm.KeyRequest;
 import androidx.media3.exoplayer.drm.ExoMediaDrm.ProvisionRequest;
+import androidx.media3.exoplayer.util.Utils;
 import com.google.common.collect.ImmutableMap;
+import com.sigma.packer.RequestInfo;
+import com.sigma.packer.SigmaDrmPacker;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import org.json.JSONException;
+import org.json.JSONObject;
 
 /** A {@link MediaDrmCallback} that makes requests using {@link DataSource} instances. */
 @UnstableApi
@@ -156,9 +162,44 @@ public final class HttpMediaDrmCallback implements MediaDrmCallback {
     }
     // Add additional request properties.
     synchronized (keyRequestProperties) {
+      // Checking and editing the KeyRequestProperties.
+      if (keyRequestProperties.containsKey("sigma-custom-data")){
+        String jsonObjectStr = keyRequestProperties.get("sigma-custom-data");
+        if (jsonObjectStr != null) {
+          JSONObject originalData;
+          try {
+            originalData = new JSONObject(jsonObjectStr);
+          }catch (JSONException ex) {
+            throw new RuntimeException("Error while creating object", ex);
+          }
+          try {
+            RequestInfo requestInfo = SigmaDrmPacker.requestInfo(request.getData());
+            originalData.put("reqId", requestInfo.requestId);
+            originalData.put("deviceInfo", requestInfo.deviceInfo);
+            keyRequestProperties.put("custom-data", Base64.encodeToString(originalData.toString().getBytes(), Base64.NO_WRAP));
+          } catch (JSONException e) {
+            throw new RuntimeException("Error while adding key properties", e);
+          }
+        }
+      }
+      // Adding the KeyRequestProperties to RequestProperties.
       requestProperties.putAll(keyRequestProperties);
     }
-    return executePost(dataSourceFactory, url, request.getData(), requestProperties);
+    byte[] bytesToSend =  executePost(dataSourceFactory, url, request.getData(), requestProperties);
+    if (Utils.IS_SIGMA_DRM) {
+      try {
+        JSONObject jsonObject = new JSONObject(new String(bytesToSend));
+        // If you don't use feature license encrypt, please comment 3 lines below
+        String licenseEncrypted = jsonObject.getString("license");
+        return Base64.decode(licenseEncrypted, Base64.DEFAULT);
+        // If you don't use feature license encrypt, please uncomment line below
+        // return Base64.decode(jsonObject.getString("license"), Base64.DEFAULT);
+      } catch (JSONException e) {
+        throw new RuntimeException("Error while parsing response", e);
+      }
+    }else{
+      return bytesToSend;
+    }
   }
 
   private static byte[] executePost(
