@@ -56,6 +56,7 @@ import androidx.annotation.Nullable;
 import androidx.core.app.NotificationCompat;
 import androidx.core.app.NotificationManagerCompat;
 import androidx.media.app.NotificationCompat.MediaStyle;
+import androidx.media3.PreviousNextDispatcher;
 import androidx.media3.common.C;
 import androidx.media3.common.Player;
 import androidx.media3.common.util.NotificationUtil;
@@ -700,6 +701,7 @@ public class PlayerNotificationManager {
   @Nullable private NotificationCompat.Builder builder;
   @Nullable private List<NotificationCompat.Action> builderActions;
   @Nullable private Player player;
+  @Nullable private PreviousNextDispatcher previousNextDispatcher;
   private boolean isNotificationStarted;
   private int currentNotificationTag;
   @Nullable private MediaSessionCompat.Token mediaSessionToken;
@@ -723,6 +725,10 @@ public class PlayerNotificationManager {
   private @Priority int priority;
   private boolean useChronometer;
   @Nullable private String groupKey;
+  private boolean usePreviousActions = true;
+  private boolean useNextActions = true;
+  private boolean useForwardActions = true;
+  private boolean useRewindActions = true;
 
   protected PlayerNotificationManager(
       Context context,
@@ -1344,10 +1350,14 @@ public class PlayerNotificationManager {
    * action name is ignored.
    */
   protected List<String> getActions(Player player) {
-    boolean enablePrevious = player.isCommandAvailable(COMMAND_SEEK_TO_PREVIOUS);
-    boolean enableRewind = player.isCommandAvailable(COMMAND_SEEK_BACK);
-    boolean enableFastForward = player.isCommandAvailable(COMMAND_SEEK_FORWARD);
-    boolean enableNext = player.isCommandAvailable(COMMAND_SEEK_TO_NEXT);
+//    boolean enablePrevious = player.isCommandAvailable(COMMAND_SEEK_TO_PREVIOUS);
+//    boolean enableRewind = player.isCommandAvailable(COMMAND_SEEK_BACK);
+//    boolean enableFastForward = player.isCommandAvailable(COMMAND_SEEK_FORWARD);
+//    boolean enableNext = player.isCommandAvailable(COMMAND_SEEK_TO_NEXT);
+    boolean enablePrevious = usePreviousActions;
+    boolean enableRewind = useRewindActions && player.isCommandAvailable(COMMAND_SEEK_BACK);
+    boolean enableFastForward = useForwardActions && player.isCommandAvailable(COMMAND_SEEK_FORWARD);
+    boolean enableNext = useNextActions;
 
     List<String> stringActions = new ArrayList<>();
     if (usePreviousAction && enablePrevious) {
@@ -1540,12 +1550,15 @@ public class PlayerNotificationManager {
           EVENT_PLAYBACK_STATE_CHANGED,
           EVENT_PLAY_WHEN_READY_CHANGED,
           EVENT_IS_PLAYING_CHANGED,
-          EVENT_TIMELINE_CHANGED,
+//          EVENT_TIMELINE_CHANGED,
           EVENT_PLAYBACK_PARAMETERS_CHANGED,
           EVENT_POSITION_DISCONTINUITY,
           EVENT_REPEAT_MODE_CHANGED,
           EVENT_SHUFFLE_MODE_ENABLED_CHANGED,
           EVENT_MEDIA_METADATA_CHANGED)) {
+        postStartOrUpdateNotification();
+      }
+      else if (events.contains(EVENT_TIMELINE_CHANGED) && !player.isCurrentMediaItemDynamic()){
         postStartOrUpdateNotification();
       }
     }
@@ -1568,8 +1581,13 @@ public class PlayerNotificationManager {
       } else if (ACTION_PAUSE.equals(action)) {
         Util.handlePauseButtonAction(player);
       } else if (ACTION_PREVIOUS.equals(action)) {
-        if (player.isCommandAvailable(COMMAND_SEEK_TO_PREVIOUS)) {
-          player.seekToPrevious();
+//        if (player.isCommandAvailable(COMMAND_SEEK_TO_PREVIOUS)) {
+//          player.seekToPrevious();
+//        }
+        if (previousNextDispatcher != null){
+          previousNextDispatcher.dispatcherPrevious(player);
+        }else {
+          player.previous();
         }
       } else if (ACTION_REWIND.equals(action)) {
         if (player.isCommandAvailable(COMMAND_SEEK_BACK)) {
@@ -1580,7 +1598,12 @@ public class PlayerNotificationManager {
           player.seekForward();
         }
       } else if (ACTION_NEXT.equals(action)) {
-        if (player.isCommandAvailable(COMMAND_SEEK_TO_NEXT)) {
+//        if (player.isCommandAvailable(COMMAND_SEEK_TO_NEXT)) {
+//          player.seekToNext();
+//        }
+        if (previousNextDispatcher != null){
+          previousNextDispatcher.dispatcherNext(player);
+        }else {
           player.seekToNext();
         }
       } else if (ACTION_STOP.equals(action)) {
@@ -1599,4 +1622,64 @@ public class PlayerNotificationManager {
       }
     }
   }
+
+  /**
+   * Sets the {@link PreviousNextDispatcher}.
+   *
+   * @param previousNextDispatcher The {@link PreviousNextDispatcher}
+   */
+  public final void setControlDispatcher(PreviousNextDispatcher previousNextDispatcher) {
+    this.previousNextDispatcher = previousNextDispatcher;
+  }
+
+  /**
+   * Sets whether the previous actions should be used.
+   *
+   * @param usePreviousActions Whether to use previous actions.
+   */
+  public final void setUsePreviousActions(boolean usePreviousActions) {
+    if (this.usePreviousActions != usePreviousActions) {
+      this.usePreviousActions = usePreviousActions;
+      invalidate();
+    }
+  }
+
+  /**
+   * Sets whether the next actions should be used.
+   *
+   * @param useNextActions Whether to use play and pause actions.
+   */
+  public final void setUseNextActions(boolean useNextActions) {
+    if (this.useNextActions != useNextActions) {
+      this.useNextActions = useNextActions;
+      invalidate();
+    }
+  }
+
+
+  /**
+   * Sets whether the forward actions should be used.
+   *
+   * @param useForwardActions Whether to use play and pause actions.
+   */
+  public final void setUseForwardActions(boolean useForwardActions) {
+    if (this.useForwardActions != useForwardActions) {
+      this.useForwardActions = useForwardActions;
+      invalidate();
+    }
+  }
+
+
+  /**
+   * Sets whether the rewind actions should be used.
+   *
+   * @param useRewindActions Whether to use play and pause actions.
+   */
+  public final void setUseRewindActions(boolean useRewindActions) {
+    if (this.useRewindActions != useRewindActions) {
+      this.useRewindActions = useRewindActions;
+      invalidate();
+    }
+  }
+
 }
