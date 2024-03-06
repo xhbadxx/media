@@ -1002,16 +1002,18 @@ public final class DashMediaSource extends BaseMediaSource {
   }
 
   private void updateLiveConfiguration(long nowInWindowUs, long windowDurationUs) {
-    MediaItem.LiveConfiguration mediaItemLiveConfiguration = getMediaItem().liveConfiguration;
+    if (DashUtil.llConfiguration == null) { DashUtil.llConfiguration = new LLConfiguration(); }
+    LLConfiguration llConfiguration = DashUtil.llConfiguration;
     // Default maximum offset: start of window.
     long maxPossibleLiveOffsetMs = usToMs(nowInWindowUs);
     long maxLiveOffsetMs = maxPossibleLiveOffsetMs;
     // Override maximum offset with user or media defined values if they are smaller.
-    if (mediaItemLiveConfiguration.maxOffsetMs != C.TIME_UNSET) {
-      maxLiveOffsetMs = min(maxLiveOffsetMs, mediaItemLiveConfiguration.maxOffsetMs);
-    } else if (manifest.serviceDescription != null
-        && manifest.serviceDescription.maxOffsetMs != C.TIME_UNSET) {
+    if (manifest.serviceDescription != null && manifest.serviceDescription.maxOffsetMs != C.TIME_UNSET) {
       maxLiveOffsetMs = min(maxLiveOffsetMs, manifest.serviceDescription.maxOffsetMs);
+      llConfiguration.updateMaxLiveOffset(maxLiveOffsetMs, true);
+    } else if (mediaItem.liveConfiguration.maxOffsetMs != C.TIME_UNSET) {
+      maxLiveOffsetMs = min(maxLiveOffsetMs, mediaItem.liveConfiguration.maxOffsetMs);
+      llConfiguration.updateMaxLiveOffset(maxLiveOffsetMs, false);
     }
     // Default minimum offset: end of window.
     long minLiveOffsetMs = usToMs(nowInWindowUs - windowDurationUs);
@@ -1026,15 +1028,16 @@ public final class DashMediaSource extends BaseMediaSource {
     }
     // Override minimum offset with user and media defined values if they are larger, but don't
     // exceed the maximum possible offset.
-    if (mediaItemLiveConfiguration.minOffsetMs != C.TIME_UNSET) {
-      minLiveOffsetMs =
-          constrainValue(
-              mediaItemLiveConfiguration.minOffsetMs, minLiveOffsetMs, maxPossibleLiveOffsetMs);
-    } else if (manifest.serviceDescription != null
-        && manifest.serviceDescription.minOffsetMs != C.TIME_UNSET) {
+    if (manifest.serviceDescription != null && manifest.serviceDescription.minOffsetMs != C.TIME_UNSET) {
       minLiveOffsetMs =
           constrainValue(
               manifest.serviceDescription.minOffsetMs, minLiveOffsetMs, maxPossibleLiveOffsetMs);
+      llConfiguration.updateMinLiveOffset(minLiveOffsetMs, true);
+    } else if (mediaItem.liveConfiguration.minOffsetMs != C.TIME_UNSET) {
+      minLiveOffsetMs =
+          constrainValue(
+              mediaItem.liveConfiguration.minOffsetMs, minLiveOffsetMs, maxPossibleLiveOffsetMs);
+      llConfiguration.updateMinLiveOffset(minLiveOffsetMs, false);
     }
     if (minLiveOffsetMs > maxLiveOffsetMs) {
       // The values can be set by different sources and may disagree. Prefer the maximum offset
@@ -1042,22 +1045,26 @@ public final class DashMediaSource extends BaseMediaSource {
       maxLiveOffsetMs = minLiveOffsetMs;
     }
     long targetOffsetMs;
-    if (liveConfiguration.targetOffsetMs != C.TIME_UNSET) {
-      // Keep existing target offset even if the media configuration changes.
-      targetOffsetMs = liveConfiguration.targetOffsetMs;
-    } else if (manifest.serviceDescription != null
-        && manifest.serviceDescription.targetOffsetMs != C.TIME_UNSET) {
+    if (manifest.serviceDescription != null && manifest.serviceDescription.targetOffsetMs != C.TIME_UNSET) {
       targetOffsetMs = manifest.serviceDescription.targetOffsetMs;
+      llConfiguration.updateTargetLiveOffset(targetOffsetMs, true);
     } else if (manifest.suggestedPresentationDelayMs != C.TIME_UNSET) {
       targetOffsetMs = manifest.suggestedPresentationDelayMs;
+      llConfiguration.updateTargetLiveOffset(targetOffsetMs, true);
+    } else if (liveConfiguration.targetOffsetMs != C.TIME_UNSET) {
+      // Keep existing target offset even if the media configuration changes.
+      targetOffsetMs = liveConfiguration.targetOffsetMs;
+      llConfiguration.updateTargetLiveOffset(targetOffsetMs, false);
     } else {
       targetOffsetMs = fallbackTargetLiveOffsetMs;
+      llConfiguration.updateTargetLiveOffset(targetOffsetMs, false);
     }
     if (targetOffsetMs < minLiveOffsetMs) {
       targetOffsetMs = minLiveOffsetMs;
     }
     if (targetOffsetMs > maxLiveOffsetMs) {
-      long safeDistanceFromWindowStartUs = min(minLiveStartPositionUs, windowDurationUs / 2);
+      long safeDistanceFromWindowStartUs =
+          min(MIN_LIVE_DEFAULT_START_POSITION_US, windowDurationUs / 2);
       long maxTargetOffsetForSafeDistanceToWindowStartMs =
           usToMs(nowInWindowUs - safeDistanceFromWindowStartUs);
       targetOffsetMs =
@@ -1065,26 +1072,31 @@ public final class DashMediaSource extends BaseMediaSource {
               maxTargetOffsetForSafeDistanceToWindowStartMs, minLiveOffsetMs, maxLiveOffsetMs);
     }
     float minPlaybackSpeed = C.RATE_UNSET;
-    if (mediaItemLiveConfiguration.minPlaybackSpeed != C.RATE_UNSET) {
-      minPlaybackSpeed = mediaItemLiveConfiguration.minPlaybackSpeed;
-    } else if (manifest.serviceDescription != null) {
+    if (manifest.serviceDescription != null && manifest.serviceDescription.minPlaybackSpeed != C.RATE_UNSET) {
       minPlaybackSpeed = manifest.serviceDescription.minPlaybackSpeed;
+      llConfiguration.updateMinPlaybackSpeed(minPlaybackSpeed, true);
+    } else if (mediaItem.liveConfiguration.minPlaybackSpeed != C.RATE_UNSET) {
+      minPlaybackSpeed = mediaItem.liveConfiguration.minPlaybackSpeed;
+      llConfiguration.updateMinPlaybackSpeed(minPlaybackSpeed, false);
     }
     float maxPlaybackSpeed = C.RATE_UNSET;
-    if (mediaItemLiveConfiguration.maxPlaybackSpeed != C.RATE_UNSET) {
-      maxPlaybackSpeed = mediaItemLiveConfiguration.maxPlaybackSpeed;
-    } else if (manifest.serviceDescription != null) {
+    if (manifest.serviceDescription != null && manifest.serviceDescription.maxPlaybackSpeed != C.RATE_UNSET) {
       maxPlaybackSpeed = manifest.serviceDescription.maxPlaybackSpeed;
+      llConfiguration.updateMaxPlaybackSpeed(maxPlaybackSpeed, true);
+    } else if (mediaItem.liveConfiguration.maxPlaybackSpeed != C.RATE_UNSET) {
+      maxPlaybackSpeed = mediaItem.liveConfiguration.maxPlaybackSpeed;
+      llConfiguration.updateMaxPlaybackSpeed(maxPlaybackSpeed, false);
     }
     if (minPlaybackSpeed == C.RATE_UNSET
         && maxPlaybackSpeed == C.RATE_UNSET
         && (manifest.serviceDescription == null
-            || manifest.serviceDescription.targetOffsetMs == C.TIME_UNSET)) {
+        || manifest.serviceDescription.targetOffsetMs == C.TIME_UNSET)) {
       // Force unit speed (instead of automatic adjustment with fallback speeds) if there are no
       // specific speed limits defined by the media item or the manifest, and the manifest contains
       // no low-latency target offset either.
       minPlaybackSpeed = 1f;
       maxPlaybackSpeed = 1f;
+      llConfiguration.reset();
     }
     liveConfiguration =
         new MediaItem.LiveConfiguration.Builder()
