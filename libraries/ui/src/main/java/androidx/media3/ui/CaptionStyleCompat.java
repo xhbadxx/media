@@ -48,7 +48,8 @@ public final class CaptionStyleCompat {
     EDGE_TYPE_OUTLINE,
     EDGE_TYPE_DROP_SHADOW,
     EDGE_TYPE_RAISED,
-    EDGE_TYPE_DEPRESSED
+    EDGE_TYPE_DEPRESSED,
+    EDGE_TYPE_DROP_SHADOW_OUTLINE
   })
   public @interface EdgeType {}
 
@@ -66,6 +67,8 @@ public final class CaptionStyleCompat {
 
   /** Edge type value specifying depressed bevel character edges. */
   public static final int EDGE_TYPE_DEPRESSED = 4;
+
+  public static final int EDGE_TYPE_DROP_SHADOW_OUTLINE = 5;
 
   /** Use color setting specified by the track and fallback to default caption style. */
   public static final int USE_TRACK_COLOR_SETTINGS = 1;

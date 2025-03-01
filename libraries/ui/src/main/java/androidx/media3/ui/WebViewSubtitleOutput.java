@@ -381,6 +381,10 @@ import java.util.Map;
       case CaptionStyleCompat.EDGE_TYPE_RAISED:
         return Util.formatInvariant(
             "0.06em 0.08em 0.15em %s", HtmlUtils.toCssRgba(style.edgeColor));
+      case CaptionStyleCompat.EDGE_TYPE_DROP_SHADOW_OUTLINE:
+        return Util.formatInvariant(
+            "1px 1px 0 %1$s, 1px -1px 0 %1$s, -1px 1px 0 %1$s, -1px -1px 0 %1$s, -0.05em -0.05em 0.15em %s",
+            HtmlUtils.toCssRgba(style.edgeColor));
       case CaptionStyleCompat.EDGE_TYPE_NONE:
       default:
         return "unset";

@@ -69,9 +69,15 @@ dependencies {
     testImplementation project(modulePrefix + 'test-utils')
     testImplementation project(modulePrefix + 'test-utils-robolectric')
     // Sigma
-    implementation ('com.sigma.packer:2.17.x:1.0.3'){
+    implementation ('com.sigma.packer:media3-1.3.1:1.0.3.1'){
         exclude group: 'org.checkerframework', module: 'checker-qual'
-        exclude group: 'com.google.android.exoplayer', module: 'exoplayer-core'
+        exclude group: 'androidx.media3', module: 'media3-exoplayer'
+        exclude group: 'androidx.media3', module: 'media3-database'
+        exclude group: 'androidx.media3', module: 'media3-decoder'
+        exclude group: 'androidx.media3', module: 'media3-container'
+        exclude group: 'androidx.media3', module: 'media3-datasource'
+        exclude group: 'androidx.media3', module: 'media3-common'
+        exclude group: 'androidx.media3', module: 'media3-extractor'
     }
 }
 

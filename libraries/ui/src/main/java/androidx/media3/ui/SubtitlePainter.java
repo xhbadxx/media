@@ -256,7 +256,7 @@ import org.checkerframework.checker.nullness.qual.RequiresNonNull;
 
     // Remove embedded font color to not destroy edges, otherwise it overrides edge color.
     SpannableStringBuilder cueTextEdge = new SpannableStringBuilder(cueText);
-    if (edgeType == CaptionStyleCompat.EDGE_TYPE_OUTLINE) {
+    if (edgeType == CaptionStyleCompat.EDGE_TYPE_OUTLINE || edgeType == CaptionStyleCompat.EDGE_TYPE_DROP_SHADOW_OUTLINE) {
       ForegroundColorSpan[] foregroundColorSpans =
           cueTextEdge.getSpans(0, cueTextEdge.length(), ForegroundColorSpan.class);
       for (ForegroundColorSpan foregroundColorSpan : foregroundColorSpans) {
@@ -270,7 +270,8 @@ import org.checkerframework.checker.nullness.qual.RequiresNonNull;
     // (https://github.com/google/ExoPlayer/pull/6724#issuecomment-564650572).
     if (Color.alpha(backgroundColor) > 0) {
       if (edgeType == CaptionStyleCompat.EDGE_TYPE_NONE
-          || edgeType == CaptionStyleCompat.EDGE_TYPE_DROP_SHADOW) {
+          || edgeType == CaptionStyleCompat.EDGE_TYPE_DROP_SHADOW
+          || edgeType == CaptionStyleCompat.EDGE_TYPE_DROP_SHADOW_OUTLINE) {
         cueText.setSpan(
             new BackgroundColorSpan(backgroundColor), 0, cueText.length(), Spanned.SPAN_PRIORITY);
       } else {
@@ -443,6 +444,13 @@ import org.checkerframework.checker.nullness.qual.RequiresNonNull;
       textPaint.setShadowLayer(shadowRadius, -offset, -offset, colorUp);
       edgeLayout.draw(canvas);
       textPaint.setShadowLayer(shadowRadius, offset, offset, colorDown);
+    } else if (edgeType == CaptionStyleCompat.EDGE_TYPE_DROP_SHADOW_OUTLINE){
+      textPaint.setStrokeJoin(Join.ROUND);
+      textPaint.setStrokeWidth(outlineWidth);
+      textPaint.setColor(edgeColor);
+      textPaint.setStyle(Style.FILL_AND_STROKE);
+      edgeLayout.draw(canvas);
+      textPaint.setShadowLayer(shadowRadius, shadowOffset, shadowOffset, edgeColor);
     }
 
     textPaint.setColor(foregroundColor);

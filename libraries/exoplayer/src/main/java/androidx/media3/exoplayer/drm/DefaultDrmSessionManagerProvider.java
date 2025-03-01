@@ -29,6 +29,7 @@ import androidx.media3.common.util.Util;
 import androidx.media3.datasource.DataSource;
 import androidx.media3.datasource.DefaultHttpDataSource;
 import com.google.common.primitives.Ints;
+import com.sigma.packer.SigmaMediaDrm;
 import java.util.Map;
 import org.checkerframework.checker.nullness.qual.MonotonicNonNull;
 
@@ -113,8 +114,7 @@ public final class DefaultDrmSessionManagerProvider implements DrmSessionManager
             Ints.toArray(drmConfiguration.forcedSessionTrackTypes));
     Log.d("EventLogger", "DrmConfiguration.isSigmaDrm: " + drmConfiguration.isSigmaDrm);
     if (drmConfiguration.isSigmaDrm) { // Needed update libs from Sigma
-//      builder.setUuidAndExoMediaDrmProvider(drmConfiguration.scheme, SigmaMediaDrm.DEFAULT_PROVIDER);
-      builder.setUuidAndExoMediaDrmProvider(drmConfiguration.scheme, FrameworkMediaDrm.DEFAULT_PROVIDER);
+      builder.setUuidAndExoMediaDrmProvider(drmConfiguration.scheme, SigmaMediaDrm.DEFAULT_PROVIDER);
     } else {
       builder.setUuidAndExoMediaDrmProvider(drmConfiguration.scheme, FrameworkMediaDrm.DEFAULT_PROVIDER);
     }
