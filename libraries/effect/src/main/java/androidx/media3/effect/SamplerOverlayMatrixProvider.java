@@ -16,6 +16,7 @@
 package androidx.media3.effect;
 
 import android.opengl.Matrix;
+import androidx.media3.common.OverlaySettings;
 import androidx.media3.common.util.GlUtil;
 import androidx.media3.common.util.Size;
 
@@ -33,23 +34,13 @@ import androidx.media3.common.util.Size;
 
   @Override
   public float[] getTransformationMatrix(Size overlaySize, OverlaySettings overlaySettings) {
-    // When sampling from a (for example, texture) sampler, the overlay anchor's x and y coordinates
-    // are flipped.
-    OverlaySettings samplerOverlaySettings =
-        overlaySettings
-            .buildUpon()
-            .setOverlayFrameAnchor(
-                /* x= */ -1 * overlaySettings.overlayFrameAnchor.first,
-                /* y= */ -1 * overlaySettings.overlayFrameAnchor.second)
-            .build();
-
     // When sampling from a (for example, texture) sampler, the transformation matrix applied to a
     // sampler's coordinate should be the inverse of the transformation matrix that would otherwise
     // be applied to a vertex.
     Matrix.invertM(
         transformationMatrixInv,
         MATRIX_OFFSET,
-        super.getTransformationMatrix(overlaySize, samplerOverlaySettings),
+        super.getTransformationMatrix(overlaySize, overlaySettings),
         MATRIX_OFFSET);
     return transformationMatrixInv;
   }

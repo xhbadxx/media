@@ -37,11 +37,9 @@ import android.text.TextUtils;
 import androidx.annotation.ColorInt;
 import androidx.annotation.IntDef;
 import androidx.annotation.Nullable;
-import androidx.media3.common.Bundleable;
 import androidx.media3.common.util.Assertions;
 import androidx.media3.common.util.UnstableApi;
 import androidx.media3.common.util.Util;
-import com.google.common.base.Objects;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import java.io.ByteArrayOutputStream;
 import java.lang.annotation.Documented;
@@ -49,13 +47,14 @@ import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 import java.lang.annotation.Target;
 import java.util.ArrayList;
+import java.util.Objects;
 import org.checkerframework.dataflow.qual.Pure;
 
 /** Contains information about a specific cue, including textual content and formatting data. */
 // This class shouldn't be sub-classed. If a subtitle format needs additional fields, either they
 // should be generic enough to be added here, or the format-specific decoder should pass the
 // information around in a sidecar object.
-public final class Cue implements Bundleable {
+public final class Cue {
 
   /**
    * @deprecated There's no general need for a cue with an empty text string. If you need one,
@@ -397,7 +396,7 @@ public final class Cue implements Bundleable {
 
   @Override
   public int hashCode() {
-    return Objects.hashCode(
+    return Objects.hash(
         text,
         textAlignment,
         multiRowAlignment,
@@ -830,8 +829,6 @@ public final class Cue implements Bundleable {
     }
   }
 
-  // Bundleable implementation.
-
   private static final String FIELD_TEXT = Util.intToStringMaxRadix(0);
   private static final String FIELD_CUSTOM_SPANS = Util.intToStringMaxRadix(17);
   private static final String FIELD_TEXT_ALIGNMENT = Util.intToStringMaxRadix(1);
@@ -895,7 +892,6 @@ public final class Cue implements Bundleable {
    * @deprecated Use {@link #toSerializableBundle()} or {@link #toBinderBasedBundle()} instead.
    */
   @UnstableApi
-  @Override
   @Deprecated
   public Bundle toBundle() {
     return toBinderBasedBundle();
@@ -929,14 +925,6 @@ public final class Cue implements Bundleable {
     bundle.putFloat(FIELD_SHEAR_DEGREES, shearDegrees);
     return bundle;
   }
-
-  /**
-   * @deprecated Use {@link #fromBundle} instead.
-   */
-  @UnstableApi
-  @Deprecated
-  @SuppressWarnings("deprecation") // Deprecated instance of deprecated class
-  public static final Creator<Cue> CREATOR = Cue::fromBundle;
 
   /** Restores a cue from a {@link Bundle}. */
   @UnstableApi

@@ -35,6 +35,7 @@ import android.text.Spannable;
 import android.text.SpannableString;
 import android.text.style.ForegroundColorSpan;
 import android.text.style.RelativeSizeSpan;
+import androidx.media3.common.OverlaySettings;
 import androidx.media3.common.VideoFrameProcessingException;
 import androidx.media3.common.util.GlUtil;
 import androidx.media3.common.util.Size;
@@ -42,9 +43,7 @@ import androidx.media3.test.utils.BitmapPixelTestUtil;
 import androidx.test.ext.junit.runners.AndroidJUnit4;
 import com.google.common.collect.ImmutableList;
 import java.io.IOException;
-import org.checkerframework.checker.nullness.qual.EnsuresNonNull;
 import org.checkerframework.checker.nullness.qual.MonotonicNonNull;
-import org.checkerframework.checker.nullness.qual.RequiresNonNull;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Rule;
@@ -64,36 +63,36 @@ import org.junit.runner.RunWith;
 public class OverlayShaderProgramPixelTest {
   @Rule public final TestName testName = new TestName();
 
-  private static final String OVERLAY_PNG_ASSET_PATH = "media/bitmap/input_images/media3test.png";
+  private static final String OVERLAY_PNG_ASSET_PATH = "media/png/media3test.png";
   private static final String ORIGINAL_PNG_ASSET_PATH =
-      "media/bitmap/sample_mp4_first_frame/electrical_colors/original.png";
+      "test-generated-goldens/sample_mp4_first_frame/electrical_colors/original.png";
   private static final String OVERLAY_BITMAP_DEFAULT =
-      "media/bitmap/sample_mp4_first_frame/electrical_colors/overlay_bitmap_default.png";
+      "test-generated-goldens/sample_mp4_first_frame/electrical_colors/overlay_bitmap_default.png";
   private static final String OVERLAY_BITMAP_DOUBLY_ANCHORED =
-      "media/bitmap/sample_mp4_first_frame/electrical_colors/overlay_bitmap_anchored.png";
+      "test-generated-goldens/sample_mp4_first_frame/electrical_colors/overlay_bitmap_anchored.png";
 
   private static final String OVERLAY_BITMAP_OVERLAY_ANCHORED =
-      "media/bitmap/sample_mp4_first_frame/electrical_colors/overlay_bitmap_overlayAnchored.png";
+      "test-generated-goldens/sample_mp4_first_frame/electrical_colors/overlay_bitmap_overlayAnchored.png";
   private static final String OVERLAY_BITMAP_SCALED =
-      "media/bitmap/sample_mp4_first_frame/electrical_colors/overlay_bitmap_scaled.png";
+      "test-generated-goldens/sample_mp4_first_frame/electrical_colors/overlay_bitmap_scaled.png";
   private static final String OVERLAY_BITMAP_ROTATED90 =
-      "media/bitmap/sample_mp4_first_frame/electrical_colors/overlay_bitmap_rotated90.png";
+      "test-generated-goldens/sample_mp4_first_frame/electrical_colors/overlay_bitmap_rotated90.png";
   private static final String OVERLAY_BITMAP_TRANSLUCENT =
-      "media/bitmap/sample_mp4_first_frame/electrical_colors/overlay_bitmap_translucent.png";
+      "test-generated-goldens/sample_mp4_first_frame/electrical_colors/overlay_bitmap_translucent.png";
   private static final String OVERLAY_TEXT_DEFAULT =
-      "media/bitmap/sample_mp4_first_frame/electrical_colors/overlay_text_default.png";
+      "test-generated-goldens/sample_mp4_first_frame/electrical_colors/overlay_text_default.png";
   private static final String OVERLAY_TEXT_SPAN_SCALED =
-      "media/bitmap/sample_mp4_first_frame/electrical_colors/overlay_text_span_scaled.png";
+      "test-generated-goldens/sample_mp4_first_frame/electrical_colors/overlay_text_span_scaled.png";
   private static final String OVERLAY_TEXT_TRANSLATE =
-      "media/bitmap/sample_mp4_first_frame/electrical_colors/overlay_text_translate.png";
+      "test-generated-goldens/sample_mp4_first_frame/electrical_colors/overlay_text_translate.png";
   private static final String OVERLAY_MULTIPLE =
-      "media/bitmap/sample_mp4_first_frame/electrical_colors/overlay_multiple.png";
+      "test-generated-goldens/sample_mp4_first_frame/electrical_colors/overlay_multiple.png";
   private static final String OVERLAY_OVERLAP =
-      "media/bitmap/sample_mp4_first_frame/electrical_colors/overlay_overlap.png";
+      "test-generated-goldens/sample_mp4_first_frame/electrical_colors/overlay_overlap.png";
 
   private final Context context = getApplicationContext();
 
-  private @MonotonicNonNull String testId;
+  private String testId;
   private @MonotonicNonNull EGLDisplay eglDisplay;
   private @MonotonicNonNull EGLContext eglContext;
   private @MonotonicNonNull BaseGlShaderProgram overlayShaderProgram;
@@ -115,7 +114,6 @@ public class OverlayShaderProgramPixelTest {
   }
 
   @Before
-  @EnsuresNonNull("testId")
   public void setUpTestId() {
     testId = testName.getMethodName();
   }
@@ -129,7 +127,6 @@ public class OverlayShaderProgramPixelTest {
   }
 
   @Test
-  @RequiresNonNull("testId")
   public void drawFrame_noOverlay_leavesFrameUnchanged() throws Exception {
     overlayShaderProgram =
         new OverlayEffect(/* textureOverlays= */ ImmutableList.of())
@@ -149,7 +146,6 @@ public class OverlayShaderProgramPixelTest {
   }
 
   @Test
-  @RequiresNonNull("testId")
   public void drawFrame_bitmapOverlay_blendsBitmapIntoFrame() throws Exception {
     Bitmap overlayBitmap = readBitmap(OVERLAY_PNG_ASSET_PATH);
     BitmapOverlay bitmapOverlay = BitmapOverlay.createStaticBitmapOverlay(overlayBitmap);
@@ -171,13 +167,12 @@ public class OverlayShaderProgramPixelTest {
   }
 
   @Test
-  @RequiresNonNull("testId")
   public void drawFrame_anchoredAndTranslatedBitmapOverlay_blendsBitmapIntoTopLeftOfFrame()
       throws Exception {
     Bitmap overlayBitmap = readBitmap(OVERLAY_PNG_ASSET_PATH);
-    OverlaySettings overlaySettings =
-        new OverlaySettings.Builder()
-            .setOverlayFrameAnchor(/* x= */ 1f, /* y= */ -1f)
+    StaticOverlaySettings overlaySettings =
+        new StaticOverlaySettings.Builder()
+            .setOverlayFrameAnchor(/* x= */ -1f, /* y= */ 1f)
             .setBackgroundFrameAnchor(/* x= */ -1f, /* y= */ 1f)
             .build();
     BitmapOverlay staticBitmapOverlay =
@@ -200,13 +195,14 @@ public class OverlayShaderProgramPixelTest {
   }
 
   @Test
-  @RequiresNonNull("testId")
   public void
       drawFrame_overlayFrameAnchoredOnlyBitmapOverlay_anchorsOverlayFromTopLeftCornerOfFrame()
           throws Exception {
     Bitmap overlayBitmap = readBitmap(OVERLAY_PNG_ASSET_PATH);
-    OverlaySettings overlaySettings =
-        new OverlaySettings.Builder().setOverlayFrameAnchor(/* x= */ 1f, /* y= */ -1f).build();
+    StaticOverlaySettings overlaySettings =
+        new StaticOverlaySettings.Builder()
+            .setOverlayFrameAnchor(/* x= */ -1f, /* y= */ 1f)
+            .build();
     BitmapOverlay staticBitmapOverlay =
         BitmapOverlay.createStaticBitmapOverlay(overlayBitmap, overlaySettings);
     overlayShaderProgram =
@@ -227,10 +223,10 @@ public class OverlayShaderProgramPixelTest {
   }
 
   @Test
-  @RequiresNonNull("testId")
   public void drawFrame_rotatedBitmapOverlay_blendsBitmapRotated90degrees() throws Exception {
     Bitmap overlayBitmap = readBitmap(OVERLAY_PNG_ASSET_PATH);
-    OverlaySettings overlaySettings = new OverlaySettings.Builder().setRotationDegrees(90f).build();
+    StaticOverlaySettings overlaySettings =
+        new StaticOverlaySettings.Builder().setRotationDegrees(90f).build();
     BitmapOverlay staticBitmapOverlay =
         BitmapOverlay.createStaticBitmapOverlay(overlayBitmap, overlaySettings);
     overlayShaderProgram =
@@ -251,10 +247,10 @@ public class OverlayShaderProgramPixelTest {
   }
 
   @Test
-  @RequiresNonNull("testId")
   public void drawFrame_translucentBitmapOverlay_blendsBitmapIntoFrame() throws Exception {
     Bitmap bitmap = readBitmap(OVERLAY_PNG_ASSET_PATH);
-    OverlaySettings overlaySettings = new OverlaySettings.Builder().setAlphaScale(0.5f).build();
+    StaticOverlaySettings overlaySettings =
+        new StaticOverlaySettings.Builder().setAlphaScale(0.5f).build();
     BitmapOverlay translucentBitmapOverlay =
         BitmapOverlay.createStaticBitmapOverlay(bitmap, overlaySettings);
     overlayShaderProgram =
@@ -275,10 +271,10 @@ public class OverlayShaderProgramPixelTest {
   }
 
   @Test
-  @RequiresNonNull("testId")
   public void drawFrame_transparentTextOverlay_blendsBitmapIntoFrame() throws Exception {
     SpannableString overlayText = new SpannableString(/* source= */ "Text styling");
-    OverlaySettings overlaySettings = new OverlaySettings.Builder().setAlphaScale(0f).build();
+    StaticOverlaySettings overlaySettings =
+        new StaticOverlaySettings.Builder().setAlphaScale(0f).build();
     overlayText.setSpan(
         new ForegroundColorSpan(Color.GRAY),
         /* start= */ 0,
@@ -304,7 +300,6 @@ public class OverlayShaderProgramPixelTest {
   }
 
   @Test
-  @RequiresNonNull("testId")
   public void drawFrame_textOverlay_blendsTextIntoFrame() throws Exception {
     SpannableString overlayText = new SpannableString(/* source= */ "Text styling");
     overlayText.setSpan(
@@ -331,7 +326,6 @@ public class OverlayShaderProgramPixelTest {
   }
 
   @Test
-  @RequiresNonNull("testId")
   public void drawFrame_textOverlayWithRelativeScaleSpan_blendsTextIntoFrame() throws Exception {
     SpannableString overlayText = new SpannableString(/* source= */ "helllllloooo!!!");
     overlayText.setSpan(
@@ -358,7 +352,6 @@ public class OverlayShaderProgramPixelTest {
   }
 
   @Test
-  @RequiresNonNull("testId")
   public void drawFrame_anchoredTextOverlay_blendsTextIntoTheTopRightQuadrantOfFrame()
       throws Exception {
     SpannableString overlayText = new SpannableString(/* source= */ "Text styling");
@@ -367,8 +360,8 @@ public class OverlayShaderProgramPixelTest {
         /* start= */ 0,
         /* end= */ 4,
         Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
-    OverlaySettings overlaySettings =
-        new OverlaySettings.Builder().setBackgroundFrameAnchor(0.5f, 0.5f).build();
+    StaticOverlaySettings overlaySettings =
+        new StaticOverlaySettings.Builder().setBackgroundFrameAnchor(0.5f, 0.5f).build();
     TextOverlay staticTextOverlay =
         TextOverlay.createStaticTextOverlay(overlayText, overlaySettings);
     overlayShaderProgram =
@@ -389,7 +382,6 @@ public class OverlayShaderProgramPixelTest {
   }
 
   @Test
-  @RequiresNonNull("testId")
   public void drawFrame_multipleOverlays_blendsBothIntoFrame() throws Exception {
     SpannableString overlayText = new SpannableString(/* source= */ "Overlay 1");
     overlayText.setSpan(
@@ -397,11 +389,12 @@ public class OverlayShaderProgramPixelTest {
         /* start= */ 0,
         /* end= */ 4,
         Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
-    OverlaySettings overlaySettings1 =
-        new OverlaySettings.Builder().setBackgroundFrameAnchor(0.5f, 0.5f).build();
+    StaticOverlaySettings overlaySettings1 =
+        new StaticOverlaySettings.Builder().setBackgroundFrameAnchor(0.5f, 0.5f).build();
     TextOverlay textOverlay = TextOverlay.createStaticTextOverlay(overlayText, overlaySettings1);
     Bitmap bitmap = readBitmap(OVERLAY_PNG_ASSET_PATH);
-    OverlaySettings overlaySettings2 = new OverlaySettings.Builder().setAlphaScale(0.5f).build();
+    StaticOverlaySettings overlaySettings2 =
+        new StaticOverlaySettings.Builder().setAlphaScale(0.5f).build();
     BitmapOverlay bitmapOverlay = BitmapOverlay.createStaticBitmapOverlay(bitmap, overlaySettings2);
     overlayShaderProgram =
         new OverlayEffect(ImmutableList.of(textOverlay, bitmapOverlay))
@@ -421,7 +414,6 @@ public class OverlayShaderProgramPixelTest {
   }
 
   @Test
-  @RequiresNonNull("testId")
   public void drawFrame_overlappingOverlays_blendsOnFifoOrder() throws Exception {
     SpannableString overlayText = new SpannableString(/* source= */ "Overlapping text");
     overlayText.setSpan(
@@ -429,12 +421,12 @@ public class OverlayShaderProgramPixelTest {
         /* start= */ 0,
         /* end= */ overlayText.length(),
         Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
-    OverlaySettings overlaySettings1 =
-        new OverlaySettings.Builder().setScale(/* x= */ 0.5f, /* y= */ 0.5f).build();
+    StaticOverlaySettings overlaySettings1 =
+        new StaticOverlaySettings.Builder().setScale(/* x= */ 0.5f, /* y= */ 0.5f).build();
     TextOverlay textOverlay = TextOverlay.createStaticTextOverlay(overlayText, overlaySettings1);
     Bitmap bitmap = readBitmap(OVERLAY_PNG_ASSET_PATH);
-    OverlaySettings overlaySettings2 =
-        new OverlaySettings.Builder().setScale(/* x= */ 3, /* y= */ 3).build();
+    StaticOverlaySettings overlaySettings2 =
+        new StaticOverlaySettings.Builder().setScale(/* x= */ 3, /* y= */ 3).build();
     BitmapOverlay bitmapOverlay = BitmapOverlay.createStaticBitmapOverlay(bitmap, overlaySettings2);
 
     overlayShaderProgram =
@@ -455,7 +447,6 @@ public class OverlayShaderProgramPixelTest {
   }
 
   @Test
-  @RequiresNonNull("testId")
   public void drawFrame_scaledBitmapOverlay_letterboxStretchesOverlay() throws Exception {
     Bitmap overlayBitmap = readBitmap(OVERLAY_PNG_ASSET_PATH);
     overlayShaderProgram =
@@ -477,14 +468,14 @@ public class OverlayShaderProgramPixelTest {
 
   private static final class LetterBoxStretchedBitmapOverlay extends BitmapOverlay {
 
-    private final OverlaySettings.Builder overlaySettingsBuilder;
+    private final StaticOverlaySettings.Builder overlaySettingsBuilder;
     private final Bitmap overlayBitmap;
 
-    private @MonotonicNonNull OverlaySettings overlaySettings;
+    private @MonotonicNonNull StaticOverlaySettings overlaySettings;
 
     public LetterBoxStretchedBitmapOverlay(Bitmap overlayBitmap) {
       this.overlayBitmap = overlayBitmap;
-      overlaySettingsBuilder = new OverlaySettings.Builder();
+      overlaySettingsBuilder = new StaticOverlaySettings.Builder();
     }
 
     @Override

@@ -23,11 +23,14 @@ import android.media.MediaCodec;
 import android.media.MediaFormat;
 import android.os.Bundle;
 import android.os.Handler;
+import android.os.Looper;
 import android.os.PersistableBundle;
 import android.util.SparseArray;
 import android.view.Surface;
 import androidx.annotation.Nullable;
 import androidx.annotation.RequiresApi;
+import androidx.media3.common.C;
+import androidx.media3.common.MimeTypes;
 import androidx.media3.common.util.UnstableApi;
 import androidx.media3.decoder.CryptoInfo;
 import androidx.media3.exoplayer.DefaultRenderersFactory;
@@ -50,6 +53,7 @@ import androidx.media3.exoplayer.video.VideoRendererEventListener;
 import com.google.common.collect.ArrayListMultimap;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSortedMap;
+import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
@@ -72,7 +76,10 @@ public class CapturingRenderersFactory implements RenderersFactory, Dumper.Dumpa
   private final CapturingMediaCodecAdapter.Factory mediaCodecAdapterFactory;
   private final CapturingAudioSink audioSink;
   private final CapturingImageOutput imageOutput;
+
   private ImageDecoder.Factory imageDecoderFactory;
+  private TextRendererFactory textRendererFactory;
+  private boolean parseAv1SampleDependencies;
 
   /**
    * Creates an instance.
@@ -85,6 +92,7 @@ public class CapturingRenderersFactory implements RenderersFactory, Dumper.Dumpa
     this.audioSink = new CapturingAudioSink(new DefaultAudioSink.Builder(context).build());
     this.imageOutput = new CapturingImageOutput();
     this.imageDecoderFactory = ImageDecoder.Factory.DEFAULT;
+    this.textRendererFactory = TextRenderer::new;
   }
 
   /**
@@ -99,6 +107,36 @@ public class CapturingRenderersFactory implements RenderersFactory, Dumper.Dumpa
     return this;
   }
 
+  /**
+   * Sets the factory for {@link Renderer} instances that handle {@link C#TRACK_TYPE_TEXT} tracks.
+   *
+   * @param textRendererFactory The {@link TextRendererFactory}.
+   * @return This factory, for convenience.
+   */
+  @CanIgnoreReturnValue
+  public CapturingRenderersFactory setTextRendererFactory(TextRendererFactory textRendererFactory) {
+    this.textRendererFactory = textRendererFactory;
+    return this;
+  }
+
+  /**
+   * Sets whether {@link MimeTypes#VIDEO_AV1} bitstream parsing for sample dependency information is
+   * enabled. Knowing which input frames are not depended on can speed up seeking and reduce dropped
+   * frames.
+   *
+   * <p>Defaults to {@code false}.
+   *
+   * <p>This method is experimental and will be renamed or removed in a future release.
+   *
+   * @param parseAv1SampleDependencies Whether bitstream parsing is enabled.
+   */
+  @CanIgnoreReturnValue
+  public final CapturingRenderersFactory experimentalSetParseAv1SampleDependencies(
+      boolean parseAv1SampleDependencies) {
+    this.parseAv1SampleDependencies = parseAv1SampleDependencies;
+    return this;
+  }
+
   @Override
   public Renderer[] createRenderers(
       Handler eventHandler,
@@ -108,7 +146,7 @@ public class CapturingRenderersFactory implements RenderersFactory, Dumper.Dumpa
       MetadataOutput metadataRendererOutput) {
     ArrayList<Renderer> renderers = new ArrayList<>();
     renderers.add(
-        new MediaCodecVideoRenderer(
+        new CapturingMediaCodecVideoRenderer(
             context,
             mediaCodecAdapterFactory,
             MediaCodecSelector.DEFAULT,
@@ -116,27 +154,8 @@ public class CapturingRenderersFactory implements RenderersFactory, Dumper.Dumpa
             /* enableDecoderFallback= */ false,
             eventHandler,
             videoRendererEventListener,
-            DefaultRenderersFactory.MAX_DROPPED_VIDEO_FRAME_COUNT_TO_NOTIFY) {
-          @Override
-          protected boolean shouldDropOutputBuffer(
-              long earlyUs, long elapsedRealtimeUs, boolean isLastBuffer) {
-            // Do not drop output buffers due to slow processing.
-            return false;
-          }
-
-          @Override
-          protected boolean shouldDropBuffersToKeyframe(
-              long earlyUs, long elapsedRealtimeUs, boolean isLastBuffer) {
-            // Do not drop output buffers due to slow processing.
-            return false;
-          }
-
-          @Override
-          protected boolean shouldSkipBuffersWithIdenticalReleaseTime() {
-            // Do not skip buffers with identical vsync times as we can't control this from tests.
-            return false;
-          }
-        });
+            DefaultRenderersFactory.MAX_DROPPED_VIDEO_FRAME_COUNT_TO_NOTIFY,
+            parseAv1SampleDependencies));
     renderers.add(
         new MediaCodecAudioRenderer(
             context,
@@ -146,7 +165,7 @@ public class CapturingRenderersFactory implements RenderersFactory, Dumper.Dumpa
             eventHandler,
             audioRendererEventListener,
             audioSink));
-    renderers.add(new TextRenderer(textRendererOutput, eventHandler.getLooper()));
+    renderers.add(textRendererFactory.create(textRendererOutput, eventHandler.getLooper()));
     renderers.add(new MetadataRenderer(metadataRendererOutput, eventHandler.getLooper()));
     renderers.add(new ImageRenderer(imageDecoderFactory, imageOutput));
 
@@ -158,6 +177,94 @@ public class CapturingRenderersFactory implements RenderersFactory, Dumper.Dumpa
     mediaCodecAdapterFactory.dump(dumper);
     audioSink.dump(dumper);
     imageOutput.dump(dumper);
+  }
+
+  /** A factory for {@link Renderer} instances that handle {@link C#TRACK_TYPE_TEXT} tracks. */
+  public interface TextRendererFactory {
+
+    /**
+     * Creates a new {@link Renderer} instance for a {@link C#TRACK_TYPE_TEXT} track.
+     *
+     * @param textOutput A {@link TextOutput} to handle the parsed subtitles.
+     * @param outputLooper The looper used to invoke {@code textOutput}.
+     */
+    Renderer create(TextOutput textOutput, Looper outputLooper);
+  }
+
+  /**
+   * Returns new instance of a specialized {@link MediaCodecVideoRenderer} that will not drop or
+   * skip buffers due to slow processing.
+   *
+   * @param eventHandler A handler to use when invoking event listeners and outputs.
+   * @param videoRendererEventListener An event listener for video renderers.
+   * @return a new instance of a specialized {@link MediaCodecVideoRenderer}.
+   */
+  protected MediaCodecVideoRenderer createMediaCodecVideoRenderer(
+      Handler eventHandler, VideoRendererEventListener videoRendererEventListener) {
+    return new CapturingMediaCodecVideoRenderer(
+        context,
+        mediaCodecAdapterFactory,
+        MediaCodecSelector.DEFAULT,
+        DefaultRenderersFactory.DEFAULT_ALLOWED_VIDEO_JOINING_TIME_MS,
+        /* enableDecoderFallback= */ false,
+        eventHandler,
+        videoRendererEventListener,
+        DefaultRenderersFactory.MAX_DROPPED_VIDEO_FRAME_COUNT_TO_NOTIFY,
+        /* parseAv1SampleDependencies= */ false);
+  }
+
+  /**
+   * Returns the {@link CapturingMediaCodecAdapter.Factory} as a {@link MediaCodecAdapter.Factory}.
+   */
+  protected MediaCodecAdapter.Factory getMediaCodecAdapterFactory() {
+    return mediaCodecAdapterFactory;
+  }
+
+  /**
+   * A {@link MediaCodecVideoRenderer} that will not skip or drop buffers due to slow processing.
+   */
+  private static class CapturingMediaCodecVideoRenderer extends MediaCodecVideoRenderer {
+    private CapturingMediaCodecVideoRenderer(
+        Context context,
+        MediaCodecAdapter.Factory codecAdapterFactory,
+        MediaCodecSelector mediaCodecSelector,
+        long allowedJoiningTimeMs,
+        boolean enableDecoderFallback,
+        @Nullable Handler eventHandler,
+        @Nullable VideoRendererEventListener eventListener,
+        int maxDroppedFramesToNotify,
+        boolean parseAv1SampleDependencies) {
+      super(
+          new Builder(context)
+              .setCodecAdapterFactory(codecAdapterFactory)
+              .setMediaCodecSelector(mediaCodecSelector)
+              .setAllowedJoiningTimeMs(allowedJoiningTimeMs)
+              .setEnableDecoderFallback(enableDecoderFallback)
+              .setEventHandler(eventHandler)
+              .setEventListener(eventListener)
+              .setMaxDroppedFramesToNotify(maxDroppedFramesToNotify)
+              .experimentalSetParseAv1SampleDependencies(parseAv1SampleDependencies));
+    }
+
+    @Override
+    protected boolean shouldDropOutputBuffer(
+        long earlyUs, long elapsedRealtimeUs, boolean isLastBuffer) {
+      // Do not drop output buffers due to slow processing.
+      return false;
+    }
+
+    @Override
+    protected boolean shouldDropBuffersToKeyframe(
+        long earlyUs, long elapsedRealtimeUs, boolean isLastBuffer) {
+      // Do not drop output buffers due to slow processing.
+      return false;
+    }
+
+    @Override
+    protected boolean shouldSkipBuffersWithIdenticalReleaseTime() {
+      // Do not skip buffers with identical vsync times as we can't control this from tests.
+      return false;
+    }
   }
 
   /**
@@ -176,7 +283,6 @@ public class CapturingRenderersFactory implements RenderersFactory, Dumper.Dumpa
         constructedAdapters = new ArrayList<>();
       }
 
-      @RequiresApi(18)
       @Override
       public MediaCodecAdapter createAdapter(Configuration configuration) throws IOException {
         CapturingMediaCodecAdapter adapter =
@@ -302,7 +408,6 @@ public class CapturingRenderersFactory implements RenderersFactory, Dumper.Dumpa
       dequeuedOutputBuffers.delete(index);
     }
 
-    @RequiresApi(21)
     @Override
     public void releaseOutputBuffer(int index, long renderTimeStampNs) {
       MediaCodec.BufferInfo bufferInfo = checkNotNull(dequeuedOutputBuffers.get(index));
@@ -345,7 +450,12 @@ public class CapturingRenderersFactory implements RenderersFactory, Dumper.Dumpa
       delegate.setOutputSurface(surface);
     }
 
-    @RequiresApi(19)
+    @RequiresApi(35)
+    @Override
+    public void detachOutputSurface() {
+      delegate.detachOutputSurface();
+    }
+
     @Override
     public void setParameters(Bundle params) {
       delegate.setParameters(params);
@@ -423,7 +533,7 @@ public class CapturingRenderersFactory implements RenderersFactory, Dumper.Dumpa
       @Override
       public void dump(Dumper dumper) {
         dumper.startBlock("input buffer #" + inputBufferCounter);
-        dumper.add("timeUs", bufferTimeUs);
+        dumper.addTime("timeUs", bufferTimeUs);
         if (flags != 0) {
           dumper.add("flags", flags);
         }
@@ -452,7 +562,7 @@ public class CapturingRenderersFactory implements RenderersFactory, Dumper.Dumpa
       @Override
       public void dump(Dumper dumper) {
         dumper.startBlock("output buffer #" + outputBufferCounter);
-        dumper.add("timeUs", bufferTimeUs);
+        dumper.addTime("timeUs", bufferTimeUs);
         if (flags != 0) {
           dumper.add("flags", flags);
         }

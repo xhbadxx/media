@@ -20,6 +20,7 @@ import static androidx.media3.common.util.Assertions.checkNotNull;
 import static androidx.media3.common.util.Assertions.checkStateNotNull;
 import static androidx.media3.common.util.Util.postOrRun;
 
+import android.app.Activity;
 import android.app.ForegroundServiceStartNotAllowedException;
 import android.app.Service;
 import android.content.ComponentName;
@@ -33,18 +34,18 @@ import android.os.IBinder;
 import android.os.Looper;
 import android.os.RemoteException;
 import androidx.annotation.CallSuper;
-import androidx.annotation.DoNotInline;
 import androidx.annotation.GuardedBy;
 import androidx.annotation.Nullable;
 import androidx.annotation.RequiresApi;
 import androidx.collection.ArrayMap;
-import androidx.media.MediaBrowserServiceCompat;
-import androidx.media.MediaSessionManager;
 import androidx.media3.common.MediaLibraryInfo;
+import androidx.media3.common.Player;
 import androidx.media3.common.util.Log;
 import androidx.media3.common.util.UnstableApi;
 import androidx.media3.common.util.Util;
 import androidx.media3.session.MediaSession.ControllerInfo;
+import androidx.media3.session.legacy.MediaBrowserServiceCompat;
+import androidx.media3.session.legacy.MediaSessionManager;
 import java.lang.ref.WeakReference;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -76,7 +77,7 @@ import org.checkerframework.checker.nullness.qual.MonotonicNonNull;
  * }</pre>
  *
  * <p>You may also declare the action {@code android.media.browse.MediaBrowserService} for
- * compatibility with {@link android.support.v4.media.MediaBrowserCompat}. This service can handle
+ * compatibility with {@code android.support.v4.media.MediaBrowserCompat}. This service can handle
  * the case automatically.
  *
  * <p>It's recommended for an app to have a single service declared in the manifest. Otherwise, your
@@ -158,6 +159,12 @@ public abstract class MediaSessionService extends Service {
   /** The action for {@link Intent} filter that must be declared by the service. */
   public static final String SERVICE_INTERFACE = "androidx.media3.session.MediaSessionService";
 
+  /**
+   * The default timeout for a session to stay in a foreground service state after it paused,
+   * stopped, failed or ended.
+   */
+  @UnstableApi public static final long DEFAULT_FOREGROUND_SERVICE_TIMEOUT_MS = 600_000;
+
   private static final String TAG = "MSessionService";
 
   private final Object lock;
@@ -172,9 +179,6 @@ public abstract class MediaSessionService extends Service {
 
   @GuardedBy("lock")
   private @MonotonicNonNull MediaNotificationManager mediaNotificationManager;
-
-  @GuardedBy("lock")
-  private MediaNotification.@MonotonicNonNull Provider mediaNotificationProvider;
 
   @GuardedBy("lock")
   private @MonotonicNonNull DefaultActionFactory actionFactory;
@@ -226,10 +230,10 @@ public abstract class MediaSessionService extends Service {
    *   <li>When the service is started by a media button event, the package name will be {@link
    *       Intent#ACTION_MEDIA_BUTTON}. If you want to allow the service to be started by media
    *       button events, do not return {@code null}.
-   *   <li>When a legacy {@link android.media.browse.MediaBrowser} or a {@link
+   *   <li>When a legacy {@link android.media.browse.MediaBrowser} or a {@code
    *       android.support.v4.media.MediaBrowserCompat} tries to connect, the package name will be
-   *       {@link MediaBrowserServiceCompat#SERVICE_INTERFACE}. If you want to allow the service to
-   *       be bound by the legacy media browsers, do not return {@code null}.
+   *       {@link android.service.media.MediaBrowserService#SERVICE_INTERFACE}. If you want to allow
+   *       the service to be bound by the legacy media browsers, do not return {@code null}.
    * </ul>
    *
    * <p>For those special cases, the values returned by {@link ControllerInfo#getUid()} and {@link
@@ -466,7 +470,103 @@ public abstract class MediaSessionService extends Service {
         MediaControllerStub.VERSION_INT,
         /* trusted= */ false,
         /* cb= */ null,
-        /* connectionHints= */ Bundle.EMPTY);
+        /* connectionHints= */ Bundle.EMPTY,
+        /* maxCommandsForMediaItems= */ 0);
+  }
+
+  /**
+   * Sets the timeout for a session to stay in a foreground service state after it paused, stopped,
+   * failed or ended.
+   *
+   * <p>Can only be called once the {@link Context} of the service is initialized in {@link
+   * #onCreate()}.
+   *
+   * <p>Has no effect on already running timeouts.
+   *
+   * <p>The default and maximum value is {@link #DEFAULT_FOREGROUND_SERVICE_TIMEOUT_MS}. If a larger
+   * value is provided, it will be clamped down to {@link #DEFAULT_FOREGROUND_SERVICE_TIMEOUT_MS}.
+   *
+   * @param foregroundServiceTimeoutMs The timeout in milliseconds.
+   */
+  @UnstableApi
+  public final void setForegroundServiceTimeoutMs(long foregroundServiceTimeoutMs) {
+    getMediaNotificationManager()
+        .setUserEngagedTimeoutMs(
+            Util.constrainValue(
+                foregroundServiceTimeoutMs,
+                /* min= */ 0,
+                /* max= */ DEFAULT_FOREGROUND_SERVICE_TIMEOUT_MS));
+  }
+
+  /**
+   * Returns whether there is a session with ongoing user-engaged playback that is run in a
+   * foreground service.
+   *
+   * <p>It is only possible to terminate the service with {@link #stopSelf()} if this method returns
+   * {@code false}.
+   *
+   * <p>Note that sessions are kept in foreground and this method returns {@code true} for the
+   * {@linkplain #setForegroundServiceTimeoutMs foreground service timeout} after they paused,
+   * stopped, failed or ended. Use {@link #pauseAllPlayersAndStopSelf()} to pause all ongoing
+   * playbacks immediately and terminate the service.
+   */
+  @UnstableApi
+  public boolean isPlaybackOngoing() {
+    return getMediaNotificationManager().isStartedInForeground();
+  }
+
+  /**
+   * Pauses the player of each session managed by the service, ensures the foreground service is
+   * stopped, and calls {@link #stopSelf()}.
+   *
+   * <p>This terminates the service lifecycle and triggers {@link #onDestroy()} that an app can
+   * override to release the sessions and other resources.
+   */
+  @UnstableApi
+  public void pauseAllPlayersAndStopSelf() {
+    getMediaNotificationManager().disableUserEngagedTimeout();
+    List<MediaSession> sessionList = getSessions();
+    for (int i = 0; i < sessionList.size(); i++) {
+      sessionList.get(i).getPlayer().setPlayWhenReady(false);
+    }
+    stopSelf();
+  }
+
+  /**
+   * {@inheritDoc}
+   *
+   * <p>This method can be overridden to customize the behavior of when the app is dismissed from
+   * the recent apps.
+   *
+   * <p>The default behavior is that if {@linkplain #isPlaybackOngoing() playback is ongoing}, which
+   * means the service is already running in the foreground, and at least one media session {@link
+   * Player#isPlaying() is playing}, the service is kept running. Otherwise, playbacks are paused
+   * and the service is stopped by calling {@link #pauseAllPlayersAndStopSelf()} which terminates
+   * the service lifecycle and triggers {@link #onDestroy()} that an app can override to release the
+   * sessions and other resources.
+   *
+   * <p>An app can safely override this method without calling super to implement a different
+   * behaviour, for instance unconditionally calling {@link #pauseAllPlayersAndStopSelf()} to stop
+   * the service even when playing. However, if {@linkplain #isPlaybackOngoing() playback is not
+   * ongoing}, the service must be terminated otherwise the service will be crashed and restarted by
+   * the system.
+   *
+   * <p>Note: The service <a
+   * href="https://developer.android.com/develop/background-work/services/bound-services#Lifecycle">can't
+   * be stopped</a> until all media controllers have been unbound. Hence, an app needs to release
+   * all internal controllers that have connected to the service (for instance from an activity in
+   * {@link Activity#onStop()}). If an app allows external apps to connect a {@link MediaController}
+   * to the service, these controllers also need to be disconnected. In such a scenario of external
+   * bound clients, an app needs to override this method to release the session before calling
+   * {@link #stopSelf()}.
+   */
+  @Override
+  public void onTaskRemoved(@Nullable Intent rootIntent) {
+    if (!isPlaybackOngoing() || !isAnySessionPlaying()) {
+      // The service needs to be stopped when playback is not ongoing (i.e, the service is not in
+      // the foreground). It is also force-stopped if no session is playing.
+      pauseAllPlayersAndStopSelf();
+    }
   }
 
   /**
@@ -534,8 +634,6 @@ public abstract class MediaSessionService extends Service {
   /**
    * Sets the {@link MediaNotification.Provider} to customize notifications.
    *
-   * <p>This should be called before {@link #onCreate()} returns.
-   *
    * <p>This method can be called from any thread.
    */
   @UnstableApi
@@ -543,7 +641,8 @@ public abstract class MediaSessionService extends Service {
       MediaNotification.Provider mediaNotificationProvider) {
     checkNotNull(mediaNotificationProvider);
     synchronized (lock) {
-      this.mediaNotificationProvider = mediaNotificationProvider;
+      getMediaNotificationManager(/* initialMediaNotificationProvider= */ mediaNotificationProvider)
+          .setMediaNotificationProvider(mediaNotificationProvider);
     }
   }
 
@@ -562,7 +661,7 @@ public abstract class MediaSessionService extends Service {
       MediaSession session, boolean startInForegroundWhenPaused) {
     try {
       boolean startInForegroundRequired =
-          getMediaNotificationManager().shouldRunInForeground(session, startInForegroundWhenPaused);
+          getMediaNotificationManager().shouldRunInForeground(startInForegroundWhenPaused);
       onUpdateNotification(session, startInForegroundRequired);
     } catch (/* ForegroundServiceStartNotAllowedException */ IllegalStateException e) {
       if ((Util.SDK_INT >= 31) && Api31.instanceOfForegroundServiceStartNotAllowedException(e)) {
@@ -576,15 +675,23 @@ public abstract class MediaSessionService extends Service {
   }
 
   private MediaNotificationManager getMediaNotificationManager() {
+    return getMediaNotificationManager(/* initialMediaNotificationProvider= */ null);
+  }
+
+  private MediaNotificationManager getMediaNotificationManager(
+      @Nullable MediaNotification.Provider initialMediaNotificationProvider) {
     synchronized (lock) {
       if (mediaNotificationManager == null) {
-        if (mediaNotificationProvider == null) {
-          mediaNotificationProvider =
+        if (initialMediaNotificationProvider == null) {
+          checkStateNotNull(getBaseContext(), "Accessing service context before onCreate()");
+          initialMediaNotificationProvider =
               new DefaultMediaNotificationProvider.Builder(getApplicationContext()).build();
         }
         mediaNotificationManager =
             new MediaNotificationManager(
-                /* mediaSessionService= */ this, mediaNotificationProvider, getActionFactory());
+                /* mediaSessionService= */ this,
+                initialMediaNotificationProvider,
+                getActionFactory());
       }
       return mediaNotificationManager;
     }
@@ -615,6 +722,16 @@ public abstract class MediaSessionService extends Service {
             serviceListener.onForegroundServiceStartNotAllowedException();
           }
         });
+  }
+
+  private boolean isAnySessionPlaying() {
+    List<MediaSession> sessionList = getSessions();
+    for (int i = 0; i < sessionList.size(); i++) {
+      if (sessionList.get(i).getPlayer().isPlaying()) {
+        return true;
+      }
+    }
+    return false;
   }
 
   private final class MediaSessionListener implements MediaSession.Listener {
@@ -704,8 +821,10 @@ public abstract class MediaSessionService extends Service {
                         request.libraryVersion,
                         request.controllerInterfaceVersion,
                         isTrusted,
-                        new MediaSessionStub.Controller2Cb(caller),
-                        request.connectionHints);
+                        new MediaSessionStub.Controller2Cb(
+                            caller, request.controllerInterfaceVersion),
+                        request.connectionHints,
+                        request.maxCommandsForMediaItems);
 
                 @Nullable MediaSession session;
                 try {
@@ -754,7 +873,6 @@ public abstract class MediaSessionService extends Service {
 
   @RequiresApi(31)
   private static final class Api31 {
-    @DoNotInline
     public static boolean instanceOfForegroundServiceStartNotAllowedException(
         IllegalStateException e) {
       return e instanceof ForegroundServiceStartNotAllowedException;

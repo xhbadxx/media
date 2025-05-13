@@ -29,7 +29,7 @@ import androidx.media3.common.util.ParsableByteArray;
 import androidx.media3.common.util.UnstableApi;
 import androidx.media3.exoplayer.analytics.PlayerId;
 import androidx.media3.extractor.ChunkIndex;
-import androidx.media3.extractor.DummyTrackOutput;
+import androidx.media3.extractor.DiscardingTrackOutput;
 import androidx.media3.extractor.Extractor;
 import androidx.media3.extractor.ExtractorInput;
 import androidx.media3.extractor.ExtractorOutput;
@@ -43,7 +43,6 @@ import androidx.media3.extractor.png.PngExtractor;
 import androidx.media3.extractor.text.DefaultSubtitleParserFactory;
 import androidx.media3.extractor.text.SubtitleExtractor;
 import androidx.media3.extractor.text.SubtitleParser;
-import androidx.media3.extractor.text.SubtitleTranscodingExtractor;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import java.io.IOException;
 import java.util.List;
@@ -62,6 +61,7 @@ public final class BundledChunkExtractor implements ExtractorOutput, ChunkExtrac
 
     private SubtitleParser.Factory subtitleParserFactory;
     private boolean parseSubtitlesDuringExtraction;
+    private @C.VideoCodecFlags int codecsToParseWithinGopSampleDependencies;
 
     public Factory() {
       subtitleParserFactory = new DefaultSubtitleParserFactory();
@@ -79,6 +79,14 @@ public final class BundledChunkExtractor implements ExtractorOutput, ChunkExtrac
     public Factory experimentalParseSubtitlesDuringExtraction(
         boolean parseSubtitlesDuringExtraction) {
       this.parseSubtitlesDuringExtraction = parseSubtitlesDuringExtraction;
+      return this;
+    }
+
+    @Override
+    @CanIgnoreReturnValue
+    public Factory experimentalSetCodecsToParseWithinGopSampleDependencies(
+        @C.VideoCodecFlags int codecsToParseWithinGopSampleDependencies) {
+      this.codecsToParseWithinGopSampleDependencies = codecsToParseWithinGopSampleDependencies;
       return this;
     }
 
@@ -147,6 +155,9 @@ public final class BundledChunkExtractor implements ExtractorOutput, ChunkExtrac
         if (!parseSubtitlesDuringExtraction) {
           flags |= FragmentedMp4Extractor.FLAG_EMIT_RAW_SUBTITLE_DATA;
         }
+        flags |=
+            FragmentedMp4Extractor.codecsToParseWithinGopSampleDependenciesAsFlags(
+                codecsToParseWithinGopSampleDependencies);
         extractor =
             new FragmentedMp4Extractor(
                 subtitleParserFactory,
@@ -156,18 +167,15 @@ public final class BundledChunkExtractor implements ExtractorOutput, ChunkExtrac
                 closedCaptionFormats,
                 playerEmsgTrackOutput);
       }
-      if (parseSubtitlesDuringExtraction
-          && !MimeTypes.isText(containerMimeType)
-          && !(extractor.getUnderlyingImplementation() instanceof FragmentedMp4Extractor)
-          && !(extractor.getUnderlyingImplementation() instanceof MatroskaExtractor)) {
-        extractor = new SubtitleTranscodingExtractor(extractor, subtitleParserFactory);
-      }
       return new BundledChunkExtractor(extractor, primaryTrackType, representationFormat);
     }
   }
 
-  /** {@link Factory} for {@link BundledChunkExtractor}. */
-  public static final Factory FACTORY = new Factory();
+  /**
+   * @deprecated {@link Factory} is mutable, so a static instance is not safe. Instantiate a new
+   *     {@link Factory} instead.
+   */
+  @Deprecated public static final Factory FACTORY = new Factory();
 
   private static final PositionHolder POSITION_HOLDER = new PositionHolder();
 
@@ -282,7 +290,7 @@ public final class BundledChunkExtractor implements ExtractorOutput, ChunkExtrac
     private final int id;
     private final int type;
     @Nullable private final Format manifestFormat;
-    private final DummyTrackOutput fakeTrackOutput;
+    private final DiscardingTrackOutput fakeTrackOutput;
 
     public @MonotonicNonNull Format sampleFormat;
     private @MonotonicNonNull TrackOutput trackOutput;
@@ -292,7 +300,7 @@ public final class BundledChunkExtractor implements ExtractorOutput, ChunkExtrac
       this.id = id;
       this.type = type;
       this.manifestFormat = manifestFormat;
-      fakeTrackOutput = new DummyTrackOutput();
+      fakeTrackOutput = new DiscardingTrackOutput();
     }
 
     public void bind(@Nullable TrackOutputProvider trackOutputProvider, long endTimeUs) {

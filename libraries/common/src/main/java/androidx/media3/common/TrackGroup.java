@@ -48,7 +48,7 @@ import java.util.List;
  * {@link Tracks.Group}, it does not include runtime information such as the extent to which
  * playback of each track is supported by the device, or which tracks are currently selected.
  */
-public final class TrackGroup implements Bundleable {
+public final class TrackGroup {
 
   private static final String TAG = "TrackGroup";
 
@@ -161,32 +161,25 @@ public final class TrackGroup implements Bundleable {
     return id.equals(other.id) && Arrays.equals(formats, other.formats);
   }
 
-  // Bundleable implementation.
+  @Override
+  public String toString() {
+    return id + ": " + Arrays.toString(formats);
+  }
+
   private static final String FIELD_FORMATS = Util.intToStringMaxRadix(0);
   private static final String FIELD_ID = Util.intToStringMaxRadix(1);
 
   @UnstableApi
-  @Override
   public Bundle toBundle() {
     Bundle bundle = new Bundle();
     ArrayList<Bundle> arrayList = new ArrayList<>(formats.length);
     for (Format format : formats) {
-      arrayList.add(format.toBundle(/* excludeMetadata= */ true));
+      arrayList.add(format.toBundle());
     }
     bundle.putParcelableArrayList(FIELD_FORMATS, arrayList);
     bundle.putString(FIELD_ID, id);
     return bundle;
   }
-
-  /**
-   * Object that can restore {@code TrackGroup} from a {@link Bundle}.
-   *
-   * @deprecated Use {@link #fromBundle} instead.
-   */
-  @UnstableApi
-  @Deprecated
-  @SuppressWarnings("deprecation") // Deprecated instance of deprecated class
-  public static final Creator<TrackGroup> CREATOR = TrackGroup::fromBundle;
 
   /** Restores a {@code TrackGroup} from a {@link Bundle}. */
   @UnstableApi

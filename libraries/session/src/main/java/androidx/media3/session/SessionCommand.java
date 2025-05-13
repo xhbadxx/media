@@ -23,17 +23,16 @@ import android.os.Bundle;
 import android.text.TextUtils;
 import androidx.annotation.IntDef;
 import androidx.annotation.Nullable;
-import androidx.media3.common.Bundleable;
 import androidx.media3.common.Rating;
 import androidx.media3.common.util.UnstableApi;
 import androidx.media3.common.util.Util;
 import androidx.media3.session.MediaLibraryService.LibraryParams;
-import com.google.common.base.Objects;
 import com.google.common.collect.ImmutableList;
 import java.lang.annotation.Documented;
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 import java.lang.annotation.Target;
+import java.util.Objects;
 
 /**
  * A command that a {@link MediaController} can send to a {@link MediaSession}.
@@ -42,7 +41,7 @@ import java.lang.annotation.Target;
  * {@link #commandCode} is {@link #COMMAND_CODE_CUSTOM}, it's a custom command and {@link
  * #customAction} must not be {@code null}.
  */
-public final class SessionCommand implements Bundleable {
+public final class SessionCommand {
 
   /** Command codes of session commands. */
   @Documented
@@ -124,8 +123,8 @@ public final class SessionCommand implements Bundleable {
   /**
    * The extra bundle of a custom command. It will be {@link Bundle#EMPTY} for a predefined command.
    *
-   * <p>Interoperability: This value is not used when the command is sent to a legacy {@link
-   * android.support.v4.media.session.MediaSessionCompat} or {@link
+   * <p>Interoperability: This value is not used when the command is sent to a legacy {@code
+   * android.support.v4.media.session.MediaSessionCompat} or {@code
    * android.support.v4.media.session.MediaControllerCompat}.
    */
   public final Bundle customExtras;
@@ -148,7 +147,7 @@ public final class SessionCommand implements Bundleable {
    *
    * @param action The action of this custom command.
    * @param extras An extra bundle for this custom command. This value is not used when the command
-   *     is sent to a legacy {@link android.support.v4.media.session.MediaSessionCompat} or {@link
+   *     is sent to a legacy {@code android.support.v4.media.session.MediaSessionCompat} or {@code
    *     android.support.v4.media.session.MediaControllerCompat}.
    */
   public SessionCommand(String action, Bundle extras) {
@@ -169,16 +168,14 @@ public final class SessionCommand implements Bundleable {
 
   @Override
   public int hashCode() {
-    return Objects.hashCode(customAction, commandCode);
+    return Objects.hash(customAction, commandCode);
   }
 
-  // Bundleable implementation.
   private static final String FIELD_COMMAND_CODE = Util.intToStringMaxRadix(0);
   private static final String FIELD_CUSTOM_ACTION = Util.intToStringMaxRadix(1);
   private static final String FIELD_CUSTOM_EXTRAS = Util.intToStringMaxRadix(2);
 
   @UnstableApi
-  @Override
   public Bundle toBundle() {
     Bundle bundle = new Bundle();
     bundle.putInt(FIELD_COMMAND_CODE, commandCode);
@@ -186,16 +183,6 @@ public final class SessionCommand implements Bundleable {
     bundle.putBundle(FIELD_CUSTOM_EXTRAS, customExtras);
     return bundle;
   }
-
-  /**
-   * Object that can restore a {@link SessionCommand} from a {@link Bundle}.
-   *
-   * @deprecated Use {@link #fromBundle} instead.
-   */
-  @UnstableApi
-  @Deprecated
-  @SuppressWarnings("deprecation") // Deprecated instance of deprecated class
-  public static final Creator<SessionCommand> CREATOR = SessionCommand::fromBundle;
 
   /** Restores a {@code SessionCommand} from a {@link Bundle}. */
   @UnstableApi
@@ -209,5 +196,4 @@ public final class SessionCommand implements Bundleable {
       return new SessionCommand(customAction, customExtras == null ? Bundle.EMPTY : customExtras);
     }
   }
-  ;
 }

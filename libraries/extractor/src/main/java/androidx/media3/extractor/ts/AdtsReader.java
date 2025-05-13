@@ -30,7 +30,7 @@ import androidx.media3.common.util.ParsableByteArray;
 import androidx.media3.common.util.UnstableApi;
 import androidx.media3.common.util.Util;
 import androidx.media3.extractor.AacUtil;
-import androidx.media3.extractor.DummyTrackOutput;
+import androidx.media3.extractor.DiscardingTrackOutput;
 import androidx.media3.extractor.ExtractorOutput;
 import androidx.media3.extractor.TrackOutput;
 import androidx.media3.extractor.ts.TsPayloadReader.TrackIdGenerator;
@@ -72,6 +72,7 @@ public final class AdtsReader implements ElementaryStreamReader {
   private final ParsableByteArray id3HeaderBuffer;
   @Nullable private final String language;
   private final @C.RoleFlags int roleFlags;
+  private final String containerMimeType;
 
   private @MonotonicNonNull String formatId;
   private @MonotonicNonNull TrackOutput output;
@@ -104,20 +105,25 @@ public final class AdtsReader implements ElementaryStreamReader {
 
   /**
    * @param exposeId3 True if the reader should expose ID3 information.
+   * @param containerMimeType The MIME type of the container holding the stream.
    */
-  public AdtsReader(boolean exposeId3) {
-    this(exposeId3, null, /* roleFlags= */ 0);
+  public AdtsReader(boolean exposeId3, String containerMimeType) {
+    this(exposeId3, null, /* roleFlags= */ 0, containerMimeType);
   }
 
   /**
    * @param exposeId3 True if the reader should expose ID3 information.
    * @param language Track language.
    * @param roleFlags Track role flags.
+   * @param containerMimeType The MIME type of the container holding the stream.
    */
-  public AdtsReader(boolean exposeId3, @Nullable String language, @C.RoleFlags int roleFlags) {
+  public AdtsReader(
+      boolean exposeId3,
+      @Nullable String language,
+      @C.RoleFlags int roleFlags,
+      String containerMimeType) {
     adtsScratch = new ParsableBitArray(new byte[HEADER_SIZE + CRC_SIZE]);
     id3HeaderBuffer = new ParsableByteArray(Arrays.copyOf(ID3_IDENTIFIER, ID3_HEADER_SIZE));
-    setFindingSampleState();
     firstFrameVersion = VERSION_UNSET;
     firstFrameSampleRateIndex = C.INDEX_UNSET;
     sampleDurationUs = C.TIME_UNSET;
@@ -125,6 +131,8 @@ public final class AdtsReader implements ElementaryStreamReader {
     this.exposeId3 = exposeId3;
     this.language = language;
     this.roleFlags = roleFlags;
+    this.containerMimeType = containerMimeType;
+    setFindingSampleState();
   }
 
   /** Returns whether an integer matches an ADTS SYNC word. */
@@ -150,10 +158,11 @@ public final class AdtsReader implements ElementaryStreamReader {
       id3Output.format(
           new Format.Builder()
               .setId(idGenerator.getFormatId())
+              .setContainerMimeType(containerMimeType)
               .setSampleMimeType(MimeTypes.APPLICATION_ID3)
               .build());
     } else {
-      id3Output = new DummyTrackOutput();
+      id3Output = new DiscardingTrackOutput();
     }
   }
 
@@ -194,7 +203,7 @@ public final class AdtsReader implements ElementaryStreamReader {
   }
 
   @Override
-  public void packetFinished() {
+  public void packetFinished(boolean isEndOfInput) {
     // Do nothing.
   }
 
@@ -507,6 +516,7 @@ public final class AdtsReader implements ElementaryStreamReader {
       Format format =
           new Format.Builder()
               .setId(formatId)
+              .setContainerMimeType(containerMimeType)
               .setSampleMimeType(MimeTypes.AUDIO_AAC)
               .setCodecs(aacConfig.codecs)
               .setChannelCount(aacConfig.channelCount)

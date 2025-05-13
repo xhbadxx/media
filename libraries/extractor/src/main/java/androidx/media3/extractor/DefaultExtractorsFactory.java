@@ -23,6 +23,7 @@ import static androidx.media3.extractor.mp4.Mp4Extractor.FLAG_READ_SEF_DATA;
 import android.net.Uri;
 import androidx.annotation.GuardedBy;
 import androidx.annotation.Nullable;
+import androidx.media3.common.C;
 import androidx.media3.common.FileTypes;
 import androidx.media3.common.Format;
 import androidx.media3.common.PlaybackException;
@@ -31,6 +32,7 @@ import androidx.media3.common.util.TimestampAdjuster;
 import androidx.media3.common.util.UnstableApi;
 import androidx.media3.extractor.amr.AmrExtractor;
 import androidx.media3.extractor.avi.AviExtractor;
+import androidx.media3.extractor.avif.AvifExtractor;
 import androidx.media3.extractor.bmp.BmpExtractor;
 import androidx.media3.extractor.flac.FlacExtractor;
 import androidx.media3.extractor.flv.FlvExtractor;
@@ -44,7 +46,6 @@ import androidx.media3.extractor.ogg.OggExtractor;
 import androidx.media3.extractor.png.PngExtractor;
 import androidx.media3.extractor.text.DefaultSubtitleParserFactory;
 import androidx.media3.extractor.text.SubtitleParser;
-import androidx.media3.extractor.text.SubtitleTranscodingExtractor;
 import androidx.media3.extractor.ts.Ac3Extractor;
 import androidx.media3.extractor.ts.Ac4Extractor;
 import androidx.media3.extractor.ts.AdtsExtractor;
@@ -94,6 +95,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
  *   <li>WEBP ({@link WebpExtractor})
  *   <li>BMP ({@link BmpExtractor})
  *   <li>HEIF ({@link HeifExtractor})
+ *   <li>AVIF ({@link AvifExtractor})
  *   <li>MIDI, if available, the MIDI extension's {@code androidx.media3.decoder.midi.MidiExtractor}
  *       is used.
  * </ul>
@@ -128,7 +130,8 @@ public final class DefaultExtractorsFactory implements ExtractorsFactory {
         FileTypes.PNG,
         FileTypes.WEBP,
         FileTypes.BMP,
-        FileTypes.HEIF
+        FileTypes.HEIF,
+        FileTypes.AVIF
       };
 
   private static final ExtensionLoader FLAC_EXTENSION_LOADER =
@@ -152,12 +155,14 @@ public final class DefaultExtractorsFactory implements ExtractorsFactory {
   private int tsTimestampSearchBytes;
   private boolean textTrackTranscodingEnabled;
   private SubtitleParser.Factory subtitleParserFactory;
+  private @C.VideoCodecFlags int codecsToParseWithinGopSampleDependencies;
   private @JpegExtractor.Flags int jpegFlags;
 
   public DefaultExtractorsFactory() {
     tsMode = TsExtractor.MODE_SINGLE_PMT;
     tsTimestampSearchBytes = TsExtractor.DEFAULT_TIMESTAMP_SEARCH_BYTES;
     subtitleParserFactory = new DefaultSubtitleParserFactory();
+    textTrackTranscodingEnabled = true;
   }
 
   /**
@@ -358,7 +363,8 @@ public final class DefaultExtractorsFactory implements ExtractorsFactory {
   }
 
   /**
-   * @deprecated Use {@link #experimentalSetTextTrackTranscodingEnabled(boolean)} instead.
+   * @deprecated This method (and all support for 'legacy' subtitle decoding during rendering) will
+   *     be removed in a future release.
    */
   @Deprecated
   @CanIgnoreReturnValue
@@ -367,6 +373,7 @@ public final class DefaultExtractorsFactory implements ExtractorsFactory {
     return experimentalSetTextTrackTranscodingEnabled(textTrackTranscodingEnabled);
   }
 
+  @Deprecated
   @Override
   public synchronized DefaultExtractorsFactory experimentalSetTextTrackTranscodingEnabled(
       boolean textTrackTranscodingEnabled) {
@@ -379,6 +386,15 @@ public final class DefaultExtractorsFactory implements ExtractorsFactory {
   public synchronized DefaultExtractorsFactory setSubtitleParserFactory(
       SubtitleParser.Factory subtitleParserFactory) {
     this.subtitleParserFactory = subtitleParserFactory;
+    return this;
+  }
+
+  @CanIgnoreReturnValue
+  @Override
+  public synchronized DefaultExtractorsFactory
+      experimentalSetCodecsToParseWithinGopSampleDependencies(
+          @C.VideoCodecFlags int codecsToParseWithinGopSampleDependencies) {
+    this.codecsToParseWithinGopSampleDependencies = codecsToParseWithinGopSampleDependencies;
     return this;
   }
 
@@ -424,20 +440,7 @@ public final class DefaultExtractorsFactory implements ExtractorsFactory {
         addExtractorsForFileType(fileType, extractors);
       }
     }
-    Extractor[] result = new Extractor[extractors.size()];
-    for (int i = 0; i < extractors.size(); i++) {
-      Extractor extractor = extractors.get(i);
-      result[i] =
-          textTrackTranscodingEnabled
-                  && !(extractor.getUnderlyingImplementation() instanceof FragmentedMp4Extractor)
-                  && !(extractor.getUnderlyingImplementation() instanceof Mp4Extractor)
-                  && !(extractor.getUnderlyingImplementation() instanceof TsExtractor)
-                  && !(extractor.getUnderlyingImplementation() instanceof AviExtractor)
-                  && !(extractor.getUnderlyingImplementation() instanceof MatroskaExtractor)
-              ? new SubtitleTranscodingExtractor(extractor, subtitleParserFactory)
-              : extractor;
-    }
-    return result;
+    return extractors.toArray(new Extractor[extractors.size()]);
   }
 
   private void addExtractorsForFileType(@FileTypes.Type int fileType, List<Extractor> extractors) {
@@ -506,6 +509,8 @@ public final class DefaultExtractorsFactory implements ExtractorsFactory {
             new FragmentedMp4Extractor(
                 subtitleParserFactory,
                 fragmentedMp4Flags
+                    | FragmentedMp4Extractor.codecsToParseWithinGopSampleDependenciesAsFlags(
+                        codecsToParseWithinGopSampleDependencies)
                     | (textTrackTranscodingEnabled
                         ? 0
                         : FragmentedMp4Extractor.FLAG_EMIT_RAW_SUBTITLE_DATA)));
@@ -513,6 +518,8 @@ public final class DefaultExtractorsFactory implements ExtractorsFactory {
             new Mp4Extractor(
                 subtitleParserFactory,
                 mp4Flags
+                    | Mp4Extractor.codecsToParseWithinGopSampleDependenciesAsFlags(
+                        codecsToParseWithinGopSampleDependencies)
                     | (textTrackTranscodingEnabled
                         ? 0
                         : Mp4Extractor.FLAG_EMIT_RAW_SUBTITLE_DATA)));
@@ -569,6 +576,9 @@ public final class DefaultExtractorsFactory implements ExtractorsFactory {
           extractors.add(new HeifExtractor());
         }
         break;
+      case FileTypes.AVIF:
+        extractors.add(new AvifExtractor());
+        break;
       case FileTypes.WEBVTT:
       case FileTypes.UNKNOWN:
       default:
@@ -578,9 +588,11 @@ public final class DefaultExtractorsFactory implements ExtractorsFactory {
 
   private static Constructor<? extends Extractor> getMidiExtractorConstructor()
       throws ClassNotFoundException, NoSuchMethodException {
+    // LINT.IfChange
     return Class.forName("androidx.media3.decoder.midi.MidiExtractor")
         .asSubclass(Extractor.class)
         .getConstructor();
+    // LINT.ThenChange(../../../../../../proguard-rules.txt)
   }
 
   @Nullable
@@ -589,6 +601,7 @@ public final class DefaultExtractorsFactory implements ExtractorsFactory {
           NoSuchMethodException,
           InvocationTargetException,
           IllegalAccessException {
+    // LINT.IfChange
     @SuppressWarnings("nullness:argument")
     boolean isFlacNativeLibraryAvailable =
         Boolean.TRUE.equals(
@@ -601,6 +614,7 @@ public final class DefaultExtractorsFactory implements ExtractorsFactory {
           .getConstructor(int.class);
     }
     return null;
+    // LINT.ThenChange(../../../../../../proguard-rules.txt)
   }
 
   private static final class ExtensionLoader {

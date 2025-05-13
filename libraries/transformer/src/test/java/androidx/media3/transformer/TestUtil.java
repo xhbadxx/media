@@ -15,7 +15,6 @@
  */
 package androidx.media3.transformer;
 
-import android.content.Context;
 import android.media.MediaFormat;
 import androidx.media3.common.MimeTypes;
 import androidx.media3.common.audio.AudioProcessor;
@@ -24,11 +23,10 @@ import androidx.media3.common.audio.ChannelMixingMatrix;
 import androidx.media3.common.audio.SonicAudioProcessor;
 import androidx.media3.common.util.UnstableApi;
 import androidx.media3.common.util.Util;
-import androidx.media3.test.utils.FakeClock;
-import androidx.test.core.app.ApplicationProvider;
 import com.google.common.collect.ImmutableList;
 import com.google.common.primitives.Ints;
 import java.util.List;
+import java.util.StringJoiner;
 import org.robolectric.shadows.MediaCodecInfoBuilder;
 import org.robolectric.shadows.ShadowMediaCodec;
 import org.robolectric.shadows.ShadowMediaCodecList;
@@ -52,7 +50,8 @@ public final class TestUtil {
   public static final String FILE_AUDIO_AMR_WB = "amr/sample_wb.amr";
   public static final String FILE_AUDIO_AMR_NB = "amr/sample_nb.amr";
   public static final String FILE_AUDIO_AC3_UNSUPPORTED_BY_MUXER = "mp4/sample_ac3.mp4";
-  public static final String FILE_UNKNOWN_DURATION = "mp4/sample_fragmented.mp4";
+  public static final String FILE_UNKNOWN_DURATION =
+      "mp4/sample_with_increasing_timestamps_320w_240h_fragmented.mp4";
   public static final String FILE_AUDIO_ELST_SKIP_500MS = "mp4/long_edit_list_audioonly.mp4";
   public static final String FILE_VIDEO_ELST_TRIM_IDR_DURATION =
       "mp4/iibbibb_editlist_videoonly.mp4";
@@ -62,24 +61,26 @@ public final class TestUtil {
 
   private TestUtil() {}
 
-  public static Transformer.Builder createTransformerBuilder(
-      Muxer.Factory muxerFactory, boolean enableFallback) {
-    Context context = ApplicationProvider.getApplicationContext();
-    return new Transformer.Builder(context)
-        .setClock(new FakeClock(/* isAutoAdvancing= */ true))
-        .setMuxerFactory(muxerFactory)
-        .setEncoderFactory(
-            new DefaultEncoderFactory.Builder(context).setEnableFallback(enableFallback).build());
-  }
-
   public static Effects createAudioEffects(AudioProcessor... audioProcessors) {
     return new Effects(
         ImmutableList.copyOf(audioProcessors), /* videoEffects= */ ImmutableList.of());
   }
 
+  public static SonicAudioProcessor createSampleRateChangingAudioProcessor(int sampleRate) {
+    SonicAudioProcessor sonicAudioProcessor = new SonicAudioProcessor();
+    sonicAudioProcessor.setOutputSampleRateHz(sampleRate);
+    return sonicAudioProcessor;
+  }
+
   public static SonicAudioProcessor createPitchChangingAudioProcessor(float pitch) {
     SonicAudioProcessor sonicAudioProcessor = new SonicAudioProcessor();
     sonicAudioProcessor.setPitch(pitch);
+    return sonicAudioProcessor;
+  }
+
+  public static SonicAudioProcessor createSpeedChangingAudioProcessor(float speed) {
+    SonicAudioProcessor sonicAudioProcessor = new SonicAudioProcessor();
+    sonicAudioProcessor.setSpeed(speed);
     return sonicAudioProcessor;
   }
 
@@ -94,6 +95,16 @@ public final class TestUtil {
     return audioProcessor;
   }
 
+  public static ChannelMixingAudioProcessor createChannelCountChangingAudioProcessor(
+      int outputChannelCount) {
+    ChannelMixingAudioProcessor audioProcessor = new ChannelMixingAudioProcessor();
+    for (int inputChannelCount = 1; inputChannelCount <= 2; inputChannelCount++) {
+      audioProcessor.putChannelMixingMatrix(
+          ChannelMixingMatrix.create(inputChannelCount, outputChannelCount));
+    }
+    return audioProcessor;
+  }
+
   public static String getDumpFileName(String originalFileName, String... modifications) {
     String fileName = DUMP_FILE_OUTPUT_DIRECTORY + '/' + originalFileName + '/';
     if (modifications.length == 0) {
@@ -102,6 +113,35 @@ public final class TestUtil {
       fileName += String.join("_", modifications);
     }
     return fileName + '.' + DUMP_FILE_EXTENSION;
+  }
+
+  /**
+   * Returns the file path of the sequence export dump file, based on the item summaries provided.
+   *
+   * <p>The file path is built such that each item in the sequence is a subdirectory. For example, a
+   * sequence with 3 items (audio1.wav, audio2.wav_lowPitch, audio3.wav) has the dump file path:
+   * {@code transformerdumps/sequence/audio1.wav/audio2.wav_lowPitch/audio3.wav.dump}.
+   */
+  public static String getSequenceDumpFilePath(List<String> sequenceItemSummaries) {
+    StringJoiner stringJoiner =
+        new StringJoiner(
+            /* delimiter= */ "/",
+            /* prefix= */ DUMP_FILE_OUTPUT_DIRECTORY + "/sequence/",
+            /* suffix= */ "." + DUMP_FILE_EXTENSION);
+    for (String item : sequenceItemSummaries) {
+      stringJoiner.add(item);
+    }
+
+    return stringJoiner.toString();
+  }
+
+  /** Returns the file path of the composition export dump file, based on the summary provided. */
+  public static String getCompositionDumpFilePath(String compositionSummary) {
+    return DUMP_FILE_OUTPUT_DIRECTORY
+        + "/composition/"
+        + compositionSummary
+        + "."
+        + DUMP_FILE_EXTENSION;
   }
 
   /**

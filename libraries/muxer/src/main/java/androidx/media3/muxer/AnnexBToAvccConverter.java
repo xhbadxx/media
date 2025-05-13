@@ -15,8 +15,6 @@
  */
 package androidx.media3.muxer;
 
-import static androidx.media3.common.util.Assertions.checkArgument;
-
 import androidx.media3.common.util.UnstableApi;
 import com.google.common.collect.ImmutableList;
 import java.nio.ByteBuffer;
@@ -30,35 +28,60 @@ import java.nio.ByteBuffer;
 public interface AnnexBToAvccConverter {
   /** Default implementation for {@link AnnexBToAvccConverter}. */
   AnnexBToAvccConverter DEFAULT =
-      (ByteBuffer inputBuffer) -> {
-        if (!inputBuffer.hasRemaining()) {
-          return;
+      new AnnexBToAvccConverter() {
+        @Override
+        public ByteBuffer process(ByteBuffer inputBuffer) {
+          return process(inputBuffer, ByteBufferAllocator.DEFAULT);
         }
 
-        checkArgument(
-            inputBuffer.position() == 0, "The input buffer should have position set to 0.");
+        @Override
+        public ByteBuffer process(ByteBuffer inputBuffer, ByteBufferAllocator byteBufferAllocator) {
+          if (!inputBuffer.hasRemaining()) {
+            return inputBuffer;
+          }
 
-        ImmutableList<ByteBuffer> nalUnitList = AnnexBUtils.findNalUnits(inputBuffer);
+          ImmutableList<ByteBuffer> nalUnitList = AnnexBUtils.findNalUnits(inputBuffer);
 
-        for (int i = 0; i < nalUnitList.size(); i++) {
-          int currentNalUnitLength = nalUnitList.get(i).remaining();
+          int totalBytesNeeded = 0;
 
-          // Replace the start code with the NAL unit length.
-          inputBuffer.putInt(currentNalUnitLength);
+          for (int i = 0; i < nalUnitList.size(); i++) {
+            // 4 bytes to store NAL unit length.
+            totalBytesNeeded += 4 + nalUnitList.get(i).remaining();
+          }
 
-          // Shift the input buffer's position to next start code.
-          int newPosition = inputBuffer.position() + currentNalUnitLength;
-          inputBuffer.position(newPosition);
+          ByteBuffer outputBuffer = byteBufferAllocator.allocate(totalBytesNeeded);
+
+          for (int i = 0; i < nalUnitList.size(); i++) {
+            ByteBuffer currentNalUnit = nalUnitList.get(i);
+            int currentNalUnitLength = currentNalUnit.remaining();
+
+            // Rewrite NAL units with NAL unit length in place of start code.
+            outputBuffer.putInt(currentNalUnitLength);
+            outputBuffer.put(currentNalUnit);
+          }
+          outputBuffer.rewind();
+          return outputBuffer;
         }
-        inputBuffer.rewind();
       };
 
   /**
-   * Processes a buffer in-place.
+   * Returns the processed {@link ByteBuffer}.
    *
    * <p>Expects a {@link ByteBuffer} input with a zero offset.
    *
    * @param inputBuffer The buffer to be converted.
    */
-  void process(ByteBuffer inputBuffer);
+  ByteBuffer process(ByteBuffer inputBuffer);
+
+  /**
+   * Returns the processed {@link ByteBuffer}.
+   *
+   * <p>Expects a {@link ByteBuffer} input with a zero offset.
+   *
+   * @param inputBuffer The buffer to be converted.
+   * @param allocator An allocator for {@link ByteBuffer} instances that enables memory reuse.
+   */
+  default ByteBuffer process(ByteBuffer inputBuffer, ByteBufferAllocator allocator) {
+    return process(inputBuffer);
+  }
 }

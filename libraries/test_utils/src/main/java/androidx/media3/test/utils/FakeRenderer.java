@@ -61,7 +61,9 @@ public class FakeRenderer extends BaseRenderer {
   private boolean hasPendingBuffer;
   private List<Format> formatsRead;
 
+  public boolean isInitialized;
   public boolean isEnded;
+  public boolean isReleased;
   public int positionResetCount;
   public int sampleBufferReadCount;
   public int enabledCount;
@@ -81,6 +83,10 @@ public class FakeRenderer extends BaseRenderer {
 
   @Override
   protected void onPositionReset(long positionUs, boolean joining) throws ExoPlaybackException {
+    if (playbackPositionUs == positionUs && lastSamplePositionUs == Long.MIN_VALUE && !isEnded) {
+      // Nothing change, ignore reset operation.
+      return;
+    }
     playbackPositionUs = positionUs;
     lastSamplePositionUs = Long.MIN_VALUE;
     hasPendingBuffer = false;
@@ -195,5 +201,15 @@ public class FakeRenderer extends BaseRenderer {
    */
   protected boolean shouldProcessBuffer(long bufferTimeUs, long playbackPositionUs) {
     return bufferTimeUs < playbackPositionUs + SOURCE_READAHEAD_US;
+  }
+
+  @Override
+  protected void onInit() {
+    isInitialized = true;
+  }
+
+  @Override
+  protected void onRelease() {
+    isReleased = true;
   }
 }

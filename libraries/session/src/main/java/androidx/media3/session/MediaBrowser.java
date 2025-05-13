@@ -20,13 +20,12 @@ import static androidx.media3.common.util.Assertions.checkNotEmpty;
 import static androidx.media3.common.util.Assertions.checkNotNull;
 import static androidx.media3.common.util.Assertions.checkState;
 import static androidx.media3.common.util.Util.postOrRun;
-import static androidx.media3.session.LibraryResult.RESULT_ERROR_SESSION_DISCONNECTED;
+import static androidx.media3.session.SessionError.ERROR_SESSION_DISCONNECTED;
 
 import android.content.Context;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
-import android.support.v4.media.session.MediaSessionCompat;
 import androidx.annotation.IntRange;
 import androidx.annotation.Nullable;
 import androidx.media3.common.MediaItem;
@@ -61,6 +60,8 @@ public final class MediaBrowser extends MediaController {
     private Listener listener;
     private Looper applicationLooper;
     private @MonotonicNonNull BitmapLoader bitmapLoader;
+    private int maxCommandsForMediaItems;
+    private long platformSessionCallbackAggregationTimeoutMs;
 
     /**
      * Creates a builder for {@link MediaBrowser}.
@@ -78,6 +79,8 @@ public final class MediaBrowser extends MediaController {
       connectionHints = Bundle.EMPTY;
       listener = new Listener() {};
       applicationLooper = Util.getCurrentOrMainLooper();
+      platformSessionCallbackAggregationTimeoutMs =
+          DEFAULT_PLATFORM_CALLBACK_AGGREGATION_TIMEOUT_MS;
     }
 
     /**
@@ -87,7 +90,7 @@ public final class MediaBrowser extends MediaController {
      * of this bundle may affect the connection result.
      *
      * <p>The hints are only used when connecting to the {@link MediaSession}. They will be ignored
-     * when connecting to {@link MediaSessionCompat}.
+     * when connecting to {@code android.support.v4.media.session.MediaSessionCompat}.
      *
      * @param connectionHints A bundle containing the connection hints.
      * @return The builder to allow chaining.
@@ -140,7 +143,40 @@ public final class MediaBrowser extends MediaController {
       return this;
     }
 
-    // LINT.IfChange(build_async)
+    /**
+     * Sets the max number of commands the controller supports per media item.
+     *
+     * <p>Must be greater or equal to 0. The default is 0.
+     *
+     * @param maxCommandsForMediaItems The max number of commands per media item.
+     * @return The builder to allow chaining.
+     */
+    @UnstableApi
+    @CanIgnoreReturnValue
+    public Builder setMaxCommandsForMediaItems(int maxCommandsForMediaItems) {
+      checkArgument(maxCommandsForMediaItems >= 0);
+      this.maxCommandsForMediaItems = maxCommandsForMediaItems;
+      return this;
+    }
+
+    /**
+     * Sets the timeout after which updates from the platform session callbacks are applied to the
+     * browser, in milliseconds.
+     *
+     * <p>The default is 100ms.
+     *
+     * @param platformSessionCallbackAggregationTimeoutMs The timeout, in milliseconds.
+     * @return The builder to allow chaining.
+     */
+    @UnstableApi
+    @CanIgnoreReturnValue
+    public Builder experimentalSetPlatformSessionCallbackAggregationTimeoutMs(
+        long platformSessionCallbackAggregationTimeoutMs) {
+      this.platformSessionCallbackAggregationTimeoutMs =
+          platformSessionCallbackAggregationTimeoutMs;
+      return this;
+    }
+
     /**
      * Builds a {@link MediaBrowser} asynchronously.
      *
@@ -174,7 +210,15 @@ public final class MediaBrowser extends MediaController {
       }
       MediaBrowser browser =
           new MediaBrowser(
-              context, token, connectionHints, listener, applicationLooper, holder, bitmapLoader);
+              context,
+              token,
+              connectionHints,
+              listener,
+              applicationLooper,
+              holder,
+              bitmapLoader,
+              maxCommandsForMediaItems,
+              platformSessionCallbackAggregationTimeoutMs);
       postOrRun(new Handler(applicationLooper), () -> holder.setController(browser));
       return holder;
     }
@@ -243,7 +287,9 @@ public final class MediaBrowser extends MediaController {
       Listener listener,
       Looper applicationLooper,
       ConnectionCallback connectionCallback,
-      @Nullable BitmapLoader bitmapLoader) {
+      @Nullable BitmapLoader bitmapLoader,
+      int maxCommandsForMediaItems,
+      long platformSessionCallbackAggregationTimeoutMs) {
     super(
         context,
         token,
@@ -251,7 +297,9 @@ public final class MediaBrowser extends MediaController {
         listener,
         applicationLooper,
         connectionCallback,
-        bitmapLoader);
+        bitmapLoader,
+        maxCommandsForMediaItems,
+        platformSessionCallbackAggregationTimeoutMs);
   }
 
   @Override
@@ -262,12 +310,19 @@ public final class MediaBrowser extends MediaController {
       SessionToken token,
       Bundle connectionHints,
       Looper applicationLooper,
-      @Nullable BitmapLoader bitmapLoader) {
+      @Nullable BitmapLoader bitmapLoader,
+      long platformSessionCallbackAggregationTimeoutMs) {
     MediaBrowserImpl impl;
     if (token.isLegacySession()) {
       impl =
           new MediaBrowserImplLegacy(
-              context, this, token, applicationLooper, checkNotNull(bitmapLoader));
+              context,
+              this,
+              token,
+              connectionHints,
+              applicationLooper,
+              checkNotNull(bitmapLoader),
+              platformSessionCallbackAggregationTimeoutMs);
     } else {
       impl = new MediaBrowserImplBase(context, this, token, connectionHints, applicationLooper);
     }
@@ -423,7 +478,7 @@ public final class MediaBrowser extends MediaController {
   }
 
   private static <V> ListenableFuture<LibraryResult<V>> createDisconnectedFuture() {
-    return Futures.immediateFuture(LibraryResult.ofError(RESULT_ERROR_SESSION_DISCONNECTED));
+    return Futures.immediateFuture(LibraryResult.ofError(ERROR_SESSION_DISCONNECTED));
   }
 
   private void verifyApplicationThread() {

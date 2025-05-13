@@ -15,6 +15,7 @@
  */
 package androidx.media3.exoplayer.hls;
 
+import static androidx.media3.exoplayer.hls.HlsChunkSource.CHUNK_PUBLICATION_STATE_PRELOAD;
 import static androidx.media3.exoplayer.hls.HlsChunkSource.CHUNK_PUBLICATION_STATE_PUBLISHED;
 import static androidx.media3.exoplayer.hls.HlsChunkSource.CHUNK_PUBLICATION_STATE_REMOVED;
 import static androidx.media3.exoplayer.trackselection.TrackSelectionUtil.createFallbackOptions;
@@ -63,7 +64,7 @@ import androidx.media3.exoplayer.upstream.LoadErrorHandlingPolicy;
 import androidx.media3.exoplayer.upstream.LoadErrorHandlingPolicy.LoadErrorInfo;
 import androidx.media3.exoplayer.upstream.Loader;
 import androidx.media3.exoplayer.upstream.Loader.LoadErrorAction;
-import androidx.media3.extractor.DummyTrackOutput;
+import androidx.media3.extractor.DiscardingTrackOutput;
 import androidx.media3.extractor.Extractor;
 import androidx.media3.extractor.ExtractorOutput;
 import androidx.media3.extractor.SeekMap;
@@ -82,6 +83,7 @@ import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import org.checkerframework.checker.nullness.qual.EnsuresNonNull;
 import org.checkerframework.checker.nullness.qual.MonotonicNonNull;
@@ -111,7 +113,11 @@ import org.checkerframework.checker.nullness.qual.RequiresNonNull;
 
     /**
      * Called to schedule a {@link #continueLoading(LoadingInfo)} call when the playlist referred by
-     * the given url changes.
+     * the given url changes, or it requires a refresh to check whether the hinted resource has been
+     * published or removed.
+     *
+     * <p>Note: This method will be called on a later handler loop than the one on which {@link
+     * #onPlaylistUpdated()} is invoked.
      */
     void onPlaylistRefreshRequired(Uri playlistUrl);
   }
@@ -423,7 +429,7 @@ import org.checkerframework.checker.nullness.qual.RequiresNonNull;
       }
     } else {
       if (!mediaChunks.isEmpty()
-          && !Util.areEqual(primaryTrackSelection, oldPrimaryTrackSelection)) {
+          && !Objects.equals(primaryTrackSelection, oldPrimaryTrackSelection)) {
         // The primary track selection has changed and we have buffered media. The buffered media
         // may need to be discarded.
         boolean primarySampleQueueDirty = false;
@@ -543,6 +549,8 @@ import org.checkerframework.checker.nullness.qual.RequiresNonNull;
     int chunkState = chunkSource.getChunkPublicationState(lastMediaChunk);
     if (chunkState == CHUNK_PUBLICATION_STATE_PUBLISHED) {
       lastMediaChunk.publish();
+    } else if (chunkState == CHUNK_PUBLICATION_STATE_PRELOAD) {
+      handler.post(() -> callback.onPlaylistRefreshRequired(lastMediaChunk.playlistUrl));
     } else if (chunkState == CHUNK_PUBLICATION_STATE_REMOVED
         && !loadingFinished
         && loader.isLoading()) {
@@ -558,6 +566,7 @@ import org.checkerframework.checker.nullness.qual.RequiresNonNull;
         sampleQueue.preRelease();
       }
     }
+    chunkSource.reset();
     loader.release(this);
     handler.removeCallbacksAndMessages(null);
     released = true;
@@ -800,18 +809,8 @@ import org.checkerframework.checker.nullness.qual.RequiresNonNull;
       initMediaChunkLoad((HlsMediaChunk) loadable);
     }
     loadingChunk = loadable;
-    long elapsedRealtimeMs =
-        loader.startLoading(
-            loadable, this, loadErrorHandlingPolicy.getMinimumLoadableRetryCount(loadable.type));
-    mediaSourceEventDispatcher.loadStarted(
-        new LoadEventInfo(loadable.loadTaskId, loadable.dataSpec, elapsedRealtimeMs),
-        loadable.type,
-        trackType,
-        loadable.trackFormat,
-        loadable.trackSelectionReason,
-        loadable.trackSelectionData,
-        loadable.startTimeUs,
-        loadable.endTimeUs);
+    loader.startLoading(
+        loadable, this, loadErrorHandlingPolicy.getMinimumLoadableRetryCount(loadable.type));
     return true;
   }
 
@@ -851,6 +850,32 @@ import org.checkerframework.checker.nullness.qual.RequiresNonNull;
   }
 
   // Loader.Callback implementation.
+
+  @Override
+  public void onLoadStarted(
+      Chunk loadable, long elapsedRealtimeMs, long loadDurationMs, int retryCount) {
+    LoadEventInfo loadEventInfo =
+        retryCount == 0
+            ? new LoadEventInfo(loadable.loadTaskId, loadable.dataSpec, elapsedRealtimeMs)
+            : new LoadEventInfo(
+                loadable.loadTaskId,
+                loadable.dataSpec,
+                loadable.getUri(),
+                loadable.getResponseHeaders(),
+                elapsedRealtimeMs,
+                loadDurationMs,
+                loadable.bytesLoaded());
+    mediaSourceEventDispatcher.loadStarted(
+        loadEventInfo,
+        loadable.type,
+        trackType,
+        loadable.trackFormat,
+        loadable.trackSelectionReason,
+        loadable.trackSelectionData,
+        loadable.startTimeUs,
+        loadable.endTimeUs,
+        retryCount);
+  }
 
   @Override
   public void onLoadCompleted(Chunk loadable, long elapsedRealtimeMs, long loadDurationMs) {
@@ -1085,7 +1110,7 @@ import org.checkerframework.checker.nullness.qual.RequiresNonNull;
 
     if (trackOutput == null) {
       if (tracksEnded) {
-        return createFakeTrackOutput(id, type);
+        return createDiscardingTrackOutput(id, type);
       } else {
         // The relevant SampleQueue hasn't been constructed yet - so construct it.
         trackOutput = createSampleQueue(id, type);
@@ -1106,7 +1131,7 @@ import org.checkerframework.checker.nullness.qual.RequiresNonNull;
    * has been created yet.
    *
    * <p>If a {@link SampleQueue} for {@code type} has been created and is mapped, but it has a
-   * different ID, then return a {@link DummyTrackOutput} that does nothing.
+   * different ID, then return a {@link DiscardingTrackOutput} that does nothing.
    *
    * <p>If a {@link SampleQueue} for {@code type} has been created but is not mapped, then map it to
    * this {@code id} and return it. This situation can happen after a call to {@link
@@ -1129,7 +1154,7 @@ import org.checkerframework.checker.nullness.qual.RequiresNonNull;
     }
     return sampleQueueTrackIds[sampleQueueIndex] == id
         ? sampleQueues[sampleQueueIndex]
-        : createFakeTrackOutput(id, type);
+        : createDiscardingTrackOutput(id, type);
   }
 
   private SampleQueue createSampleQueue(int id, int type) {
@@ -1228,7 +1253,7 @@ import org.checkerframework.checker.nullness.qual.RequiresNonNull;
    *     #overridingDrmInitData}.
    */
   public void setDrmInitData(@Nullable DrmInitData drmInitData) {
-    if (!Util.areEqual(this.drmInitData, drmInitData)) {
+    if (!Objects.equals(this.drmInitData, drmInitData)) {
       this.drmInitData = drmInitData;
       for (int i = 0; i < sampleQueues.length; i++) {
         if (sampleQueueIsAudioVideoFlags[i]) {
@@ -1628,7 +1653,7 @@ import org.checkerframework.checker.nullness.qual.RequiresNonNull;
     int manifestFormatTrackType = MimeTypes.getTrackType(manifestFormatMimeType);
     if (manifestFormatTrackType != C.TRACK_TYPE_TEXT) {
       return manifestFormatTrackType == MimeTypes.getTrackType(sampleFormatMimeType);
-    } else if (!Util.areEqual(manifestFormatMimeType, sampleFormatMimeType)) {
+    } else if (!Objects.equals(manifestFormatMimeType, sampleFormatMimeType)) {
       return false;
     }
     if (MimeTypes.APPLICATION_CEA608.equals(manifestFormatMimeType)
@@ -1638,9 +1663,9 @@ import org.checkerframework.checker.nullness.qual.RequiresNonNull;
     return true;
   }
 
-  private static DummyTrackOutput createFakeTrackOutput(int id, int type) {
+  private static DiscardingTrackOutput createDiscardingTrackOutput(int id, int type) {
     Log.w(TAG, "Unmapped track with id " + id + " of type " + type);
-    return new DummyTrackOutput();
+    return new DiscardingTrackOutput();
   }
 
   /**
@@ -1858,7 +1883,7 @@ import org.checkerframework.checker.nullness.qual.RequiresNonNull;
       Assertions.checkNotNull(format);
       ParsableByteArray sample = getSampleAndTrimBuffer(size, offset);
       ParsableByteArray sampleForDelegate;
-      if (Util.areEqual(format.sampleMimeType, delegateFormat.sampleMimeType)) {
+      if (Objects.equals(format.sampleMimeType, delegateFormat.sampleMimeType)) {
         // Incoming format matches delegate track's format, so pass straight through.
         sampleForDelegate = sample;
       } else if (MimeTypes.APPLICATION_EMSG.equals(format.sampleMimeType)) {
@@ -1882,13 +1907,13 @@ import org.checkerframework.checker.nullness.qual.RequiresNonNull;
       int sampleSize = sampleForDelegate.bytesLeft();
 
       delegate.sampleData(sampleForDelegate, sampleSize);
-      delegate.sampleMetadata(timeUs, flags, sampleSize, offset, cryptoData);
+      delegate.sampleMetadata(timeUs, flags, sampleSize, /* offset= */ 0, cryptoData);
     }
 
     private boolean emsgContainsExpectedWrappedFormat(EventMessage emsg) {
       @Nullable Format wrappedMetadataFormat = emsg.getWrappedMetadataFormat();
       return wrappedMetadataFormat != null
-          && Util.areEqual(delegateFormat.sampleMimeType, wrappedMetadataFormat.sampleMimeType);
+          && Objects.equals(delegateFormat.sampleMimeType, wrappedMetadataFormat.sampleMimeType);
     }
 
     private void ensureBufferCapacity(int requiredLength) {

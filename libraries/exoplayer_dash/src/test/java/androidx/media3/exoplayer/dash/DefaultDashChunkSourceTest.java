@@ -54,7 +54,6 @@ import androidx.test.ext.junit.runners.AndroidJUnit4;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableListMultimap;
 import com.google.common.collect.ImmutableMap;
-import com.google.common.collect.Lists;
 import java.io.IOException;
 import java.time.Duration;
 import java.util.ArrayList;
@@ -88,7 +87,7 @@ public class DefaultDashChunkSourceTest {
                     SAMPLE_MPD_LIVE_WITH_OFFSET_INSIDE_WINDOW));
     DefaultDashChunkSource chunkSource =
         new DefaultDashChunkSource(
-            BundledChunkExtractor.FACTORY,
+            new BundledChunkExtractor.Factory(),
             new LoaderErrorThrower.Placeholder(),
             manifest,
             new BaseUrlExclusionList(),
@@ -140,7 +139,7 @@ public class DefaultDashChunkSourceTest {
                     ApplicationProvider.getApplicationContext(), SAMPLE_MPD_VOD));
     DefaultDashChunkSource chunkSource =
         new DefaultDashChunkSource(
-            BundledChunkExtractor.FACTORY,
+            new BundledChunkExtractor.Factory(),
             new LoaderErrorThrower.Placeholder(),
             manifest,
             new BaseUrlExclusionList(),
@@ -201,7 +200,7 @@ public class DefaultDashChunkSourceTest {
               loadErrorHandlingPolicy);
     }
 
-    assertThat(Lists.transform(chunks, (chunk) -> chunk.dataSpec.uri.toString()))
+    assertThat(chunks.stream().map(chunk -> chunk.dataSpec.uri.toString()))
         .containsExactly(
             "http://video.com/baseUrl/a/video/video_0_1300000.m4s",
             "http://video.com/baseUrl/b/video/video_0_1300000.m4s",
@@ -258,7 +257,7 @@ public class DefaultDashChunkSourceTest {
                   output.chunk.dataSpec, /* httpResponseCode= */ 404, /* errorCount= */ 1),
               loadErrorHandlingPolicy);
     }
-    assertThat(Lists.transform(chunks, (chunk) -> chunk.dataSpec.uri.toString()))
+    assertThat(chunks.stream().map(chunk -> chunk.dataSpec.uri.toString()))
         .containsExactly(
             "http://video.com/baseUrl/a/video/video_0_700000.m4s",
             "http://video.com/baseUrl/a/video/video_0_452000.m4s",
@@ -552,7 +551,7 @@ public class DefaultDashChunkSourceTest {
                     "media/mpd/sample_mpd_live_known_duration_not_ended"));
     DefaultDashChunkSource chunkSource =
         new DefaultDashChunkSource(
-            BundledChunkExtractor.FACTORY,
+            new BundledChunkExtractor.Factory(),
             new LoaderErrorThrower.Placeholder(),
             manifest,
             new BaseUrlExclusionList(),
@@ -601,7 +600,7 @@ public class DefaultDashChunkSourceTest {
                     "media/mpd/sample_mpd_live_known_duration_ended"));
     DefaultDashChunkSource chunkSource =
         new DefaultDashChunkSource(
-            BundledChunkExtractor.FACTORY,
+            new BundledChunkExtractor.Factory(),
             new LoaderErrorThrower.Placeholder(),
             manifest,
             new BaseUrlExclusionList(),
@@ -666,7 +665,7 @@ public class DefaultDashChunkSourceTest {
             selectedTracks,
             new DefaultBandwidthMeter.Builder(ApplicationProvider.getApplicationContext()).build());
     return new DefaultDashChunkSource(
-        BundledChunkExtractor.FACTORY,
+        new BundledChunkExtractor.Factory(),
         new LoaderErrorThrower.Placeholder(),
         manifest,
         new BaseUrlExclusionList(new Random(/* seed= */ 1234)),

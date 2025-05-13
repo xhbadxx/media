@@ -31,7 +31,7 @@ import org.checkerframework.dataflow.qual.Pure;
  * #SDR_BT709_LIMITED} instance.
  */
 @UnstableApi
-public final class ColorInfo implements Bundleable {
+public final class ColorInfo {
 
   /**
    * Builds {@link ColorInfo} instances.
@@ -203,7 +203,7 @@ public final class ColorInfo implements Bundleable {
 
   /**
    * Returns the {@link C.ColorSpace} corresponding to the given ISO color primary code, as per
-   * table A.7.21.1 in Rec. ITU-T T.832 (03/2009), or {@link Format#NO_VALUE} if no mapping can be
+   * table A.7.21.1 in Rec. ITU-T T.832 (06/2019), or {@link Format#NO_VALUE} if no mapping can be
    * made.
    */
   @Pure
@@ -219,13 +219,52 @@ public final class ColorInfo implements Bundleable {
       case 9:
         return C.COLOR_SPACE_BT2020;
       default:
+        // Remaining color primaries are either reserved or unspecified.
         return Format.NO_VALUE;
     }
   }
 
   /**
+   * Returns the ISO color primary code corresponding to the given {@link C.ColorSpace}, as per
+   * table A.7.21.1 in Rec. ITU-T T.832 (06/2019). made.
+   */
+  public static int colorSpaceToIsoColorPrimaries(@C.ColorSpace int colorSpace) {
+    switch (colorSpace) {
+      // Default to BT.709 SDR as per the <a
+      // href="https://www.webmproject.org/vp9/mp4/#optional-fields">recommendation</a>.
+      case Format.NO_VALUE:
+      case C.COLOR_SPACE_BT709:
+        return 1;
+      case C.COLOR_SPACE_BT601:
+        return 5;
+      case C.COLOR_SPACE_BT2020:
+        return 9;
+    }
+    return 1;
+  }
+
+  /**
+   * Returns the ISO matrix coefficients code corresponding to the given {@link C.ColorSpace}, as
+   * per table A.7.21.3 in Rec. ITU-T T.832 (06/2019).
+   */
+  public static int colorSpaceToIsoMatrixCoefficients(@C.ColorSpace int colorSpace) {
+    switch (colorSpace) {
+      // Default to BT.709 SDR as per the <a
+      // href="https://www.webmproject.org/vp9/mp4/#optional-fields">recommendation</a>.
+      case Format.NO_VALUE:
+      case C.COLOR_SPACE_BT709:
+        return 1;
+      case C.COLOR_SPACE_BT601:
+        return 6;
+      case C.COLOR_SPACE_BT2020:
+        return 9;
+    }
+    return 1;
+  }
+
+  /**
    * Returns the {@link C.ColorTransfer} corresponding to the given ISO transfer characteristics
-   * code, as per table A.7.21.2 in Rec. ITU-T T.832 (03/2009), or {@link Format#NO_VALUE} if no
+   * code, as per table A.7.21.2 in Rec. ITU-T T.832 (06/2019), or {@link Format#NO_VALUE} if no
    * mapping can be made.
    */
   @Pure
@@ -247,6 +286,31 @@ public final class ColorInfo implements Bundleable {
       default:
         return Format.NO_VALUE;
     }
+  }
+
+  /**
+   * Returns the ISO transfer characteristics code corresponding to the given {@link
+   * C.ColorTransfer}, as per table A.7.21.2 in Rec. ITU-T T.832 (06/2019).
+   */
+  public static int colorTransferToIsoTransferCharacteristics(@C.ColorTransfer int colorTransfer) {
+    switch (colorTransfer) {
+      // Default to BT.709 SDR as per the <a
+      // href="https://www.webmproject.org/vp9/mp4/#optional-fields">recommendation</a>.
+      case C.COLOR_TRANSFER_LINEAR:
+        return 8;
+      case C.COLOR_TRANSFER_SRGB:
+        return 13;
+      case Format.NO_VALUE:
+      case C.COLOR_TRANSFER_SDR:
+        return 1;
+      case C.COLOR_TRANSFER_ST2084:
+        return 16;
+      case C.COLOR_TRANSFER_HLG:
+        return 18;
+      case C.COLOR_TRANSFER_GAMMA_2_2:
+        return 4;
+    }
+    return 1;
   }
 
   /**
@@ -421,8 +485,9 @@ public final class ColorInfo implements Bundleable {
       case C.COLOR_SPACE_BT2020:
         return "BT2020";
       default:
-        return "Undefined color space";
+        return "Undefined color space " + colorSpace;
     }
+    // LINT.ThenChange(C.java:color_space)
   }
 
   private static String colorTransferToString(@C.ColorTransfer int colorTransfer) {
@@ -443,8 +508,9 @@ public final class ColorInfo implements Bundleable {
       case C.COLOR_TRANSFER_HLG:
         return "HLG";
       default:
-        return "Undefined color transfer";
+        return "Undefined color transfer " + colorTransfer;
     }
+    // LINT.ThenChange(C.java:color_transfer)
   }
 
   private static String colorRangeToString(@C.ColorRange int colorRange) {
@@ -457,11 +523,10 @@ public final class ColorInfo implements Bundleable {
       case C.COLOR_RANGE_FULL:
         return "Full range";
       default:
-        return "Undefined color range";
+        return "Undefined color range " + colorRange;
     }
+    // LINT.ThenChange(C.java:color_range)
   }
-
-  // Bundleable implementation
 
   private static final String FIELD_COLOR_SPACE = Util.intToStringMaxRadix(0);
   private static final String FIELD_COLOR_RANGE = Util.intToStringMaxRadix(1);
@@ -470,7 +535,6 @@ public final class ColorInfo implements Bundleable {
   private static final String FIELD_LUMA_BITDEPTH = Util.intToStringMaxRadix(4);
   private static final String FIELD_CHROMA_BITDEPTH = Util.intToStringMaxRadix(5);
 
-  @Override
   public Bundle toBundle() {
     Bundle bundle = new Bundle();
     bundle.putInt(FIELD_COLOR_SPACE, colorSpace);
@@ -481,13 +545,6 @@ public final class ColorInfo implements Bundleable {
     bundle.putInt(FIELD_CHROMA_BITDEPTH, chromaBitdepth);
     return bundle;
   }
-
-  /**
-   * @deprecated Use {@link #fromBundle} instead.
-   */
-  @Deprecated
-  @SuppressWarnings("deprecation") // Deprecated instance of deprecated class
-  public static final Creator<ColorInfo> CREATOR = ColorInfo::fromBundle;
 
   /** Restores a {@code ColorInfo} from a {@link Bundle}. */
   public static ColorInfo fromBundle(Bundle bundle) {

@@ -22,15 +22,15 @@ import static androidx.media3.exoplayer.drm.DefaultDrmSessionManager.MODE_PLAYBA
 import android.util.Log;
 import androidx.annotation.GuardedBy;
 import androidx.annotation.Nullable;
-import androidx.annotation.RequiresApi;
 import androidx.media3.common.MediaItem;
 import androidx.media3.common.util.UnstableApi;
-import androidx.media3.common.util.Util;
 import androidx.media3.datasource.DataSource;
 import androidx.media3.datasource.DefaultHttpDataSource;
+import androidx.media3.exoplayer.upstream.LoadErrorHandlingPolicy;
 import com.google.common.primitives.Ints;
 import com.sigma.packer.SigmaMediaDrm;
 import java.util.Map;
+import java.util.Objects;
 import org.checkerframework.checker.nullness.qual.MonotonicNonNull;
 
 /** Default implementation of {@link DrmSessionManagerProvider}. */
@@ -47,6 +47,7 @@ public final class DefaultDrmSessionManagerProvider implements DrmSessionManager
 
   @Nullable private DataSource.Factory drmHttpDataSourceFactory;
   @Nullable private String userAgent;
+  @Nullable private LoadErrorHandlingPolicy drmLoadErrorHandlingPolicy;
 
   public DefaultDrmSessionManagerProvider() {
     lock = new Object();
@@ -73,17 +74,29 @@ public final class DefaultDrmSessionManagerProvider implements DrmSessionManager
     this.userAgent = userAgent;
   }
 
+  /**
+   * Sets a load error handling policy to pass to {@link
+   * DefaultDrmSessionManager.Builder#setLoadErrorHandlingPolicy(LoadErrorHandlingPolicy)}.
+   *
+   * <p>If {@code null} is passed the setter is not called, so the default {@link
+   * LoadErrorHandlingPolicy} defined by {@link DefaultDrmSessionManager.Builder#Builder()} is used
+   * instead.
+   */
+  public void setDrmLoadErrorHandlingPolicy(LoadErrorHandlingPolicy drmLoadErrorHandlingPolicy) {
+    this.drmLoadErrorHandlingPolicy = drmLoadErrorHandlingPolicy;
+  }
+
   @Override
   public DrmSessionManager get(MediaItem mediaItem) {
     checkNotNull(mediaItem.localConfiguration);
     @Nullable
     MediaItem.DrmConfiguration drmConfiguration = mediaItem.localConfiguration.drmConfiguration;
-    if (drmConfiguration == null || Util.SDK_INT < 18) {
+    if (drmConfiguration == null) {
       return DrmSessionManager.DRM_UNSUPPORTED;
     }
 
     synchronized (lock) {
-      if (!Util.areEqual(drmConfiguration, this.drmConfiguration)) {
+      if (!Objects.equals(drmConfiguration, this.drmConfiguration)) {
         this.drmConfiguration = drmConfiguration;
         this.manager = createManager(drmConfiguration);
       }
@@ -91,7 +104,6 @@ public final class DefaultDrmSessionManagerProvider implements DrmSessionManager
     }
   }
 
-  @RequiresApi(18)
   private DrmSessionManager createManager(MediaItem.DrmConfiguration drmConfiguration) {
     DataSource.Factory dataSourceFactory =
         drmHttpDataSourceFactory != null
@@ -112,6 +124,9 @@ public final class DefaultDrmSessionManagerProvider implements DrmSessionManager
         .setPlayClearSamplesWithoutKeys(drmConfiguration.playClearContentWithoutKey)
         .setUseDrmSessionsForClearContent(
             Ints.toArray(drmConfiguration.forcedSessionTrackTypes));
+    if (drmLoadErrorHandlingPolicy != null) {
+      builder.setLoadErrorHandlingPolicy(drmLoadErrorHandlingPolicy);
+    }
     Log.d("EventLogger", "DrmConfiguration.isSigmaDrm: " + drmConfiguration.isSigmaDrm);
     if (drmConfiguration.isSigmaDrm) { // Needed update libs from Sigma
       builder.setUuidAndExoMediaDrmProvider(drmConfiguration.scheme, SigmaMediaDrm.DEFAULT_PROVIDER);

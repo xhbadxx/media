@@ -53,6 +53,7 @@ import java.lang.annotation.RetentionPolicy;
 import java.lang.annotation.Target;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Objects;
 import java.util.concurrent.TimeoutException;
 
 /** A mock implementation of {@link Player} for testing. */
@@ -310,6 +311,7 @@ public class MockPlayer implements Player {
   public int deviceVolume;
   public boolean deviceMuted;
   public boolean playWhenReady;
+  public @PlayWhenReadyChangeReason int playWhenReadyChangeReason;
   public @PlaybackSuppressionReason int playbackSuppressionReason;
   public @State int playbackState;
   public boolean isLoading;
@@ -370,7 +372,7 @@ public class MockPlayer implements Player {
     commands = new Player.Commands.Builder().addAllCommands().build();
 
     currentTracks = Tracks.EMPTY;
-    trackSelectionParameters = TrackSelectionParameters.DEFAULT_WITHOUT_CONTEXT;
+    trackSelectionParameters = TrackSelectionParameters.DEFAULT;
   }
 
   @Override
@@ -404,7 +406,9 @@ public class MockPlayer implements Player {
     checkNotNull(conditionVariables.get(METHOD_PLAY)).open();
     if (changePlayerStateWithTransportControl) {
       notifyPlayWhenReadyChanged(
-          /* playWhenReady= */ true, Player.PLAYBACK_SUPPRESSION_REASON_NONE);
+          /* playWhenReady= */ true,
+          Player.PLAY_WHEN_READY_CHANGE_REASON_USER_REQUEST,
+          Player.PLAYBACK_SUPPRESSION_REASON_NONE);
     }
   }
 
@@ -413,7 +417,9 @@ public class MockPlayer implements Player {
     checkNotNull(conditionVariables.get(METHOD_PAUSE)).open();
     if (changePlayerStateWithTransportControl) {
       notifyPlayWhenReadyChanged(
-          /* playWhenReady= */ false, Player.PLAYBACK_SUPPRESSION_REASON_NONE);
+          /* playWhenReady= */ false,
+          Player.PLAY_WHEN_READY_CHANGE_REASON_USER_REQUEST,
+          Player.PLAYBACK_SUPPRESSION_REASON_NONE);
     }
   }
 
@@ -569,7 +575,7 @@ public class MockPlayer implements Player {
   }
 
   public void notifyAvailableCommandsChanged(Commands commands) {
-    if (Util.areEqual(this.commands, commands)) {
+    if (Objects.equals(this.commands, commands)) {
       return;
     }
     this.commands = commands;
@@ -585,22 +591,26 @@ public class MockPlayer implements Player {
    * Player.Listener#onIsPlayingChanged} as appropriate.
    */
   public void notifyPlayWhenReadyChanged(
-      boolean playWhenReady, @PlaybackSuppressionReason int playbackSuppressionReason) {
-    boolean playWhenReadyChanged = (this.playWhenReady != playWhenReady);
+      boolean playWhenReady,
+      @PlayWhenReadyChangeReason int playWhenReadyChangeReason,
+      @PlaybackSuppressionReason int playbackSuppressionReason) {
+    boolean playWhenReadyChanged = this.playWhenReady != playWhenReady;
+    boolean playWhenReadyReasonChanged =
+        this.playWhenReadyChangeReason != playWhenReadyChangeReason;
     boolean playbackSuppressionReasonChanged =
-        (this.playbackSuppressionReason != playbackSuppressionReason);
-    if (!playWhenReadyChanged && !playbackSuppressionReasonChanged) {
+        this.playbackSuppressionReason != playbackSuppressionReason;
+    if (!playWhenReadyChanged && !playbackSuppressionReasonChanged && !playWhenReadyReasonChanged) {
       return;
     }
 
     boolean wasPlaying = isPlaying();
     this.playWhenReady = playWhenReady;
+    this.playWhenReadyChangeReason = playWhenReadyChangeReason;
     this.playbackSuppressionReason = playbackSuppressionReason;
     boolean isPlaying = isPlaying();
     for (Listener listener : listeners) {
-      if (playWhenReadyChanged) {
-        listener.onPlayWhenReadyChanged(
-            playWhenReady, Player.PLAY_WHEN_READY_CHANGE_REASON_USER_REQUEST);
+      if (playWhenReadyChanged || playWhenReadyReasonChanged) {
+        listener.onPlayWhenReadyChanged(playWhenReady, playWhenReadyChangeReason);
       }
       if (playbackSuppressionReasonChanged) {
         listener.onPlaybackSuppressionReasonChanged(playbackSuppressionReason);
@@ -656,7 +666,7 @@ public class MockPlayer implements Player {
   }
 
   public void notifyPlaybackParametersChanged(PlaybackParameters playbackParameters) {
-    if (Util.areEqual(this.playbackParameters, playbackParameters)) {
+    if (Objects.equals(this.playbackParameters, playbackParameters)) {
       return;
     }
     this.playbackParameters = playbackParameters;
@@ -1072,29 +1082,11 @@ public class MockPlayer implements Player {
   }
 
   /**
-   * @deprecated Use {@link #hasPreviousMediaItem()} instead.
-   */
-  @Deprecated
-  @Override
-  public boolean hasPrevious() {
-    throw new UnsupportedOperationException();
-  }
-
-  /**
    * @deprecated Use {@link #hasNextMediaItem()} instead.
    */
   @Deprecated
   @Override
   public boolean hasNext() {
-    throw new UnsupportedOperationException();
-  }
-
-  /**
-   * @deprecated Use {@link #hasPreviousMediaItem()} instead.
-   */
-  @Deprecated
-  @Override
-  public boolean hasPreviousWindow() {
     throw new UnsupportedOperationException();
   }
 
@@ -1114,15 +1106,6 @@ public class MockPlayer implements Player {
 
   @Override
   public boolean hasNextMediaItem() {
-    throw new UnsupportedOperationException();
-  }
-
-  /**
-   * @deprecated Use {@link #seekToPreviousMediaItem()} instead.
-   */
-  @Deprecated
-  @Override
-  public void previous() {
     throw new UnsupportedOperationException();
   }
 

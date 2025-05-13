@@ -48,6 +48,7 @@ import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 import java.lang.annotation.Target;
 import java.util.Arrays;
+import java.util.Objects;
 
 /**
  * Base class for {@link TrackSelector}s that first establish a mapping between {@link TrackGroup}s
@@ -310,7 +311,7 @@ public abstract class MappingTrackSelector extends TrackSelector {
         if (handledTrackCount++ == 0) {
           firstSampleMimeType = sampleMimeType;
         } else {
-          multipleMimeTypes |= !Util.areEqual(firstSampleMimeType, sampleMimeType);
+          multipleMimeTypes |= !Objects.equals(firstSampleMimeType, sampleMimeType);
         }
         adaptiveSupport =
             min(
@@ -450,7 +451,7 @@ public abstract class MappingTrackSelector extends TrackSelector {
    * @param timeline The {@link Timeline} holding the period for which tracks are to be selected.
    * @return A pair consisting of the track selections and configurations for each renderer. A null
    *     configuration indicates the renderer should be disabled, in which case the track selection
-   *     will also be null. A track selection may also be null for a non-disabled renderer if {@link
+   *     must also be null. A track selection may also be null for a non-disabled renderer if {@link
    *     RendererCapabilities#getTrackType()} is {@link C#TRACK_TYPE_NONE}.
    * @throws ExoPlaybackException If an error occurs while selecting the tracks.
    */

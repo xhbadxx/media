@@ -62,10 +62,14 @@ public class Mp4PlaybackTest {
         "sample_fragmented_sei.mp4",
         "sample_mdat_too_long.mp4",
         "sample.mp4",
+        "sample_with_metadata.mp4",
+        "sample_with_numeric_genre.mp4",
         "sample_opus_fragmented.mp4",
         "sample_opus.mp4",
         "sample_partially_fragmented.mp4",
-        "testvid_1022ms.mp4");
+        "testvid_1022ms.mp4",
+        "sample_edit_list.mp4",
+        "sample_edit_list_no_sync_frame_before_edit.mp4");
   }
 
   @Parameter public String inputFile;

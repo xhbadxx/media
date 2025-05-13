@@ -207,7 +207,7 @@ public class AsynchronousMediaCodecCallbackTest {
     MediaCodec.BufferInfo bufferInfo1 = new MediaCodec.BufferInfo();
     asynchronousMediaCodecCallback.onOutputBufferAvailable(codec, 0, bufferInfo1);
     MediaCodec.BufferInfo bufferInfo2 = new MediaCodec.BufferInfo();
-    bufferInfo2.set(1, 1, 1, 1);
+    bufferInfo2.set(1, 1, 1, MediaCodec.BUFFER_FLAG_KEY_FRAME);
     asynchronousMediaCodecCallback.onOutputBufferAvailable(codec, 1, bufferInfo2);
 
     MediaCodec.BufferInfo outBufferInfo = new MediaCodec.BufferInfo();
@@ -528,6 +528,42 @@ public class AsynchronousMediaCodecCallbackTest {
 
     // Calling shutdown() should not throw.
     asynchronousMediaCodecCallback.shutdown();
+  }
+
+  @Test
+  public void onInputBufferAvailable_withOnBufferAvailableListener_callsOnInputBufferAvailable() {
+    AtomicInteger onInputBufferAvailableCounter = new AtomicInteger();
+    MediaCodecAdapter.OnBufferAvailableListener onBufferAvailableListener =
+        new MediaCodecAdapter.OnBufferAvailableListener() {
+          @Override
+          public void onInputBufferAvailable() {
+            onInputBufferAvailableCounter.getAndIncrement();
+          }
+        };
+    asynchronousMediaCodecCallback.setOnBufferAvailableListener(onBufferAvailableListener);
+
+    // Send an input buffer to the callback.
+    asynchronousMediaCodecCallback.onInputBufferAvailable(codec, 0);
+
+    assertThat(onInputBufferAvailableCounter.get()).isEqualTo(1);
+  }
+
+  @Test
+  public void onOutputBufferAvailable_withOnBufferAvailableListener_callsOnOutputBufferAvailable() {
+    AtomicInteger onOutputBufferAvailableCounter = new AtomicInteger();
+    MediaCodecAdapter.OnBufferAvailableListener onBufferAvailableListener =
+        new MediaCodecAdapter.OnBufferAvailableListener() {
+          @Override
+          public void onOutputBufferAvailable() {
+            onOutputBufferAvailableCounter.getAndIncrement();
+          }
+        };
+    asynchronousMediaCodecCallback.setOnBufferAvailableListener(onBufferAvailableListener);
+
+    // Send an output buffer to the callback.
+    asynchronousMediaCodecCallback.onOutputBufferAvailable(codec, 0, new MediaCodec.BufferInfo());
+
+    assertThat(onOutputBufferAvailableCounter.get()).isEqualTo(1);
   }
 
   /** Reflectively create a {@link MediaCodec.CodecException}. */

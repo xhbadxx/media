@@ -15,6 +15,8 @@
  */
 package androidx.media3.exoplayer.e2etest;
 
+import static org.robolectric.annotation.GraphicsMode.Mode.NATIVE;
+
 import android.content.Context;
 import android.graphics.SurfaceTexture;
 import android.view.Surface;
@@ -22,7 +24,6 @@ import androidx.media3.common.MediaItem;
 import androidx.media3.common.Player;
 import androidx.media3.exoplayer.ExoPlayer;
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory;
-import androidx.media3.extractor.DefaultExtractorsFactory;
 import androidx.media3.test.utils.CapturingRenderersFactory;
 import androidx.media3.test.utils.DumpFileAsserts;
 import androidx.media3.test.utils.FakeClock;
@@ -36,15 +37,18 @@ import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.robolectric.ParameterizedRobolectricTestRunner;
 import org.robolectric.ParameterizedRobolectricTestRunner.Parameters;
+import org.robolectric.annotation.GraphicsMode;
 
 /** End-to-end tests using MKV samples. */
 @RunWith(ParameterizedRobolectricTestRunner.class)
+@GraphicsMode(NATIVE)
 public final class MkvPlaybackTest {
   @Parameters(name = "{0}")
   public static ImmutableList<String> mediaSamples() {
     return ImmutableList.of(
         "sample.mkv",
         "sample_with_htc_rotation_track_name.mkv",
+        "sample_with_pgs_subtitles.mkv",
         "sample_with_ssa_subtitles.mkv",
         "sample_with_null_terminated_ssa_subtitles.mkv",
         "sample_with_overlapping_ssa_subtitles.mkv",
@@ -52,7 +56,8 @@ public final class MkvPlaybackTest {
         "sample_with_null_terminated_srt.mkv",
         "sample_with_overlapping_srt.mkv",
         "sample_with_vtt_subtitles.mkv",
-        "sample_with_null_terminated_vtt_subtitles.mkv");
+        "sample_with_null_terminated_vtt_subtitles.mkv",
+        "sample_with_vobsub.mkv");
   }
 
   @ParameterizedRobolectricTestRunner.Parameter public String inputFile;
@@ -66,11 +71,8 @@ public final class MkvPlaybackTest {
     Context applicationContext = ApplicationProvider.getApplicationContext();
     CapturingRenderersFactory capturingRenderersFactory =
         new CapturingRenderersFactory(applicationContext);
-    // TODO: b/289916598 - Remove this when transcoding is the default.
-    DefaultExtractorsFactory extractorsFactory =
-        new DefaultExtractorsFactory().setTextTrackTranscodingEnabled(true);
     DefaultMediaSourceFactory mediaSourceFactory =
-        new DefaultMediaSourceFactory(applicationContext, extractorsFactory);
+        new DefaultMediaSourceFactory(applicationContext);
     ExoPlayer player =
         new ExoPlayer.Builder(applicationContext, capturingRenderersFactory, mediaSourceFactory)
             .setClock(new FakeClock(/* isAutoAdvancing= */ true))

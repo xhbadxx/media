@@ -20,9 +20,9 @@ import androidx.media3.common.C;
 import androidx.media3.common.Format;
 import androidx.media3.common.util.UnstableApi;
 import androidx.media3.common.util.Util;
-import com.google.common.base.Objects;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
+import java.util.Objects;
 
 /**
  * Interface for audio processors, which take audio data as input and transform it, potentially
@@ -107,7 +107,7 @@ public interface AudioProcessor {
 
     @Override
     public int hashCode() {
-      return Objects.hashCode(sampleRate, channelCount, encoding);
+      return Objects.hash(sampleRate, channelCount, encoding);
     }
   }
 
@@ -127,6 +127,14 @@ public interface AudioProcessor {
 
   /** An empty, direct {@link ByteBuffer}. */
   ByteBuffer EMPTY_BUFFER = ByteBuffer.allocateDirect(0).order(ByteOrder.nativeOrder());
+
+  /**
+   * Returns the expected duration of the output stream when the processor is applied given a input
+   * {@code durationUs}.
+   */
+  default long getDurationAfterProcessorApplied(long durationUs) {
+    return durationUs;
+  }
 
   /**
    * Configures the processor to process input audio with the specified format. After calling this

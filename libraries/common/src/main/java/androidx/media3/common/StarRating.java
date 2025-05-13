@@ -23,7 +23,7 @@ import androidx.annotation.IntRange;
 import androidx.annotation.Nullable;
 import androidx.media3.common.util.UnstableApi;
 import androidx.media3.common.util.Util;
-import com.google.common.base.Objects;
+import java.util.Objects;
 
 /** A rating expressed as a fractional number of stars. */
 public final class StarRating extends Rating {
@@ -84,7 +84,7 @@ public final class StarRating extends Rating {
 
   @Override
   public int hashCode() {
-    return Objects.hashCode(maxStars, starRating);
+    return Objects.hash(maxStars, starRating);
   }
 
   @Override
@@ -95,8 +95,6 @@ public final class StarRating extends Rating {
     StarRating other = (StarRating) obj;
     return maxStars == other.maxStars && starRating == other.starRating;
   }
-
-  // Bundleable implementation.
 
   private static final @RatingType int TYPE = RATING_TYPE_STAR;
   private static final int MAX_STARS_DEFAULT = 5;
@@ -113,16 +111,6 @@ public final class StarRating extends Rating {
     bundle.putFloat(FIELD_STAR_RATING, starRating);
     return bundle;
   }
-
-  /**
-   * Object that can restore a {@link StarRating} from a {@link Bundle}.
-   *
-   * @deprecated Use {@link #fromBundle} instead.
-   */
-  @UnstableApi
-  @Deprecated
-  @SuppressWarnings("deprecation") // Deprecated instance of deprecated class
-  public static final Creator<StarRating> CREATOR = StarRating::fromBundle;
 
   /** Restores a {@code StarRating} from a {@link Bundle}. */
   @UnstableApi

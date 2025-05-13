@@ -30,9 +30,10 @@ import java.lang.annotation.Documented;
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 import java.lang.annotation.Target;
+import java.util.Objects;
 
 /** Information about the playback device. */
-public final class DeviceInfo implements Bundleable {
+public final class DeviceInfo {
 
   /** Types of playback. One of {@link #PLAYBACK_TYPE_LOCAL} or {@link #PLAYBACK_TYPE_REMOTE}. */
   @Documented
@@ -178,7 +179,7 @@ public final class DeviceInfo implements Bundleable {
     return playbackType == other.playbackType
         && minVolume == other.minVolume
         && maxVolume == other.maxVolume
-        && Util.areEqual(routingControllerId, other.routingControllerId);
+        && Objects.equals(routingControllerId, other.routingControllerId);
   }
 
   @Override
@@ -191,15 +192,12 @@ public final class DeviceInfo implements Bundleable {
     return result;
   }
 
-  // Bundleable implementation.
-
   private static final String FIELD_PLAYBACK_TYPE = Util.intToStringMaxRadix(0);
   private static final String FIELD_MIN_VOLUME = Util.intToStringMaxRadix(1);
   private static final String FIELD_MAX_VOLUME = Util.intToStringMaxRadix(2);
   private static final String FIELD_ROUTING_CONTROLLER_ID = Util.intToStringMaxRadix(3);
 
   @UnstableApi
-  @Override
   public Bundle toBundle() {
     Bundle bundle = new Bundle();
     if (playbackType != PLAYBACK_TYPE_LOCAL) {
@@ -217,16 +215,6 @@ public final class DeviceInfo implements Bundleable {
     return bundle;
   }
 
-  /**
-   * Object that can restore {@link DeviceInfo} from a {@link Bundle}.
-   *
-   * @deprecated Use {@link #fromBundle} instead.
-   */
-  @UnstableApi
-  @Deprecated
-  @SuppressWarnings("deprecation") // Deprecated instance of deprecated class
-  public static final Creator<DeviceInfo> CREATOR = DeviceInfo::fromBundle;
-
   /** Restores a {@code DeviceInfo} from a {@link Bundle}. */
   @UnstableApi
   public static DeviceInfo fromBundle(Bundle bundle) {
@@ -240,5 +228,4 @@ public final class DeviceInfo implements Bundleable {
         .setRoutingControllerId(routingControllerId)
         .build();
   }
-  ;
 }

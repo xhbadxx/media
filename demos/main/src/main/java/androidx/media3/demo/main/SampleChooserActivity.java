@@ -32,6 +32,7 @@ import android.os.Handler;
 import android.os.Looper;
 import android.text.TextUtils;
 import android.util.JsonReader;
+import android.util.Log;
 import android.view.Menu;
 import android.view.MenuInflater;
 import android.view.MenuItem;
@@ -44,7 +45,6 @@ import android.widget.ExpandableListView.OnChildClickListener;
 import android.widget.ImageButton;
 import android.widget.TextView;
 import android.widget.Toast;
-import androidx.annotation.DoNotInline;
 import androidx.annotation.Nullable;
 import androidx.annotation.OptIn;
 import androidx.annotation.RequiresApi;
@@ -53,7 +53,7 @@ import androidx.media3.common.C;
 import androidx.media3.common.MediaItem;
 import androidx.media3.common.MediaItem.ClippingConfiguration;
 import androidx.media3.common.MediaMetadata;
-import androidx.media3.common.util.Log;
+import androidx.media3.common.util.UnstableApi;
 import androidx.media3.common.util.Util;
 import androidx.media3.datasource.DataSource;
 import androidx.media3.datasource.DataSourceInputStream;
@@ -61,18 +61,19 @@ import androidx.media3.datasource.DataSourceUtil;
 import androidx.media3.datasource.DataSpec;
 import androidx.media3.exoplayer.RenderersFactory;
 import androidx.media3.exoplayer.offline.DownloadService;
-import com.google.common.base.Objects;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.UUID;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -118,6 +119,7 @@ public class SampleChooserActivity extends AppCompatActivity
           }
         }
       } catch (IOException e) {
+        Log.e(TAG, "One or more sample lists failed to load", e);
         Toast.makeText(getApplicationContext(), R.string.sample_list_load_error, Toast.LENGTH_LONG)
             .show();
       }
@@ -258,6 +260,7 @@ public class SampleChooserActivity extends AppCompatActivity
     }
   }
 
+  @OptIn(markerClass = androidx.media3.common.util.UnstableApi.class)
   private void toggleDownload(MediaItem mediaItem) {
     RenderersFactory renderersFactory =
         DemoUtil.buildRenderersFactory(
@@ -312,7 +315,8 @@ public class SampleChooserActivity extends AppCompatActivity
               InputStream inputStream = new DataSourceInputStream(dataSource, dataSpec);
               try {
                 readPlaylistGroups(
-                    new JsonReader(new InputStreamReader(inputStream, "UTF-8")), result);
+                    new JsonReader(new InputStreamReader(inputStream, StandardCharsets.UTF_8)),
+                    result);
               } catch (Exception e) {
                 Log.e(TAG, "Error loading sample list: " + uri, e);
                 sawError = true;
@@ -369,6 +373,7 @@ public class SampleChooserActivity extends AppCompatActivity
       group.playlists.addAll(playlistHolders);
     }
 
+    @OptIn(markerClass = UnstableApi.class) // Setting image duration.
     private PlaylistHolder readEntry(JsonReader reader, boolean insidePlaylist) throws IOException {
       Uri uri = null;
       String extension = null;
@@ -405,6 +410,9 @@ public class SampleChooserActivity extends AppCompatActivity
             break;
           case "clip_end_position_ms":
             clippingConfiguration.setEndPositionMs(reader.nextLong());
+            break;
+          case "image_duration_ms":
+            mediaItem.setImageDurationMs(reader.nextLong());
             break;
           case "ad_tag_uri":
             mediaItem.setAdsConfiguration(
@@ -516,7 +524,7 @@ public class SampleChooserActivity extends AppCompatActivity
 
     private PlaylistGroup getGroup(String groupName, List<PlaylistGroup> groups) {
       for (int i = 0; i < groups.size(); i++) {
-        if (Objects.equal(groupName, groups.get(i).title)) {
+        if (Objects.equals(groupName, groups.get(i).title)) {
           return groups.get(i);
         }
       }
@@ -658,7 +666,6 @@ public class SampleChooserActivity extends AppCompatActivity
   @RequiresApi(33)
   private static class Api33 {
 
-    @DoNotInline
     public static String getPostNotificationPermissionString() {
       return Manifest.permission.POST_NOTIFICATIONS;
     }

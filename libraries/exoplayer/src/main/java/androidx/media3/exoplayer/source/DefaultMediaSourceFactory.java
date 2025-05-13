@@ -16,7 +16,6 @@
 package androidx.media3.exoplayer.source;
 
 import static androidx.media3.common.util.Assertions.checkNotNull;
-import static androidx.media3.common.util.Assertions.checkStateNotNull;
 import static androidx.media3.common.util.Util.castNonNull;
 import static androidx.media3.common.util.Util.msToUs;
 
@@ -30,7 +29,6 @@ import androidx.media3.common.MediaItem;
 import androidx.media3.common.MimeTypes;
 import androidx.media3.common.util.Assertions;
 import androidx.media3.common.util.Log;
-import androidx.media3.common.util.NullableType;
 import androidx.media3.common.util.UnstableApi;
 import androidx.media3.common.util.Util;
 import androidx.media3.datasource.DataSource;
@@ -59,11 +57,9 @@ import com.google.common.primitives.Ints;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import java.io.IOException;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
-import java.util.Set;
 import org.checkerframework.checker.nullness.qual.MonotonicNonNull;
 
 /**
@@ -191,10 +187,12 @@ public final class DefaultMediaSourceFactory implements MediaSourceFactory {
     liveMaxOffsetMs = C.TIME_UNSET;
     liveMinSpeed = C.RATE_UNSET;
     liveMaxSpeed = C.RATE_UNSET;
+    parseSubtitlesDuringExtraction = true;
   }
 
   @CanIgnoreReturnValue
   @UnstableApi
+  @Deprecated
   @Override
   public DefaultMediaSourceFactory experimentalParseSubtitlesDuringExtraction(
       boolean parseSubtitlesDuringExtraction) {
@@ -210,6 +208,16 @@ public final class DefaultMediaSourceFactory implements MediaSourceFactory {
       SubtitleParser.Factory subtitleParserFactory) {
     this.subtitleParserFactory = checkNotNull(subtitleParserFactory);
     delegateFactoryLoader.setSubtitleParserFactory(subtitleParserFactory);
+    return this;
+  }
+
+  @CanIgnoreReturnValue
+  @Override
+  @UnstableApi
+  public DefaultMediaSourceFactory experimentalSetCodecsToParseWithinGopSampleDependencies(
+      @C.VideoCodecFlags int codecsToParseWithinGopSampleDependencies) {
+    delegateFactoryLoader.setCodecsToParseWithinGopSampleDependencies(
+        codecsToParseWithinGopSampleDependencies);
     return this;
   }
 
@@ -313,7 +321,6 @@ public final class DefaultMediaSourceFactory implements MediaSourceFactory {
    * @return This factory, for convenience.
    */
   @CanIgnoreReturnValue
-  @UnstableApi
   public DefaultMediaSourceFactory setServerSideAdInsertionMediaSourceFactory(
       @Nullable MediaSource.Factory serverSideAdInsertionMediaSourceFactory) {
     this.serverSideAdInsertionMediaSourceFactory = serverSideAdInsertionMediaSourceFactory;
@@ -476,11 +483,13 @@ public final class DefaultMediaSourceFactory implements MediaSourceFactory {
     if (mediaItem.localConfiguration.imageDurationMs != C.TIME_UNSET) {
       delegateFactoryLoader.setJpegExtractorFlags(JpegExtractor.FLAG_READ_IMAGE);
     }
-    @Nullable
-    MediaSource.Factory mediaSourceFactory = delegateFactoryLoader.getMediaSourceFactory(type);
-    checkStateNotNull(
-        mediaSourceFactory, "No suitable media source factory found for content type: " + type);
 
+    MediaSource.Factory mediaSourceFactory;
+    try {
+      mediaSourceFactory = delegateFactoryLoader.getMediaSourceFactory(type);
+    } catch (ClassNotFoundException e) {
+      throw new IllegalStateException(e);
+    }
     MediaItem.LiveConfiguration.Builder liveConfigurationBuilder =
         mediaItem.liveConfiguration.buildUpon();
     if (mediaItem.liveConfiguration.targetOffsetMs == C.TIME_UNSET) {
@@ -526,11 +535,23 @@ public final class DefaultMediaSourceFactory implements MediaSourceFactory {
               () ->
                   new Extractor[] {
                     subtitleParserFactory.supportsFormat(format)
-                        ? new SubtitleExtractor(subtitleParserFactory.create(format), format)
+                        ? new SubtitleExtractor(
+                            subtitleParserFactory.create(format), /* format= */ null)
                         : new UnknownSubtitlesExtractor(format)
                   };
           ProgressiveMediaSource.Factory progressiveMediaSourceFactory =
-              new ProgressiveMediaSource.Factory(dataSourceFactory, extractorsFactory);
+              new ProgressiveMediaSource.Factory(dataSourceFactory, extractorsFactory)
+                  .enableLazyLoadingWithSingleTrack(
+                      SubtitleExtractor.TRACK_ID,
+                      subtitleParserFactory.supportsFormat(format)
+                          ? format
+                              .buildUpon()
+                              .setSampleMimeType(MimeTypes.APPLICATION_MEDIA3_CUES)
+                              .setCodecs(format.sampleMimeType)
+                              .setCueReplacementBehavior(
+                                  subtitleParserFactory.getCueReplacementBehavior(format))
+                              .build()
+                          : format);
           if (loadErrorHandlingPolicy != null) {
             progressiveMediaSourceFactory.setLoadErrorHandlingPolicy(loadErrorHandlingPolicy);
           }
@@ -562,13 +583,13 @@ public final class DefaultMediaSourceFactory implements MediaSourceFactory {
         && !mediaItem.clippingConfiguration.relativeToDefaultPosition) {
       return mediaSource;
     }
-    return new ClippingMediaSource(
-        mediaSource,
-        mediaItem.clippingConfiguration.startPositionUs,
-        mediaItem.clippingConfiguration.endPositionUs,
-        /* enableInitialDiscontinuity= */ !mediaItem.clippingConfiguration.startsAtKeyFrame,
-        /* allowDynamicClippingUpdates= */ mediaItem.clippingConfiguration.relativeToLiveWindow,
-        mediaItem.clippingConfiguration.relativeToDefaultPosition);
+    return new ClippingMediaSource.Builder(mediaSource)
+        .setStartPositionUs(mediaItem.clippingConfiguration.startPositionUs)
+        .setEndPositionUs(mediaItem.clippingConfiguration.endPositionUs)
+        .setEnableInitialDiscontinuity(!mediaItem.clippingConfiguration.startsAtKeyFrame)
+        .setAllowDynamicClippingUpdates(mediaItem.clippingConfiguration.relativeToLiveWindow)
+        .setRelativeToDefaultPosition(mediaItem.clippingConfiguration.relativeToDefaultPosition)
+        .build();
   }
 
   private MediaSource maybeWrapWithAdsMediaSource(MediaItem mediaItem, MediaSource mediaSource) {
@@ -601,20 +622,20 @@ public final class DefaultMediaSourceFactory implements MediaSourceFactory {
                 mediaItem.mediaId, mediaItem.localConfiguration.uri, adsConfiguration.adTagUri),
         /* adMediaSourceFactory= */ this,
         adsLoader,
-        adViewProvider);
+        adViewProvider,
+        /* useLazyContentSourcePreparation= */ true);
   }
 
   /** Loads media source factories lazily. */
   private static final class DelegateFactoryLoader {
     private final ExtractorsFactory extractorsFactory;
-    private final Map<Integer, @NullableType Supplier<MediaSource.Factory>>
-        mediaSourceFactorySuppliers;
-    private final Set<Integer> supportedTypes;
+    private final Map<Integer, Supplier<MediaSource.Factory>> mediaSourceFactorySuppliers;
     private final Map<Integer, MediaSource.Factory> mediaSourceFactories;
 
     private DataSource.@MonotonicNonNull Factory dataSourceFactory;
     private boolean parseSubtitlesDuringExtraction;
     private SubtitleParser.Factory subtitleParserFactory;
+    private @C.VideoCodecFlags int codecsToParseWithinGopSampleDependencies;
     @Nullable private CmcdConfiguration.Factory cmcdConfigurationFactory;
     @Nullable private DrmSessionManagerProvider drmSessionManagerProvider;
     @Nullable private LoadErrorHandlingPolicy loadErrorHandlingPolicy;
@@ -624,27 +645,23 @@ public final class DefaultMediaSourceFactory implements MediaSourceFactory {
       this.extractorsFactory = extractorsFactory;
       this.subtitleParserFactory = subtitleParserFactory;
       mediaSourceFactorySuppliers = new HashMap<>();
-      supportedTypes = new HashSet<>();
       mediaSourceFactories = new HashMap<>();
+      parseSubtitlesDuringExtraction = true;
     }
 
     public @C.ContentType int[] getSupportedTypes() {
       ensureAllSuppliersAreLoaded();
-      return Ints.toArray(supportedTypes);
+      return Ints.toArray(mediaSourceFactorySuppliers.keySet());
     }
 
     @SuppressWarnings("deprecation") // Forwarding to deprecated methods.
-    @Nullable
-    public MediaSource.Factory getMediaSourceFactory(@C.ContentType int contentType) {
+    public MediaSource.Factory getMediaSourceFactory(@C.ContentType int contentType)
+        throws ClassNotFoundException {
       @Nullable MediaSource.Factory mediaSourceFactory = mediaSourceFactories.get(contentType);
       if (mediaSourceFactory != null) {
         return mediaSourceFactory;
       }
-      @Nullable
-      Supplier<MediaSource.Factory> mediaSourceFactorySupplier = maybeLoadSupplier(contentType);
-      if (mediaSourceFactorySupplier == null) {
-        return null;
-      }
+      Supplier<MediaSource.Factory> mediaSourceFactorySupplier = loadSupplier(contentType);
 
       mediaSourceFactory = mediaSourceFactorySupplier.get();
       if (cmcdConfigurationFactory != null) {
@@ -658,6 +675,8 @@ public final class DefaultMediaSourceFactory implements MediaSourceFactory {
       }
       mediaSourceFactory.setSubtitleParserFactory(subtitleParserFactory);
       mediaSourceFactory.experimentalParseSubtitlesDuringExtraction(parseSubtitlesDuringExtraction);
+      mediaSourceFactory.experimentalSetCodecsToParseWithinGopSampleDependencies(
+          codecsToParseWithinGopSampleDependencies);
       mediaSourceFactories.put(contentType, mediaSourceFactory);
       return mediaSourceFactory;
     }
@@ -687,6 +706,13 @@ public final class DefaultMediaSourceFactory implements MediaSourceFactory {
       for (MediaSource.Factory mediaSourceFactory : mediaSourceFactories.values()) {
         mediaSourceFactory.setSubtitleParserFactory(subtitleParserFactory);
       }
+    }
+
+    public void setCodecsToParseWithinGopSampleDependencies(
+        @C.VideoCodecFlags int codecsToParseWithinGopSampleDependencies) {
+      this.codecsToParseWithinGopSampleDependencies = codecsToParseWithinGopSampleDependencies;
+      extractorsFactory.experimentalSetCodecsToParseWithinGopSampleDependencies(
+          codecsToParseWithinGopSampleDependencies);
     }
 
     public void setCmcdConfigurationFactory(CmcdConfiguration.Factory cmcdConfigurationFactory) {
@@ -724,55 +750,63 @@ public final class DefaultMediaSourceFactory implements MediaSourceFactory {
       maybeLoadSupplier(C.CONTENT_TYPE_OTHER);
     }
 
+    @CanIgnoreReturnValue
     @Nullable
     private Supplier<MediaSource.Factory> maybeLoadSupplier(@C.ContentType int contentType) {
-      if (mediaSourceFactorySuppliers.containsKey(contentType)) {
-        return mediaSourceFactorySuppliers.get(contentType);
+      try {
+        return loadSupplier(contentType);
+      } catch (ClassNotFoundException e) {
+        // Expected if the app was built without the specific module
+        return null;
+      }
+    }
+
+    private Supplier<MediaSource.Factory> loadSupplier(@C.ContentType int contentType)
+        throws ClassNotFoundException {
+      @Nullable
+      Supplier<MediaSource.Factory> mediaSourceFactorySupplier =
+          mediaSourceFactorySuppliers.get(contentType);
+      if (mediaSourceFactorySupplier != null) {
+        return mediaSourceFactorySupplier;
       }
 
-      @Nullable Supplier<MediaSource.Factory> mediaSourceFactorySupplier = null;
+      // LINT.IfChange
       DataSource.Factory dataSourceFactory = checkNotNull(this.dataSourceFactory);
-      try {
-        Class<? extends MediaSource.Factory> clazz;
-        switch (contentType) {
-          case C.CONTENT_TYPE_DASH:
-            clazz =
-                Class.forName("androidx.media3.exoplayer.dash.DashMediaSource$Factory")
-                    .asSubclass(MediaSource.Factory.class);
-            mediaSourceFactorySupplier = () -> newInstance(clazz, dataSourceFactory);
-            break;
-          case C.CONTENT_TYPE_SS:
-            clazz =
-                Class.forName("androidx.media3.exoplayer.smoothstreaming.SsMediaSource$Factory")
-                    .asSubclass(MediaSource.Factory.class);
-            mediaSourceFactorySupplier = () -> newInstance(clazz, dataSourceFactory);
-            break;
-          case C.CONTENT_TYPE_HLS:
-            clazz =
-                Class.forName("androidx.media3.exoplayer.hls.HlsMediaSource$Factory")
-                    .asSubclass(MediaSource.Factory.class);
-            mediaSourceFactorySupplier = () -> newInstance(clazz, dataSourceFactory);
-            break;
-          case C.CONTENT_TYPE_RTSP:
-            clazz =
-                Class.forName("androidx.media3.exoplayer.rtsp.RtspMediaSource$Factory")
-                    .asSubclass(MediaSource.Factory.class);
-            mediaSourceFactorySupplier = () -> newInstance(clazz);
-            break;
-          case C.CONTENT_TYPE_OTHER:
-            mediaSourceFactorySupplier =
-                () -> new ProgressiveMediaSource.Factory(dataSourceFactory, extractorsFactory);
-            break;
-          default:
-            // Do nothing.
-        }
-      } catch (ClassNotFoundException e) {
-        // Expected if the app was built without the specific module.
+      Class<? extends MediaSource.Factory> clazz;
+      switch (contentType) {
+        case C.CONTENT_TYPE_DASH:
+          clazz =
+              Class.forName("androidx.media3.exoplayer.dash.DashMediaSource$Factory")
+                  .asSubclass(MediaSource.Factory.class);
+          mediaSourceFactorySupplier = () -> newInstance(clazz, dataSourceFactory);
+          break;
+        case C.CONTENT_TYPE_SS:
+          clazz =
+              Class.forName("androidx.media3.exoplayer.smoothstreaming.SsMediaSource$Factory")
+                  .asSubclass(MediaSource.Factory.class);
+          mediaSourceFactorySupplier = () -> newInstance(clazz, dataSourceFactory);
+          break;
+        case C.CONTENT_TYPE_HLS:
+          clazz =
+              Class.forName("androidx.media3.exoplayer.hls.HlsMediaSource$Factory")
+                  .asSubclass(MediaSource.Factory.class);
+          mediaSourceFactorySupplier = () -> newInstance(clazz, dataSourceFactory);
+          break;
+        case C.CONTENT_TYPE_RTSP:
+          clazz =
+              Class.forName("androidx.media3.exoplayer.rtsp.RtspMediaSource$Factory")
+                  .asSubclass(MediaSource.Factory.class);
+          mediaSourceFactorySupplier = () -> newInstance(clazz);
+          break;
+        case C.CONTENT_TYPE_OTHER:
+          mediaSourceFactorySupplier =
+              () -> new ProgressiveMediaSource.Factory(dataSourceFactory, extractorsFactory);
+          break;
+        default:
+          throw new IllegalArgumentException("Unrecognized contentType: " + contentType);
       }
+      // LINT.ThenChange(../../../../../proguard-rules.txt)
       mediaSourceFactorySuppliers.put(contentType, mediaSourceFactorySupplier);
-      if (mediaSourceFactorySupplier != null) {
-        supportedTypes.add(contentType);
-      }
       return mediaSourceFactorySupplier;
     }
   }
@@ -791,7 +825,7 @@ public final class DefaultMediaSourceFactory implements MediaSourceFactory {
 
     @Override
     public void init(ExtractorOutput output) {
-      TrackOutput trackOutput = output.track(/* id= */ 0, C.TRACK_TYPE_TEXT);
+      TrackOutput trackOutput = output.track(SubtitleExtractor.TRACK_ID, C.TRACK_TYPE_TEXT);
       output.seekMap(new SeekMap.Unseekable(C.TIME_UNSET));
       output.endTracks();
       trackOutput.format(

@@ -38,13 +38,13 @@ import androidx.media3.common.util.UnstableApi;
 import androidx.media3.common.util.Util;
 import androidx.media3.datasource.DataSource;
 import androidx.media3.datasource.TransferListener;
+import androidx.media3.exoplayer.DefaultRendererCapabilitiesList;
 import androidx.media3.exoplayer.ExoPlaybackException;
 import androidx.media3.exoplayer.LoadingInfo;
-import androidx.media3.exoplayer.Renderer;
 import androidx.media3.exoplayer.RendererCapabilities;
+import androidx.media3.exoplayer.RendererCapabilitiesList;
 import androidx.media3.exoplayer.RenderersFactory;
 import androidx.media3.exoplayer.analytics.PlayerId;
-import androidx.media3.exoplayer.audio.AudioRendererEventListener;
 import androidx.media3.exoplayer.drm.DrmSessionManager;
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory;
 import androidx.media3.exoplayer.source.MediaPeriod;
@@ -64,7 +64,6 @@ import androidx.media3.exoplayer.trackselection.TrackSelectorResult;
 import androidx.media3.exoplayer.upstream.Allocator;
 import androidx.media3.exoplayer.upstream.BandwidthMeter;
 import androidx.media3.exoplayer.upstream.DefaultAllocator;
-import androidx.media3.exoplayer.video.VideoRendererEventListener;
 import androidx.media3.extractor.ExtractorsFactory;
 import java.io.IOException;
 import java.util.ArrayList;
@@ -96,29 +95,27 @@ import org.checkerframework.checker.nullness.qual.RequiresNonNull;
 @UnstableApi
 public final class DownloadHelper {
 
-  /**
-   * Default track selection parameters for downloading, but without any {@link Context}
-   * constraints.
-   *
-   * <p>If possible, use {@link #getDefaultTrackSelectorParameters(Context)} instead.
-   *
-   * @see DefaultTrackSelector.Parameters#DEFAULT_WITHOUT_CONTEXT
-   */
-  public static final DefaultTrackSelector.Parameters
-      DEFAULT_TRACK_SELECTOR_PARAMETERS_WITHOUT_CONTEXT =
-          DefaultTrackSelector.Parameters.DEFAULT_WITHOUT_CONTEXT
-              .buildUpon()
-              .setForceHighestSupportedBitrate(true)
-              .setConstrainAudioChannelCountToDeviceCapabilities(false)
-              .build();
+  /** Default track selection parameters for downloading. */
+  public static final DefaultTrackSelector.Parameters DEFAULT_TRACK_SELECTOR_PARAMETERS =
+      DefaultTrackSelector.Parameters.DEFAULT
+          .buildUpon()
+          .setForceHighestSupportedBitrate(true)
+          .setConstrainAudioChannelCountToDeviceCapabilities(false)
+          .build();
 
-  /** Returns the default parameters used for track selection for downloading. */
+  /**
+   * @deprecated Use {@link #DEFAULT_TRACK_SELECTOR_PARAMETERS} instead.
+   */
+  @Deprecated
+  public static final DefaultTrackSelector.Parameters
+      DEFAULT_TRACK_SELECTOR_PARAMETERS_WITHOUT_CONTEXT = DEFAULT_TRACK_SELECTOR_PARAMETERS;
+
+  /**
+   * @deprecated Use {@link #DEFAULT_TRACK_SELECTOR_PARAMETERS} instead.
+   */
+  @Deprecated
   public static DefaultTrackSelector.Parameters getDefaultTrackSelectorParameters(Context context) {
-    return DefaultTrackSelector.Parameters.getDefaults(context)
-        .buildUpon()
-        .setForceHighestSupportedBitrate(true)
-        .setConstrainAudioChannelCountToDeviceCapabilities(false)
-        .build();
+    return DEFAULT_TRACK_SELECTOR_PARAMETERS;
   }
 
   /** A callback to be notified when the {@link DownloadHelper} is prepared. */
@@ -144,28 +141,6 @@ public final class DownloadHelper {
   public static class LiveContentUnsupportedException extends IOException {}
 
   /**
-   * Extracts renderer capabilities for the renderers created by the provided renderers factory.
-   *
-   * @param renderersFactory A {@link RenderersFactory}.
-   * @return The {@link RendererCapabilities} for each renderer created by the {@code
-   *     renderersFactory}.
-   */
-  public static RendererCapabilities[] getRendererCapabilities(RenderersFactory renderersFactory) {
-    Renderer[] renderers =
-        renderersFactory.createRenderers(
-            Util.createHandlerForCurrentOrMainLooper(),
-            new VideoRendererEventListener() {},
-            new AudioRendererEventListener() {},
-            (cues) -> {},
-            (metadata) -> {});
-    RendererCapabilities[] capabilities = new RendererCapabilities[renderers.length];
-    for (int i = 0; i < renderers.length; i++) {
-      capabilities[i] = renderers[i].getCapabilities();
-    }
-    return capabilities;
-  }
-
-  /**
    * Creates a {@link DownloadHelper} for the given progressive media item.
    *
    * @param context The context.
@@ -177,7 +152,7 @@ public final class DownloadHelper {
     Assertions.checkArgument(isProgressive(checkNotNull(mediaItem.localConfiguration)));
     return forMediaItem(
         mediaItem,
-        getDefaultTrackSelectorParameters(context),
+        DEFAULT_TRACK_SELECTOR_PARAMETERS,
         /* renderersFactory= */ null,
         /* dataSourceFactory= */ null,
         /* drmSessionManager= */ null);
@@ -205,7 +180,7 @@ public final class DownloadHelper {
       @Nullable DataSource.Factory dataSourceFactory) {
     return forMediaItem(
         mediaItem,
-        getDefaultTrackSelectorParameters(context),
+        DEFAULT_TRACK_SELECTOR_PARAMETERS,
         renderersFactory,
         dataSourceFactory,
         /* drmSessionManager= */ null);
@@ -274,8 +249,9 @@ public final class DownloadHelper {
                 mediaItem, castNonNull(dataSourceFactory), drmSessionManager),
         trackSelectionParameters,
         renderersFactory != null
-            ? getRendererCapabilities(renderersFactory)
-            : new RendererCapabilities[0]);
+            ? new DefaultRendererCapabilitiesList.Factory(renderersFactory)
+                .createRendererCapabilitiesList()
+            : new UnreleaseableRendererCapabilitiesList(new RendererCapabilities[0]));
   }
 
   /**
@@ -308,7 +284,7 @@ public final class DownloadHelper {
   private final MediaItem.LocalConfiguration localConfiguration;
   @Nullable private final MediaSource mediaSource;
   private final DefaultTrackSelector trackSelector;
-  private final RendererCapabilities[] rendererCapabilities;
+  private final RendererCapabilitiesList rendererCapabilities;
   private final SparseIntArray scratchSet;
   private final Handler callbackHandler;
   private final Timeline.Window window;
@@ -330,14 +306,14 @@ public final class DownloadHelper {
    *     selection needs to be made.
    * @param trackSelectionParameters {@link TrackSelectionParameters} for selecting tracks for
    *     downloading.
-   * @param rendererCapabilities The {@link RendererCapabilities} of the renderers for which tracks
-   *     are selected.
+   * @param rendererCapabilities The {@link RendererCapabilitiesList} of the renderers for which
+   *     tracks are selected.
    */
   public DownloadHelper(
       MediaItem mediaItem,
       @Nullable MediaSource mediaSource,
       TrackSelectionParameters trackSelectionParameters,
-      RendererCapabilities[] rendererCapabilities) {
+      RendererCapabilitiesList rendererCapabilities) {
     this.localConfiguration = checkNotNull(mediaItem.localConfiguration);
     this.mediaSource = mediaSource;
     this.trackSelector =
@@ -371,6 +347,7 @@ public final class DownloadHelper {
       mediaPreparer.release();
     }
     trackSelector.release();
+    rendererCapabilities.release();
   }
 
   /**
@@ -462,7 +439,7 @@ public final class DownloadHelper {
    */
   public void clearTrackSelections(int periodIndex) {
     assertPreparedWithMedia();
-    for (int i = 0; i < rendererCapabilities.length; i++) {
+    for (int i = 0; i < rendererCapabilities.size(); i++) {
       trackSelectionsByPeriodAndRenderer[periodIndex][i].clear();
     }
   }
@@ -517,11 +494,11 @@ public final class DownloadHelper {
       assertPreparedWithMedia();
 
       TrackSelectionParameters.Builder parametersBuilder =
-          DEFAULT_TRACK_SELECTOR_PARAMETERS_WITHOUT_CONTEXT.buildUpon();
+          DEFAULT_TRACK_SELECTOR_PARAMETERS.buildUpon();
       // Prefer highest supported bitrate for downloads.
       parametersBuilder.setForceHighestSupportedBitrate(true);
       // Disable all non-audio track types supported by the renderers.
-      for (RendererCapabilities capabilities : rendererCapabilities) {
+      for (RendererCapabilities capabilities : rendererCapabilities.getRendererCapabilities()) {
         @C.TrackType int trackType = capabilities.getTrackType();
         parametersBuilder.setTrackTypeDisabled(
             trackType, /* disabled= */ trackType != C.TRACK_TYPE_AUDIO);
@@ -557,12 +534,12 @@ public final class DownloadHelper {
       assertPreparedWithMedia();
 
       TrackSelectionParameters.Builder parametersBuilder =
-          DEFAULT_TRACK_SELECTOR_PARAMETERS_WITHOUT_CONTEXT.buildUpon();
+          DEFAULT_TRACK_SELECTOR_PARAMETERS.buildUpon();
       parametersBuilder.setSelectUndeterminedTextLanguage(selectUndeterminedTextLanguage);
       // Prefer highest supported bitrate for downloads.
       parametersBuilder.setForceHighestSupportedBitrate(true);
       // Disable all non-text track types supported by the renderers.
-      for (RendererCapabilities capabilities : rendererCapabilities) {
+      for (RendererCapabilities capabilities : rendererCapabilities.getRendererCapabilities()) {
         @C.TrackType int trackType = capabilities.getTrackType();
         parametersBuilder.setTrackTypeDisabled(
             trackType, /* disabled= */ trackType != C.TRACK_TYPE_TEXT);
@@ -694,7 +671,7 @@ public final class DownloadHelper {
     checkNotNull(mediaPreparer.mediaPeriods);
     checkNotNull(mediaPreparer.timeline);
     int periodCount = mediaPreparer.mediaPeriods.length;
-    int rendererCount = rendererCapabilities.length;
+    int rendererCount = rendererCapabilities.size();
     trackSelectionsByPeriodAndRenderer =
         (List<ExoTrackSelection>[][]) new List<?>[periodCount][rendererCount];
     immutableTrackSelectionsByPeriodAndRenderer =
@@ -762,7 +739,7 @@ public final class DownloadHelper {
   private TrackSelectorResult runTrackSelection(int periodIndex) throws ExoPlaybackException {
     TrackSelectorResult trackSelectorResult =
         trackSelector.selectTracks(
-            rendererCapabilities,
+            rendererCapabilities.getRendererCapabilities(),
             trackGroupArrays[periodIndex],
             new MediaPeriodId(mediaPreparer.timeline.getUidOfPeriod(periodIndex)),
             mediaPreparer.timeline);
@@ -823,13 +800,13 @@ public final class DownloadHelper {
   private static final class MediaPreparer
       implements MediaSourceCaller, MediaPeriod.Callback, Handler.Callback {
 
-    private static final int MESSAGE_PREPARE_SOURCE = 0;
-    private static final int MESSAGE_CHECK_FOR_FAILURE = 1;
-    private static final int MESSAGE_CONTINUE_LOADING = 2;
-    private static final int MESSAGE_RELEASE = 3;
+    private static final int MESSAGE_PREPARE_SOURCE = 1;
+    private static final int MESSAGE_CHECK_FOR_FAILURE = 2;
+    private static final int MESSAGE_CONTINUE_LOADING = 3;
+    private static final int MESSAGE_RELEASE = 4;
 
-    private static final int DOWNLOAD_HELPER_CALLBACK_MESSAGE_PREPARED = 0;
-    private static final int DOWNLOAD_HELPER_CALLBACK_MESSAGE_FAILED = 1;
+    private static final int DOWNLOAD_HELPER_CALLBACK_MESSAGE_PREPARED = 1;
+    private static final int DOWNLOAD_HELPER_CALLBACK_MESSAGE_FAILED = 2;
 
     private final MediaSource mediaSource;
     private final DownloadHelper downloadHelper;
@@ -1065,5 +1042,28 @@ public final class DownloadHelper {
     public void removeEventListener(EventListener eventListener) {
       // Do nothing.
     }
+  }
+
+  private static final class UnreleaseableRendererCapabilitiesList
+      implements RendererCapabilitiesList {
+
+    private final RendererCapabilities[] rendererCapabilities;
+
+    private UnreleaseableRendererCapabilitiesList(RendererCapabilities[] rendererCapabilities) {
+      this.rendererCapabilities = rendererCapabilities;
+    }
+
+    @Override
+    public RendererCapabilities[] getRendererCapabilities() {
+      return rendererCapabilities;
+    }
+
+    @Override
+    public int size() {
+      return rendererCapabilities.length;
+    }
+
+    @Override
+    public void release() {}
   }
 }

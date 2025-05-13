@@ -63,12 +63,24 @@ public final class TestMediaBrowserListener implements MediaBrowser.Listener {
   }
 
   @Override
+  public void onMediaButtonPreferencesChanged(
+      MediaController controller, List<CommandButton> mediaButtonPreferences) {
+    delegate.onMediaButtonPreferencesChanged(controller, mediaButtonPreferences);
+  }
+
+  @Override
   public void onExtrasChanged(MediaController controller, Bundle extras) {
     delegate.onExtrasChanged(controller, extras);
   }
 
   @Override
-  public void onSessionActivityChanged(MediaController controller, PendingIntent sessionActivity) {
+  public void onError(MediaController controller, SessionError sessionError) {
+    delegate.onError(controller, sessionError);
+  }
+
+  @Override
+  public void onSessionActivityChanged(
+      MediaController controller, @Nullable PendingIntent sessionActivity) {
     delegate.onSessionActivityChanged(controller, sessionActivity);
   }
 

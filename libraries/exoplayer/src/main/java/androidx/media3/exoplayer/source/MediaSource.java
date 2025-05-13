@@ -30,7 +30,9 @@ import androidx.media3.exoplayer.drm.DrmSessionManagerProvider;
 import androidx.media3.exoplayer.upstream.Allocator;
 import androidx.media3.exoplayer.upstream.CmcdConfiguration;
 import androidx.media3.exoplayer.upstream.LoadErrorHandlingPolicy;
+import androidx.media3.extractor.mp4.Mp4Extractor;
 import androidx.media3.extractor.text.SubtitleParser;
+import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import java.io.IOException;
 
 /**
@@ -102,24 +104,25 @@ public interface MediaSource {
     /**
      * Sets whether subtitles should be parsed as part of extraction (before being added to the
      * sample queue) or as part of rendering (when being taken from the sample queue). Defaults to
-     * {@code false} (i.e. subtitles will be parsed as part of rendering).
+     * {@code true} (i.e. subtitles will be parsed during extraction).
      *
      * <p>This method is experimental and will be renamed or removed in a future release.
      *
+     * @deprecated This method (and all support for 'legacy' subtitle decoding during rendering)
+     *     will be removed in a future release.
      * @param parseSubtitlesDuringExtraction Whether to parse subtitles during extraction or
      *     rendering.
      * @return This factory, for convenience.
      */
-    // TODO: b/289916598 - Flip the default of this to true.
     @UnstableApi
+    @Deprecated
     default Factory experimentalParseSubtitlesDuringExtraction(
         boolean parseSubtitlesDuringExtraction) {
       return this;
     }
 
     /**
-     * Sets the {@link SubtitleParser.Factory} to be used for parsing subtitles during extraction if
-     * {@link #experimentalParseSubtitlesDuringExtraction} is enabled.
+     * Sets the {@link SubtitleParser.Factory} to be used for parsing subtitles during extraction.
      *
      * @param subtitleParserFactory The {@link SubtitleParser.Factory} for parsing subtitles during
      *     extraction.
@@ -127,6 +130,26 @@ public interface MediaSource {
      */
     @UnstableApi
     default Factory setSubtitleParserFactory(SubtitleParser.Factory subtitleParserFactory) {
+      return this;
+    }
+
+    /**
+     * Sets the set of video codecs for which within GOP sample dependency information should be
+     * parsed as part of extraction. Defaults to {@code 0} - empty set of codecs.
+     *
+     * <p>Having access to additional sample dependency information can speed up seeking. See {@link
+     * Mp4Extractor#FLAG_READ_WITHIN_GOP_SAMPLE_DEPENDENCIES}.
+     *
+     * <p>This method is experimental and will be renamed or removed in a future release.
+     *
+     * @param codecsToParseWithinGopSampleDependencies The set of codecs for which to parse within
+     *     GOP sample dependency information.
+     * @return This factory, for convenience.
+     */
+    @UnstableApi
+    @CanIgnoreReturnValue
+    default Factory experimentalSetCodecsToParseWithinGopSampleDependencies(
+        @C.VideoCodecFlags int codecsToParseWithinGopSampleDependencies) {
       return this;
     }
 

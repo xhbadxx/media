@@ -23,14 +23,14 @@ import android.graphics.BitmapFactory;
 import android.graphics.Matrix;
 import android.net.Uri;
 import androidx.media3.common.MediaMetadata;
+import androidx.media3.common.ParserException;
 import androidx.media3.test.utils.TestUtil;
 import androidx.test.core.app.ApplicationProvider;
 import androidx.test.ext.junit.runners.AndroidJUnit4;
+import com.google.common.io.Files;
 import com.google.common.util.concurrent.ListenableFuture;
 import com.google.common.util.concurrent.MoreExecutors;
 import java.io.File;
-import java.nio.file.Files;
-import java.nio.file.Paths;
 import java.util.concurrent.ExecutionException;
 import okhttp3.mockwebserver.MockResponse;
 import okhttp3.mockwebserver.MockWebServer;
@@ -114,9 +114,7 @@ public class DataSourceBitmapLoaderTest {
     ListenableFuture<Bitmap> future = bitmapLoader.decodeBitmap(new byte[0]);
 
     assertException(
-        future::get,
-        IllegalArgumentException.class,
-        /* messagePart= */ "Could not decode image data");
+        future::get, ParserException.class, /* messagePart= */ "Could not decode image data");
   }
 
   @Test
@@ -185,7 +183,7 @@ public class DataSourceBitmapLoaderTest {
     byte[] imageData =
         TestUtil.getByteArray(ApplicationProvider.getApplicationContext(), TEST_IMAGE_PATH);
     File file = tempFolder.newFile();
-    Files.write(Paths.get(file.getAbsolutePath()), imageData);
+    Files.write(imageData, file);
     Uri uri = Uri.fromFile(file);
     DataSourceBitmapLoader bitmapLoader =
         new DataSourceBitmapLoader(MoreExecutors.newDirectExecutorService(), dataSourceFactory);
@@ -203,7 +201,7 @@ public class DataSourceBitmapLoaderTest {
     byte[] imageData =
         TestUtil.getByteArray(ApplicationProvider.getApplicationContext(), TEST_IMAGE_PATH);
     File file = tempFolder.newFile();
-    Files.write(Paths.get(file.getAbsolutePath()), imageData);
+    Files.write(imageData, file);
     Uri uri = Uri.fromFile(file);
     BitmapFactory.Options options = new BitmapFactory.Options();
     options.inMutable = true;
@@ -214,6 +212,28 @@ public class DataSourceBitmapLoaderTest {
     Bitmap bitmap = bitmapLoader.loadBitmap(uri).get();
 
     assertThat(bitmap.isMutable()).isTrue();
+  }
+
+  @Test
+  public void loadBitmap_withFileUriAndMaxOutputDimension_loadsDataWithSmallerSize()
+      throws Exception {
+    byte[] imageData =
+        TestUtil.getByteArray(ApplicationProvider.getApplicationContext(), TEST_IMAGE_PATH);
+    File file = tempFolder.newFile();
+    Files.write(imageData, file);
+    Uri uri = Uri.fromFile(file);
+    int maximumOutputDimension = 2000;
+    DataSourceBitmapLoader bitmapLoader =
+        new DataSourceBitmapLoader(
+            MoreExecutors.newDirectExecutorService(),
+            dataSourceFactory,
+            /* options= */ null,
+            maximumOutputDimension);
+
+    Bitmap bitmap = bitmapLoader.loadBitmap(uri).get();
+
+    assertThat(bitmap.getWidth()).isAtMost(maximumOutputDimension);
+    assertThat(bitmap.getHeight()).isAtMost(maximumOutputDimension);
   }
 
   @Test

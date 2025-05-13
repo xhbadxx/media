@@ -52,7 +52,7 @@ import java.util.concurrent.atomic.AtomicLong;
     // If the durationUs maps to a non-integer number of samples, then an extra sample is output.
     // In the worst case, this is one sample (~22us of audio) per media item.
 
-    // TODO(b/260618558): Track leftover duration when generating in mixer.
+    // TODO: b/260618558 - Track leftover duration when generating in mixer.
     remainingBytesToOutput.addAndGet(audioFormat.bytesPerFrame * outputFrameCount);
   }
 
@@ -72,5 +72,11 @@ import java.util.concurrent.atomic.AtomicLong;
 
   public boolean hasRemaining() {
     return internalBuffer.hasRemaining() || remainingBytesToOutput.get() > 0;
+  }
+
+  public void flush() {
+    remainingBytesToOutput.set(0);
+    internalBuffer.position(0);
+    internalBuffer.limit(0);
   }
 }

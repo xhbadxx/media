@@ -24,10 +24,14 @@ import static java.lang.Math.min;
 import androidx.annotation.Nullable;
 import androidx.media3.common.C;
 import androidx.media3.common.Format;
+import androidx.media3.common.audio.AudioProcessor;
 import androidx.media3.common.audio.AudioProcessor.AudioFormat;
-import androidx.media3.common.util.Util;
+import androidx.media3.common.audio.SonicAudioProcessor;
 import androidx.media3.decoder.DecoderInputBuffer;
+import androidx.media3.effect.DebugTraceUtil;
+import com.google.common.collect.ImmutableList;
 import java.nio.ByteBuffer;
+import java.util.Objects;
 import org.checkerframework.dataflow.qual.Pure;
 
 /** Processes, encodes and muxes raw audio samples. */
@@ -50,17 +54,26 @@ import org.checkerframework.dataflow.qual.Pure;
       Format firstInputFormat,
       TransformationRequest transformationRequest,
       EditedMediaItem firstEditedMediaItem,
+      ImmutableList<AudioProcessor> compositionAudioProcessors,
       AudioMixer.Factory mixerFactory,
       Codec.EncoderFactory encoderFactory,
       MuxerWrapper muxerWrapper,
       FallbackListener fallbackListener)
       throws ExportException {
     super(firstAssetLoaderTrackFormat, muxerWrapper);
-    audioGraph = new AudioGraph(mixerFactory);
+    SonicAudioProcessor outputResampler = new SonicAudioProcessor();
+    audioGraph =
+        new AudioGraph(
+            mixerFactory,
+            new ImmutableList.Builder<AudioProcessor>()
+                .addAll(compositionAudioProcessors)
+                .add(outputResampler)
+                .build());
     this.firstInputFormat = firstInputFormat;
-    firstInput = audioGraph.registerInput(firstEditedMediaItem, firstInputFormat);
-    encoderInputAudioFormat = audioGraph.getOutputAudioFormat();
-    checkState(!encoderInputAudioFormat.equals(AudioFormat.NOT_SET));
+    AudioGraphInput currentFirstInput =
+        audioGraph.registerInput(firstEditedMediaItem, firstInputFormat);
+    AudioFormat currentEncoderInputAudioFormat = audioGraph.getOutputAudioFormat();
+    checkState(!currentEncoderInputAudioFormat.equals(AudioFormat.NOT_SET));
 
     Format requestedEncoderFormat =
         new Format.Builder()
@@ -68,12 +81,13 @@ import org.checkerframework.dataflow.qual.Pure;
                 transformationRequest.audioMimeType != null
                     ? transformationRequest.audioMimeType
                     : checkNotNull(firstAssetLoaderTrackFormat.sampleMimeType))
-            .setSampleRate(encoderInputAudioFormat.sampleRate)
-            .setChannelCount(encoderInputAudioFormat.channelCount)
-            .setPcmEncoding(encoderInputAudioFormat.encoding)
+            .setSampleRate(currentEncoderInputAudioFormat.sampleRate)
+            .setChannelCount(currentEncoderInputAudioFormat.channelCount)
+            .setPcmEncoding(currentEncoderInputAudioFormat.encoding)
             .setCodecs(firstInputFormat.codecs)
             .build();
 
+    // TODO: b/324426022 - Move logic for supported mime types to DefaultEncoderFactory.
     encoder =
         encoderFactory.createForAudioEncoding(
             requestedEncoderFormat
@@ -83,6 +97,20 @@ import org.checkerframework.dataflow.qual.Pure;
                         requestedEncoderFormat,
                         muxerWrapper.getSupportedSampleMimeTypes(C.TRACK_TYPE_AUDIO)))
                 .build());
+
+    AudioFormat actualEncoderAudioFormat = new AudioFormat(encoder.getInputFormat());
+    // This occurs when the encoder does not support the requested format. In this case, the audio
+    // graph output needs to be resampled to a sample rate matching the encoder input to avoid
+    // distorted audio.
+    if (actualEncoderAudioFormat.sampleRate != currentEncoderInputAudioFormat.sampleRate) {
+      audioGraph.reset();
+      outputResampler.setOutputSampleRateHz(actualEncoderAudioFormat.sampleRate);
+      currentFirstInput = audioGraph.registerInput(firstEditedMediaItem, firstInputFormat);
+      currentEncoderInputAudioFormat = audioGraph.getOutputAudioFormat();
+    }
+    this.firstInput = currentFirstInput;
+    this.encoderInputAudioFormat = currentEncoderInputAudioFormat;
+
     encoderInputBuffer = new DecoderInputBuffer(BUFFER_REPLACEMENT_MODE_DISABLED);
     encoderOutputBuffer = new DecoderInputBuffer(BUFFER_REPLACEMENT_MODE_DISABLED);
 
@@ -94,7 +122,7 @@ import org.checkerframework.dataflow.qual.Pure;
   }
 
   @Override
-  public AudioGraphInput getInput(EditedMediaItem editedMediaItem, Format format)
+  public AudioGraphInput getInput(EditedMediaItem editedMediaItem, Format format, int inputIndex)
       throws ExportException {
     if (!returnedFirstInput) {
       // First input initialized in constructor because output AudioFormat is needed.
@@ -121,6 +149,10 @@ import org.checkerframework.dataflow.qual.Pure;
     }
 
     if (audioGraph.isEnded()) {
+      DebugTraceUtil.logEvent(
+          DebugTraceUtil.COMPONENT_AUDIO_GRAPH,
+          DebugTraceUtil.EVENT_OUTPUT_ENDED,
+          C.TIME_END_OF_SOURCE);
       queueEndOfStreamToEncoder();
       return false;
     }
@@ -190,9 +222,9 @@ import org.checkerframework.dataflow.qual.Pure;
   @Pure
   private static TransformationRequest createFallbackTransformationRequest(
       TransformationRequest transformationRequest, Format requestedFormat, Format actualFormat) {
-    // TODO(b/255953153): Consider including bitrate and other audio characteristics in the revised
+    // TODO: b/255953153 - Consider including bitrate and other audio characteristics in the revised
     //  fallback.
-    if (Util.areEqual(requestedFormat.sampleMimeType, actualFormat.sampleMimeType)) {
+    if (Objects.equals(requestedFormat.sampleMimeType, actualFormat.sampleMimeType)) {
       return transformationRequest;
     }
     return transformationRequest.buildUpon().setAudioMimeType(actualFormat.sampleMimeType).build();

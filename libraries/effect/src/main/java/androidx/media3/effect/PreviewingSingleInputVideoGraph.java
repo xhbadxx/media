@@ -17,11 +17,11 @@
 package androidx.media3.effect;
 
 import android.content.Context;
-import androidx.annotation.Nullable;
 import androidx.media3.common.ColorInfo;
 import androidx.media3.common.DebugViewProvider;
 import androidx.media3.common.Effect;
 import androidx.media3.common.PreviewingVideoGraph;
+import androidx.media3.common.VideoCompositorSettings;
 import androidx.media3.common.VideoFrameProcessor;
 import androidx.media3.common.util.UnstableApi;
 import java.util.List;
@@ -59,47 +59,40 @@ public final class PreviewingSingleInputVideoGraph extends SingleInputVideoGraph
     @Override
     public PreviewingVideoGraph create(
         Context context,
-        ColorInfo inputColorInfo,
         ColorInfo outputColorInfo,
         DebugViewProvider debugViewProvider,
         Listener listener,
         Executor listenerExecutor,
+        VideoCompositorSettings videoCompositorSettings,
         List<Effect> compositionEffects,
         long initialTimestampOffsetUs) {
-      @Nullable Presentation presentation = null;
-      for (int i = 0; i < compositionEffects.size(); i++) {
-        Effect effect = compositionEffects.get(i);
-        if (effect instanceof Presentation) {
-          presentation = (Presentation) effect;
-        }
-      }
       return new PreviewingSingleInputVideoGraph(
           context,
           videoFrameProcessorFactory,
-          inputColorInfo,
           outputColorInfo,
           debugViewProvider,
           listener,
           listenerExecutor,
-          presentation,
           initialTimestampOffsetUs);
+    }
+
+    @Override
+    public boolean supportsMultipleInputs() {
+      return false;
     }
   }
 
   private PreviewingSingleInputVideoGraph(
       Context context,
       VideoFrameProcessor.Factory videoFrameProcessorFactory,
-      ColorInfo inputColorInfo,
       ColorInfo outputColorInfo,
       DebugViewProvider debugViewProvider,
       Listener listener,
       Executor listenerExecutor,
-      @Nullable Presentation presentation,
       long initialTimestampOffsetUs) {
     super(
         context,
         videoFrameProcessorFactory,
-        inputColorInfo,
         outputColorInfo,
         listener,
         debugViewProvider,
@@ -107,12 +100,11 @@ public final class PreviewingSingleInputVideoGraph extends SingleInputVideoGraph
         VideoCompositorSettings.DEFAULT,
         // Previewing needs frame render timing.
         /* renderFramesAutomatically= */ false,
-        presentation,
         initialTimestampOffsetUs);
   }
 
   @Override
   public void renderOutputFrame(long renderTimeNs) {
-    getProcessor(SINGLE_INPUT_INDEX).renderOutputFrame(renderTimeNs);
+    getProcessor(getInputIndex()).renderOutputFrame(renderTimeNs);
   }
 }
