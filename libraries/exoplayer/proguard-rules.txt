@@ -39,17 +39,17 @@
 }
 
 # Constructors accessed via reflection in DefaultDownloaderFactory
--dontnote androidx.media3.exoplayer.dash.offline.DashDownloader
--keepclassmembers class androidx.media3.exoplayer.dash.offline.DashDownloader {
-  <init>(androidx.media3.common.MediaItem, androidx.media3.datasource.cache.CacheDataSource$Factory, java.util.concurrent.Executor);
+-dontnote androidx.media3.exoplayer.dash.offline.DashDownloader$Factory
+-keepclassmembers class androidx.media3.exoplayer.dash.offline.DashDownloader$Factory {
+  <init>(androidx.media3.datasource.cache.CacheDataSource$Factory);
 }
--dontnote androidx.media3.exoplayer.hls.offline.HlsDownloader
--keepclassmembers class androidx.media3.exoplayer.hls.offline.HlsDownloader {
-  <init>(androidx.media3.common.MediaItem, androidx.media3.datasource.cache.CacheDataSource$Factory, java.util.concurrent.Executor);
+-dontnote androidx.media3.exoplayer.hls.offline.HlsDownloader$Factory
+-keepclassmembers class androidx.media3.exoplayer.hls.offline.HlsDownloader$Factory {
+  <init>(androidx.media3.datasource.cache.CacheDataSource$Factory);
 }
--dontnote androidx.media3.exoplayer.smoothstreaming.offline.SsDownloader
--keepclassmembers class androidx.media3.exoplayer.smoothstreaming.offline.SsDownloader {
-  <init>(androidx.media3.common.MediaItem, androidx.media3.datasource.cache.CacheDataSource$Factory, java.util.concurrent.Executor);
+-dontnote androidx.media3.exoplayer.smoothstreaming.offline.SsDownloader$Factory
+-keepclassmembers class androidx.media3.exoplayer.smoothstreaming.offline.SsDownloader$Factory {
+  <init>(androidx.media3.datasource.cache.CacheDataSource$Factory);
 }
 
 # Constructors accessed via reflection in DefaultMediaSourceFactory
@@ -70,6 +70,7 @@
   <init>();
 }
 
+<<<<<<< HEAD
 -keep class androidx.media3.exoplayer.util.Utils { *; }
 #-keep class com.sigma.packer.SigmaDrmPacker {
 #    public <fields>;
@@ -79,9 +80,15 @@
 # Constructors and methods accessed via reflection in CompositingVideoSinkProvider
 -dontnote androidx.media3.effect.PreviewingSingleInputVideoGraph$Factory
 -keepclasseswithmembers class androidx.media3.effect.PreviewingSingleInputVideoGraph$Factory {
+=======
+# Constructors and methods accessed via reflection in PlaybackVideoGraphWrapper
+-dontnote androidx.media3.effect.SingleInputVideoGraph$Factory
+-keepclasseswithmembers class androidx.media3.effect.SingleInputVideoGraph$Factory {
+>>>>>>> upstream-release
   <init>(androidx.media3.common.VideoFrameProcessor$Factory);
 }
 -dontnote androidx.media3.effect.DefaultVideoFrameProcessor$Factory$Builder
 -keepclasseswithmembers class androidx.media3.effect.DefaultVideoFrameProcessor$Factory$Builder {
   androidx.media3.effect.DefaultVideoFrameProcessor$Factory build();
+  androidx.media3.effect.DefaultVideoFrameProcessor$Factory$Builder setEnableReplayableCache(boolean);
 }
