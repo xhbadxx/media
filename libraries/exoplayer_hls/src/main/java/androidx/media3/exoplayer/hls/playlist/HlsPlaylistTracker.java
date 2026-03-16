@@ -23,6 +23,8 @@ import androidx.media3.exoplayer.hls.HlsDataSourceFactory;
 import androidx.media3.exoplayer.source.MediaSourceEventListener.EventDispatcher;
 import androidx.media3.exoplayer.upstream.CmcdConfiguration;
 import androidx.media3.exoplayer.upstream.LoadErrorHandlingPolicy;
+import androidx.media3.exoplayer.util.ReleasableExecutor;
+import com.google.common.base.Supplier;
 import java.io.IOException;
 
 /**
@@ -50,12 +52,15 @@ public interface HlsPlaylistTracker {
      * @param loadErrorHandlingPolicy The {@link LoadErrorHandlingPolicy} for playlist load errors.
      * @param playlistParserFactory The {@link HlsPlaylistParserFactory} for playlist parsing.
      * @param cmcdConfiguration The {@link CmcdConfiguration} to use for playlist loading.
+     * @param downloadExecutorSupplier A supplier for a {@link ReleasableExecutor} that is used for
+     *     loading the playlist.
      */
     HlsPlaylistTracker createTracker(
         HlsDataSourceFactory dataSourceFactory,
         LoadErrorHandlingPolicy loadErrorHandlingPolicy,
         HlsPlaylistParserFactory playlistParserFactory,
-        @Nullable CmcdConfiguration cmcdConfiguration);
+        @Nullable CmcdConfiguration cmcdConfiguration,
+        @Nullable Supplier<ReleasableExecutor> downloadExecutorSupplier);
   }
 
   /** Listener for primary playlist changes. */
@@ -81,7 +86,7 @@ public interface HlsPlaylistTracker {
      * @param url The loaded url that caused the error.
      * @param loadErrorInfo The load error info.
      * @param forceRetry Whether retry should be forced without considering exclusion.
-     * @return True if excluding did not encounter errors. False otherwise.
+     * @return Whether the playlist will be excluded from future loads.
      */
     boolean onPlaylistError(
         Uri url, LoadErrorHandlingPolicy.LoadErrorInfo loadErrorInfo, boolean forceRetry);

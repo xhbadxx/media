@@ -15,7 +15,8 @@
  */
 package androidx.media3.common.util;
 
-import static androidx.media3.common.util.Assertions.checkNotNull;
+import static android.os.Build.VERSION.SDK_INT;
+import static com.google.common.base.Preconditions.checkNotNull;
 
 import android.annotation.SuppressLint;
 import android.content.BroadcastReceiver;
@@ -159,7 +160,7 @@ public final class NetworkTypeObserver {
 
   private void handleConnectivityActionBroadcast(Context context) {
     @C.NetworkType int networkType = getNetworkTypeFromConnectivityManager(context);
-    if (Util.SDK_INT >= 31 && networkType == C.NETWORK_TYPE_4G) {
+    if (SDK_INT >= 31 && networkType == C.NETWORK_TYPE_4G) {
       // Delay update of the network type to check whether this is actually 5G-NSA.
       Api31.disambiguate4gAnd5gNsa(context, /* instance= */ NetworkTypeObserver.this);
     } else {
@@ -239,7 +240,7 @@ public final class NetworkTypeObserver {
       case TelephonyManager.NETWORK_TYPE_LTE:
         return C.NETWORK_TYPE_4G;
       case TelephonyManager.NETWORK_TYPE_NR:
-        return Util.SDK_INT >= 29 ? C.NETWORK_TYPE_5G_SA : C.NETWORK_TYPE_UNKNOWN;
+        return SDK_INT >= 29 ? C.NETWORK_TYPE_5G_SA : C.NETWORK_TYPE_UNKNOWN;
       case TelephonyManager.NETWORK_TYPE_IWLAN:
         return C.NETWORK_TYPE_WIFI;
       case TelephonyManager.NETWORK_TYPE_GSM:

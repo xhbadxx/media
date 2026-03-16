@@ -16,13 +16,14 @@
 package androidx.media3.exoplayer;
 
 import static androidx.media3.common.C.TRACK_TYPE_AUDIO;
+import static androidx.media3.common.C.TRACK_TYPE_IMAGE;
 import static androidx.media3.common.C.TRACK_TYPE_VIDEO;
-import static androidx.media3.common.util.Assertions.checkNotNull;
-import static androidx.media3.common.util.Assertions.checkState;
 import static androidx.media3.exoplayer.Renderer.MSG_TRANSFER_RESOURCES;
 import static androidx.media3.exoplayer.Renderer.STATE_DISABLED;
 import static androidx.media3.exoplayer.Renderer.STATE_ENABLED;
 import static androidx.media3.exoplayer.Renderer.STATE_STARTED;
+import static com.google.common.base.Preconditions.checkNotNull;
+import static com.google.common.base.Preconditions.checkState;
 import static java.lang.Math.min;
 import static java.lang.annotation.ElementType.TYPE_USE;
 
@@ -38,6 +39,7 @@ import androidx.media3.exoplayer.source.SampleStream;
 import androidx.media3.exoplayer.text.TextRenderer;
 import androidx.media3.exoplayer.trackselection.ExoTrackSelection;
 import androidx.media3.exoplayer.trackselection.TrackSelectorResult;
+import androidx.media3.exoplayer.video.VideoFrameMetadataListener;
 import java.io.IOException;
 import java.lang.annotation.Documented;
 import java.lang.annotation.Retention;
@@ -80,12 +82,6 @@ import java.util.Objects;
 
   public boolean isPrewarming() {
     return isPrimaryRendererPrewarming() || isSecondaryRendererPrewarming();
-  }
-
-  public boolean isRendererPrewarming(int id) {
-    boolean isPrewarmingPrimaryRenderer = isPrimaryRendererPrewarming() && id == index;
-    boolean isPrewarmingSecondaryRenderer = isSecondaryRendererPrewarming() && id != index;
-    return isPrewarmingPrimaryRenderer || isPrewarmingSecondaryRenderer;
   }
 
   private boolean isPrimaryRendererPrewarming() {
@@ -318,6 +314,21 @@ import java.util.Objects;
   }
 
   /**
+   * Returns whether a {@link Renderer} is prewarming and enabled on a {@link MediaPeriodHolder
+   * media period}.
+   *
+   * @param period The {@link MediaPeriodHolder media period} to check.
+   */
+  public boolean isPrewarmingPeriod(MediaPeriodHolder period) {
+    boolean isPrimaryRendererPrewarming =
+        isPrimaryRendererPrewarming() && getRendererReadingFromPeriod(period) == primaryRenderer;
+    boolean isSecondaryRendererPrewarming =
+        isSecondaryRendererPrewarming()
+            && getRendererReadingFromPeriod(period) == secondaryRenderer;
+    return isPrimaryRendererPrewarming || isSecondaryRendererPrewarming;
+  }
+
+  /**
    * Returns whether the {@link Renderer renderers} are still reading a {@link MediaPeriodHolder
    * media period}.
    *
@@ -530,6 +541,24 @@ import java.util.Objects;
   }
 
   /**
+   * Enables or disables scrubbing mode through a {@link Renderer#handleMessage} with {@link
+   * Renderer#MSG_SET_SCRUBBING_MODE}.
+   *
+   * <p>If {@code scrubbingModeParameters} is {@code null} then scrubbing mode will be disabled.
+   *
+   * @param scrubbingModeParameters The {@link ScrubbingModeParameters} to set unto the {@link
+   *     Renderer}.
+   * @see Renderer#MSG_SET_SCRUBBING_MODE
+   */
+  public void setScrubbingMode(@Nullable ScrubbingModeParameters scrubbingModeParameters)
+      throws ExoPlaybackException {
+    primaryRenderer.handleMessage(Renderer.MSG_SET_SCRUBBING_MODE, scrubbingModeParameters);
+    if (secondaryRenderer != null) {
+      secondaryRenderer.handleMessage(Renderer.MSG_SET_SCRUBBING_MODE, scrubbingModeParameters);
+    }
+  }
+
+  /**
    * Stops and disables all {@link Renderer renderers}.
    *
    * @param mediaClock To call {@link DefaultMediaClock#onRendererDisabled} if disabling a {@link
@@ -619,7 +648,7 @@ import java.util.Objects;
         disableRenderer(renderer, mediaClock);
       } else if (streamReset) {
         // The renderer will continue to consume from its current stream, but needs to be reset.
-        renderer.resetPosition(rendererPositionUs);
+        renderer.resetPosition(rendererPositionUs, /* sampleStreamIsResetToKeyFrame= */ true);
       }
     }
   }
@@ -651,12 +680,26 @@ import java.util.Objects;
    *
    * @see Renderer#resetPosition
    */
-  public void resetPosition(MediaPeriodHolder playingPeriod, long positionUs)
+  public void resetPosition(
+      MediaPeriodHolder playingPeriod, long positionUs, boolean sampleStreamIsResetToKeyFrame)
       throws ExoPlaybackException {
     Renderer renderer = getRendererReadingFromPeriod(playingPeriod);
     if (renderer != null) {
-      renderer.resetPosition(positionUs);
+      renderer.resetPosition(positionUs, sampleStreamIsResetToKeyFrame);
     }
+  }
+
+  /**
+   * Returns {@code true} if a {@link Renderer} is enabled on the provided {@link MediaPeriodHolder
+   * media period} and if it will support a {@link Renderer#resetPosition} invocation without
+   * resetting the sample stream to a key frame.
+   *
+   * @see Renderer#supportsResetPositionWithoutKeyFrameReset
+   */
+  public boolean supportsResetPositionWithoutKeyFrameReset(
+      MediaPeriodHolder playingPeriod, long positionUs) {
+    Renderer renderer = getRendererReadingFromPeriod(playingPeriod);
+    return renderer != null && renderer.supportsResetPositionWithoutKeyFrameReset(positionUs);
   }
 
   /**
@@ -772,6 +815,19 @@ import java.util.Objects;
       checkNotNull(secondaryRenderer).handleMessage(Renderer.MSG_SET_VIDEO_OUTPUT, videoOutput);
     } else {
       primaryRenderer.handleMessage(Renderer.MSG_SET_VIDEO_OUTPUT, videoOutput);
+    }
+  }
+
+  public void setVideoFrameMetadataListener(VideoFrameMetadataListener videoFrameMetadataListener)
+      throws ExoPlaybackException {
+    if (getTrackType() != TRACK_TYPE_VIDEO && getTrackType() != TRACK_TYPE_IMAGE) {
+      return;
+    }
+    primaryRenderer.handleMessage(
+        Renderer.MSG_SET_VIDEO_FRAME_METADATA_LISTENER, videoFrameMetadataListener);
+    if (secondaryRenderer != null) {
+      secondaryRenderer.handleMessage(
+          Renderer.MSG_SET_VIDEO_FRAME_METADATA_LISTENER, videoFrameMetadataListener);
     }
   }
 

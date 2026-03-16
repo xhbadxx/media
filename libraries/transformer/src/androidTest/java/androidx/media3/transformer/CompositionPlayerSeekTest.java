@@ -16,10 +16,12 @@
 
 package androidx.media3.transformer;
 
+import static android.os.Build.VERSION.SDK_INT;
 import static androidx.media3.common.util.Util.isRunningOnEmulator;
 import static androidx.media3.common.util.Util.usToMs;
-import static androidx.media3.transformer.AndroidTestUtil.MP4_ASSET;
-import static androidx.media3.transformer.AndroidTestUtil.PNG_ASSET;
+import static androidx.media3.test.utils.AssetInfo.MP4_ASSET;
+import static androidx.media3.test.utils.AssetInfo.PNG_ASSET;
+import static androidx.media3.test.utils.AssetInfo.WAV_ASSET;
 import static androidx.test.platform.app.InstrumentationRegistry.getInstrumentation;
 import static com.google.common.collect.Iterables.getLast;
 import static com.google.common.collect.Iterables.skip;
@@ -31,6 +33,7 @@ import static org.junit.Assume.assumeFalse;
 
 import android.content.Context;
 import android.view.SurfaceView;
+import androidx.media3.common.C;
 import androidx.media3.common.ColorInfo;
 import androidx.media3.common.DebugViewProvider;
 import androidx.media3.common.Effect;
@@ -39,14 +42,13 @@ import androidx.media3.common.GlTextureInfo;
 import androidx.media3.common.MediaItem;
 import androidx.media3.common.PlaybackException;
 import androidx.media3.common.Player;
-import androidx.media3.common.PreviewingVideoGraph;
-import androidx.media3.common.VideoCompositorSettings;
 import androidx.media3.common.VideoFrameProcessingException;
 import androidx.media3.common.VideoGraph;
 import androidx.media3.common.util.NullableType;
 import androidx.media3.common.util.Util;
 import androidx.media3.effect.GlEffect;
-import androidx.media3.effect.PreviewingSingleInputVideoGraph;
+import androidx.media3.effect.SingleInputVideoGraph;
+import androidx.media3.test.utils.PassthroughAudioProcessor;
 import androidx.test.ext.junit.rules.ActivityScenarioRule;
 import androidx.test.ext.junit.runners.AndroidJUnit4;
 import com.google.common.collect.ImmutableList;
@@ -56,7 +58,7 @@ import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executor;
 import java.util.concurrent.TimeoutException;
-import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.After;
 import org.junit.Before;
@@ -96,33 +98,32 @@ public class CompositionPlayerSeekTest {
 
   private final Context applicationContext =
       getInstrumentation().getContext().getApplicationContext();
-  private final PlayerTestListener playerTestListener = new PlayerTestListener(TEST_TIMEOUT_MS);
+  private final AtomicReference<CompositionPlayer> player = new AtomicReference<>();
 
-  private CompositionPlayer compositionPlayer;
+  private PlayerTestListener playerTestListener;
   private SurfaceView surfaceView;
 
   @Before
   public void setUp() {
+    playerTestListener = new PlayerTestListener(TEST_TIMEOUT_MS);
     rule.getScenario().onActivity(activity -> surfaceView = activity.getSurfaceView());
   }
 
   @After
   public void tearDown() {
+    CompositionPlayer p = player.getAndSet(null);
+    if (p != null) {
+      getInstrumentation().runOnMainSync(() -> p.release());
+    }
+
     rule.getScenario().close();
-    getInstrumentation()
-        .runOnMainSync(
-            () -> {
-              if (compositionPlayer != null) {
-                compositionPlayer.release();
-              }
-            });
   }
 
   @Test
   public void seekToZero_afterPlayingSingleSequenceOfTwoVideos() throws Exception {
     assumeFalse(
         "Skipped due to failing audio decoder on API 31 emulator",
-        isRunningOnEmulator() && Util.SDK_INT == 31);
+        isRunningOnEmulator() && SDK_INT == 31);
     ImmutableList<Long> sequenceTimestampsUs =
         new ImmutableList.Builder<Long>()
             // Plays the first video
@@ -148,7 +149,7 @@ public class CompositionPlayerSeekTest {
   public void seekToFirstVideo_afterPlayingSingleSequenceOfTwoVideos() throws Exception {
     assumeFalse(
         "Skipped due to failing audio decoder on API 31 emulator",
-        isRunningOnEmulator() && Util.SDK_INT == 31);
+        isRunningOnEmulator() && SDK_INT == 31);
     // Skips the first three video frames
     long seekTimeMs = 100;
     ImmutableList<Long> sequenceTimestampsUs =
@@ -174,7 +175,7 @@ public class CompositionPlayerSeekTest {
   public void seekToStartOfSecondVideo_afterPlayingSingleSequenceOfTwoVideos() throws Exception {
     assumeFalse(
         "Skipped due to failing audio decoder on API 31 emulator",
-        isRunningOnEmulator() && Util.SDK_INT == 31);
+        isRunningOnEmulator() && SDK_INT == 31);
     // Seeks to the end of the first video
     long seekTimeMs = usToMs(VIDEO_DURATION_US);
     ImmutableList<Long> sequenceTimestampsUs =
@@ -199,7 +200,7 @@ public class CompositionPlayerSeekTest {
   public void seekToSecondVideo_afterPlayingSingleSequenceOfTwoVideos() throws Exception {
     assumeFalse(
         "Skipped due to failing audio decoder on API 31 emulator",
-        isRunningOnEmulator() && Util.SDK_INT == 31);
+        isRunningOnEmulator() && SDK_INT == 31);
     // Skips the first three image frames of the second image.
     long seekTimeMs = usToMs(VIDEO_DURATION_US) + 100;
     ImmutableList<Long> sequenceTimestampsUs =
@@ -226,7 +227,7 @@ public class CompositionPlayerSeekTest {
   public void seekToEndOfSecondVideo_afterPlayingSingleSequenceOfTwoVideos() throws Exception {
     assumeFalse(
         "Skipped due to failing audio decoder on API 31 emulator",
-        isRunningOnEmulator() && Util.SDK_INT == 31);
+        isRunningOnEmulator() && SDK_INT == 31);
     // Seeks to the end of the second video
     long seekTimeMs = usToMs(2 * VIDEO_DURATION_US);
     ImmutableList<Long> sequenceTimestampsUs =
@@ -250,7 +251,7 @@ public class CompositionPlayerSeekTest {
   public void seekToAfterEndOfSecondVideo_afterPlayingSingleSequenceOfTwoVideos() throws Exception {
     assumeFalse(
         "Skipped due to failing audio decoder on API 31 emulator",
-        isRunningOnEmulator() && Util.SDK_INT == 31);
+        isRunningOnEmulator() && SDK_INT == 31);
     long seekTimeMs = usToMs(3 * VIDEO_DURATION_US);
     ImmutableList<Long> sequenceTimestampsUs =
         new ImmutableList.Builder<Long>()
@@ -406,7 +407,7 @@ public class CompositionPlayerSeekTest {
   public void seekToZero_afterPlayingSingleSequenceOfVideoAndImage() throws Exception {
     assumeFalse(
         "Skipped due to failing audio decoder on API 31 emulator",
-        isRunningOnEmulator() && Util.SDK_INT == 31);
+        isRunningOnEmulator() && SDK_INT == 31);
     ImmutableList<Long> sequenceTimestampsUs =
         new ImmutableList.Builder<Long>()
             // Plays the video
@@ -432,7 +433,7 @@ public class CompositionPlayerSeekTest {
   public void seekToVideo_afterPlayingSingleSequenceOfVideoAndImage() throws Exception {
     assumeFalse(
         "Skipped due to failing audio decoder on API 31 emulator",
-        isRunningOnEmulator() && Util.SDK_INT == 31);
+        isRunningOnEmulator() && SDK_INT == 31);
     // Skips three video frames
     long seekTimeMs = 100;
     ImmutableList<Long> sequenceTimestampsUs =
@@ -459,7 +460,7 @@ public class CompositionPlayerSeekTest {
   public void seekToImage_afterPlayingSingleSequenceOfVideoAndImage() throws Exception {
     assumeFalse(
         "Skipped due to failing audio decoder on API 31 emulator",
-        isRunningOnEmulator() && Util.SDK_INT == 31);
+        isRunningOnEmulator() && SDK_INT == 31);
     // Skips video frames and three image frames
     long seekTimeMs = usToMs(VIDEO_DURATION_US) + 100;
     ImmutableList<Long> sequenceTimestampsUs =
@@ -538,7 +539,7 @@ public class CompositionPlayerSeekTest {
   public void seekToVideo_afterPlayingSingleSequenceOfImageAndVideo() throws Exception {
     assumeFalse(
         "Skipped due to failing audio decoder on API 31 emulator",
-        isRunningOnEmulator() && Util.SDK_INT == 31);
+        isRunningOnEmulator() && SDK_INT == 31);
     // Skips to the first video frame.
     long seekTimeMs = usToMs(IMAGE_DURATION_US);
     ImmutableList<Long> sequenceTimestampsUs =
@@ -563,7 +564,7 @@ public class CompositionPlayerSeekTest {
   public void seekToZero_duringPlayingFirstVideoInSingleSequenceOfTwoVideos() throws Exception {
     assumeFalse(
         "Skipped due to failing audio decoder on API 31 emulator",
-        isRunningOnEmulator() && Util.SDK_INT == 31);
+        isRunningOnEmulator() && SDK_INT == 31);
     ImmutableList<MediaItemConfig> mediaItems =
         ImmutableList.of(VIDEO_MEDIA_ITEM, VIDEO_MEDIA_ITEM);
     int numberOfFramesBeforeSeeking = 15;
@@ -591,7 +592,7 @@ public class CompositionPlayerSeekTest {
       throws Exception {
     assumeFalse(
         "Skipped due to failing audio decoder on API 31 emulator",
-        isRunningOnEmulator() && Util.SDK_INT == 31);
+        isRunningOnEmulator() && SDK_INT == 31);
     ImmutableList<MediaItemConfig> mediaItems =
         ImmutableList.of(VIDEO_MEDIA_ITEM, VIDEO_MEDIA_ITEM);
     int numberOfFramesBeforeSeeking = 15;
@@ -620,7 +621,7 @@ public class CompositionPlayerSeekTest {
       throws Exception {
     assumeFalse(
         "Skipped due to failing audio decoder on API 31 emulator",
-        isRunningOnEmulator() && Util.SDK_INT == 31);
+        isRunningOnEmulator() && SDK_INT == 31);
     ImmutableList<MediaItemConfig> mediaItems =
         ImmutableList.of(VIDEO_MEDIA_ITEM, VIDEO_MEDIA_ITEM);
     int numberOfFramesBeforeSeeking = 45;
@@ -653,7 +654,7 @@ public class CompositionPlayerSeekTest {
       throws Exception {
     assumeFalse(
         "Skipped due to failing audio decoder on API 31 emulator",
-        isRunningOnEmulator() && Util.SDK_INT == 31);
+        isRunningOnEmulator() && SDK_INT == 31);
     ImmutableList<MediaItemConfig> mediaItems =
         ImmutableList.of(VIDEO_MEDIA_ITEM, VIDEO_MEDIA_ITEM);
     int numberOfFramesBeforeSeeking = 15;
@@ -680,7 +681,7 @@ public class CompositionPlayerSeekTest {
       throws Exception {
     assumeFalse(
         "Skipped due to failing audio decoder on API 31 emulator",
-        isRunningOnEmulator() && Util.SDK_INT == 31);
+        isRunningOnEmulator() && SDK_INT == 31);
     ImmutableList<MediaItemConfig> mediaItems =
         ImmutableList.of(VIDEO_MEDIA_ITEM, VIDEO_MEDIA_ITEM);
     int numberOfFramesBeforeSeeking = 15;
@@ -748,10 +749,33 @@ public class CompositionPlayerSeekTest {
   }
 
   @Test
+  public void seekToVideo_atTransitionBetweenImages_completes() throws Exception {
+    ImmutableList<MediaItemConfig> mediaItems =
+        ImmutableList.of(IMAGE_MEDIA_ITEM, IMAGE_MEDIA_ITEM, VIDEO_MEDIA_ITEM);
+    int numberOfFramesBeforeSeeking = 2;
+    long seekTimeMs = 2 * Util.usToMs(IMAGE_DURATION_US) + 200;
+    ImmutableList<Long> expectedTimestampsUs =
+        new ImmutableList.Builder<Long>()
+            // Play the first 2 frames of the first image
+            .addAll(
+                Iterables.limit(IMAGE_TIMESTAMPS_US, /* limitSize= */ numberOfFramesBeforeSeeking))
+            .addAll(
+                transform(
+                    Iterables.skip(VIDEO_TIMESTAMPS_US, /* numberToSkip= */ 6),
+                    timestampUs -> (2 * IMAGE_DURATION_US + timestampUs)))
+            .build();
+
+    ImmutableList<Long> actualTimestampsUs =
+        playSequenceAndGetTimestampsUs(mediaItems, numberOfFramesBeforeSeeking, seekTimeMs);
+
+    assertThat(actualTimestampsUs).isEqualTo(expectedTimestampsUs);
+  }
+
+  @Test
   public void seekToImage_duringPlayingFirstImageInSequenceOfVideoAndImage() throws Exception {
     assumeFalse(
         "Skipped due to failing audio decoder on API 31 emulator",
-        isRunningOnEmulator() && Util.SDK_INT == 31);
+        isRunningOnEmulator() && SDK_INT == 31);
     ImmutableList<MediaItemConfig> mediaItems =
         ImmutableList.of(VIDEO_MEDIA_ITEM, IMAGE_MEDIA_ITEM);
     int numberOfFramesBeforeSeeking = 15;
@@ -779,7 +803,7 @@ public class CompositionPlayerSeekTest {
   public void seekToVideo_duringPlayingFirstImageInSequenceOfImageAndVideo() throws Exception {
     assumeFalse(
         "Skipped due to failing audio decoder on API 31 emulator",
-        isRunningOnEmulator() && Util.SDK_INT == 31);
+        isRunningOnEmulator() && SDK_INT == 31);
     ImmutableList<MediaItemConfig> mediaItems =
         ImmutableList.of(IMAGE_MEDIA_ITEM, VIDEO_MEDIA_ITEM);
     int numberOfFramesBeforeSeeking = 3;
@@ -807,8 +831,7 @@ public class CompositionPlayerSeekTest {
   public void
       seekToSecondVideo_duringPlayingFirstVideoInSingleSequenceOfTwoVideosWithPrewarmingDisabled()
           throws Exception {
-    assumeFalse(
-        "Skipped due to failing audio decoder", isRunningOnEmulator() && Util.SDK_INT == 31);
+    assumeFalse("Skipped due to failing audio decoder", isRunningOnEmulator() && SDK_INT == 31);
     ImmutableList<MediaItemConfig> mediaItems =
         ImmutableList.of(VIDEO_MEDIA_ITEM, VIDEO_MEDIA_ITEM);
     int numberOfFramesBeforeSeeking = 15;
@@ -836,6 +859,182 @@ public class CompositionPlayerSeekTest {
     assertThat(actualTimestampsUs).isEqualTo(expectedTimestampsUs);
   }
 
+  @Test
+  public void seekToMidClip_withSingleAudioClipSequence_reportsCorrectAudioProcessorPositionOffset()
+      throws PlaybackException, TimeoutException {
+    AtomicLong lastPositionOffsetUs = new AtomicLong(C.TIME_UNSET);
+    PassthroughAudioProcessor fakeProcessor =
+        new PassthroughAudioProcessor() {
+          @Override
+          protected void onFlush(StreamMetadata streamMetadata) {
+            lastPositionOffsetUs.set(streamMetadata.positionOffsetUs);
+          }
+        };
+    EditedMediaItem item =
+        new EditedMediaItem.Builder(MediaItem.fromUri(WAV_ASSET.uri))
+            .setDurationUs(1_000_000L)
+            .setEffects(new Effects(ImmutableList.of(fakeProcessor), ImmutableList.of()))
+            .build();
+    final Composition composition =
+        new Composition.Builder(new EditedMediaItemSequence.Builder(item).build()).build();
+
+    getInstrumentation()
+        .runOnMainSync(
+            () -> {
+              player.set(new CompositionPlayer.Builder(applicationContext).build());
+              player.get().addListener(playerTestListener);
+              player.get().setComposition(composition);
+              player.get().prepare();
+            });
+    playerTestListener.waitUntilPlayerReady();
+
+    playerTestListener.resetStatus();
+    getInstrumentation().runOnMainSync(() -> player.get().seekTo(/* positionMs= */ 500));
+    playerTestListener.waitUntilPlayerReady();
+
+    assertThat(lastPositionOffsetUs.get()).isEqualTo(/* positionOffsetUs */ 500_000);
+  }
+
+  @Test
+  public void seekToMidClip_withCompositionAudioProcessor_reportsCorrectPositionOffset()
+      throws PlaybackException, TimeoutException {
+    AtomicLong lastPositionOffsetUs = new AtomicLong(C.TIME_UNSET);
+    PassthroughAudioProcessor fakeProcessor =
+        new PassthroughAudioProcessor() {
+          @Override
+          protected void onFlush(StreamMetadata streamMetadata) {
+            lastPositionOffsetUs.set(streamMetadata.positionOffsetUs);
+          }
+        };
+    EditedMediaItem item =
+        new EditedMediaItem.Builder(MediaItem.fromUri(WAV_ASSET.uri))
+            .setDurationUs(1_000_000L)
+            .build();
+    final Composition composition =
+        new Composition.Builder(new EditedMediaItemSequence.Builder(item).build())
+            .setEffects(new Effects(ImmutableList.of(fakeProcessor), ImmutableList.of()))
+            .build();
+
+    getInstrumentation()
+        .runOnMainSync(
+            () -> {
+              player.set(new CompositionPlayer.Builder(applicationContext).build());
+              player.get().addListener(playerTestListener);
+              player.get().setComposition(composition);
+              player.get().prepare();
+            });
+    playerTestListener.waitUntilPlayerReady();
+
+    playerTestListener.resetStatus();
+    getInstrumentation().runOnMainSync(() -> player.get().seekTo(/* positionMs= */ 300));
+    playerTestListener.waitUntilPlayerReady();
+
+    assertThat(lastPositionOffsetUs.get()).isEqualTo(/* positionOffsetUs */ 300_000);
+  }
+
+  @Test
+  public void
+      seekToSecondClip_withMultipleAudioClipSequence_reportsMediaItemRelativePositionOffset()
+          throws PlaybackException, TimeoutException {
+    AtomicLong lastPositionOffsetUs = new AtomicLong(C.TIME_UNSET);
+    PassthroughAudioProcessor fakeProcessor =
+        new PassthroughAudioProcessor() {
+          @Override
+          protected void onFlush(StreamMetadata streamMetadata) {
+            lastPositionOffsetUs.set(streamMetadata.positionOffsetUs);
+          }
+        };
+    EditedMediaItem firstItem =
+        new EditedMediaItem.Builder(MediaItem.fromUri(WAV_ASSET.uri))
+            .setDurationUs(1_000_000L)
+            .build();
+
+    EditedMediaItem secondItem =
+        new EditedMediaItem.Builder(MediaItem.fromUri(WAV_ASSET.uri))
+            .setDurationUs(1_000_000L)
+            .setEffects(new Effects(ImmutableList.of(fakeProcessor), ImmutableList.of()))
+            .build();
+    final Composition composition =
+        new Composition.Builder(new EditedMediaItemSequence.Builder(firstItem, secondItem).build())
+            .build();
+
+    getInstrumentation()
+        .runOnMainSync(
+            () -> {
+              player.set(new CompositionPlayer.Builder(applicationContext).build());
+              player.get().addListener(playerTestListener);
+              player.get().setComposition(composition);
+              player.get().prepare();
+            });
+    playerTestListener.waitUntilPlayerReady();
+
+    playerTestListener.resetStatus();
+    getInstrumentation().runOnMainSync(() -> player.get().seekTo(/* positionMs= */ 1200));
+    playerTestListener.waitUntilPlayerReady();
+
+    assertThat(lastPositionOffsetUs.get()).isEqualTo(/* positionOffsetUs */ 200_000);
+  }
+
+  @Test
+  public void seek_withMultipleAudioSequences_reportsExpectedPositionToEachSequence()
+      throws PlaybackException, TimeoutException {
+    AtomicLong lastPositionOffsetUsFirstSequence = new AtomicLong(C.TIME_UNSET);
+    PassthroughAudioProcessor firstSequenceProcessor =
+        new PassthroughAudioProcessor() {
+          @Override
+          protected void onFlush(StreamMetadata streamMetadata) {
+            lastPositionOffsetUsFirstSequence.set(streamMetadata.positionOffsetUs);
+          }
+        };
+
+    AtomicLong lastPositionOffsetUsSecondSequence = new AtomicLong(C.TIME_UNSET);
+    PassthroughAudioProcessor secondSequenceProcessor =
+        new PassthroughAudioProcessor() {
+          @Override
+          protected void onFlush(StreamMetadata streamMetadata) {
+            lastPositionOffsetUsSecondSequence.set(streamMetadata.positionOffsetUs);
+          }
+        };
+
+    EditedMediaItem firstSequenceItem =
+        new EditedMediaItem.Builder(MediaItem.fromUri(WAV_ASSET.uri))
+            .setEffects(new Effects(ImmutableList.of(firstSequenceProcessor), ImmutableList.of()))
+            .setDurationUs(1_000_000L)
+            .build();
+    EditedMediaItem secondSequenceItem =
+        new EditedMediaItem.Builder(MediaItem.fromUri(WAV_ASSET.uri))
+            .setDurationUs(1_000_000L)
+            .setEffects(new Effects(ImmutableList.of(secondSequenceProcessor), ImmutableList.of()))
+            .build();
+
+    final Composition composition =
+        new Composition.Builder(
+                new EditedMediaItemSequence.Builder(firstSequenceItem).build(),
+                new EditedMediaItemSequence.Builder()
+                    .addGap(/* durationUs= */ 300_000)
+                    .addItem(secondSequenceItem)
+                    .experimentalSetForceAudioTrack(true)
+                    .build())
+            .build();
+
+    getInstrumentation()
+        .runOnMainSync(
+            () -> {
+              player.set(new CompositionPlayer.Builder(applicationContext).build());
+              player.get().addListener(playerTestListener);
+              player.get().setComposition(composition);
+              player.get().prepare();
+            });
+    playerTestListener.waitUntilPlayerReady();
+
+    playerTestListener.resetStatus();
+    getInstrumentation().runOnMainSync(() -> player.get().seekTo(/* positionMs= */ 400));
+    playerTestListener.waitUntilPlayerReady();
+
+    assertThat(lastPositionOffsetUsFirstSequence.get()).isEqualTo(/* positionOffsetUs */ 400_000);
+    assertThat(lastPositionOffsetUsSecondSequence.get()).isEqualTo(/* positionOffsetUs */ 100_000);
+  }
+
   /**
    * Plays the first {@code numberOfFramesBeforeSeeking} frames of the provided sequence, seeks to
    * {@code seekTimeMs}, resumes playback until it ends, and returns the timestamps of the processed
@@ -847,10 +1046,10 @@ public class CompositionPlayerSeekTest {
       long seekTimeMs,
       boolean videoPrewarmingEnabled)
       throws Exception {
-    ResettableCountDownLatch frameCountBeforeBlockLatch =
-        new ResettableCountDownLatch(numberOfFramesBeforeSeeking);
+    CountDownLatch waitUntilNumberOfFramesOrError = new CountDownLatch(1);
     InputTimestampRecordingShaderProgram inputTimestampRecordingShaderProgram =
-        createInputTimestampRecordingShaderProgram(frameCountBeforeBlockLatch);
+        createInputTimestampRecordingShaderProgram(
+            numberOfFramesBeforeSeeking, waitUntilNumberOfFramesOrError);
     CountDownLatch videoGraphEnded = new CountDownLatch(1);
     AtomicReference<@NullableType PlaybackException> playbackException = new AtomicReference<>();
 
@@ -862,47 +1061,58 @@ public class CompositionPlayerSeekTest {
               /* videoEffect= */ (GlEffect)
                   (context, useHdr) -> inputTimestampRecordingShaderProgram));
     }
+    AtomicReference<CompositionPlayer> compositionPlayer = new AtomicReference<>();
 
     getInstrumentation()
         .runOnMainSync(
             () -> {
-              compositionPlayer =
+              compositionPlayer.set(
                   new CompositionPlayer.Builder(applicationContext)
-                      .setPreviewingVideoGraphFactory(
-                          new ListenerCapturingVideoGraphFactory(videoGraphEnded))
+                      .setVideoGraphFactory(new ListenerCapturingVideoGraphFactory(videoGraphEnded))
                       .setVideoPrewarmingEnabled(videoPrewarmingEnabled)
-                      .build();
+                      .experimentalSetLateThresholdToDropInputUs(C.TIME_UNSET)
+                      .build());
               // Set a surface on the player even though there is no UI on this test. We need a
               // surface otherwise the player will skip/drop video frames.
-              compositionPlayer.setVideoSurfaceView(surfaceView);
-              compositionPlayer.addListener(playerTestListener);
-              compositionPlayer.addListener(
-                  new Player.Listener() {
-                    @Override
-                    public void onPlayerError(PlaybackException error) {
-                      playbackException.set(error);
-                      frameCountBeforeBlockLatch.unblock();
-                    }
-                  });
-              compositionPlayer.setComposition(
-                  new Composition.Builder(
-                          new EditedMediaItemSequence.Builder(editedMediaItems).build())
-                      .build());
-              compositionPlayer.prepare();
-              compositionPlayer.play();
+              compositionPlayer.get().setVideoSurfaceView(surfaceView);
+              compositionPlayer.get().addListener(playerTestListener);
+              compositionPlayer
+                  .get()
+                  .addListener(
+                      new Player.Listener() {
+                        @Override
+                        public void onPlayerError(PlaybackException error) {
+                          playbackException.set(error);
+                          waitUntilNumberOfFramesOrError.countDown();
+                        }
+                      });
+              compositionPlayer
+                  .get()
+                  .setComposition(
+                      new Composition.Builder(
+                              new EditedMediaItemSequence.Builder(editedMediaItems).build())
+                          .build());
+              compositionPlayer.get().prepare();
+              compositionPlayer.get().play();
             });
 
     // Wait until the number of frames are received, block further input on the shader program.
     assertWithMessage("Timeout reached while waiting for frames.")
-        .that(frameCountBeforeBlockLatch.await())
+        .that(waitUntilNumberOfFramesOrError.await(TEST_TIMEOUT_MS, MILLISECONDS))
         .isTrue();
     if (playbackException.get() != null) {
       throw playbackException.get();
     }
-    getInstrumentation().runOnMainSync(() -> compositionPlayer.seekTo(seekTimeMs));
+    getInstrumentation().runOnMainSync(() -> compositionPlayer.get().seekTo(seekTimeMs));
     playerTestListener.waitUntilPlayerEnded();
 
     assertThat(videoGraphEnded.await(VIDEO_GRAPH_END_TIMEOUT_MS, MILLISECONDS)).isTrue();
+
+    getInstrumentation().runOnMainSync(() -> compositionPlayer.get().release());
+    if (playbackException.get() != null
+        && playbackException.get().errorCode != PlaybackException.ERROR_CODE_TIMEOUT) {
+      throw playbackException.get();
+    }
     return inputTimestampRecordingShaderProgram.getInputTimestampsUs();
   }
 
@@ -940,50 +1150,61 @@ public class CompositionPlayerSeekTest {
                   (context, useHdr) -> inputTimestampRecordingShaderProgram));
     }
 
+    AtomicReference<CompositionPlayer> compositionPlayer = new AtomicReference<>();
+
     getInstrumentation()
         .runOnMainSync(
             () -> {
-              compositionPlayer =
+              compositionPlayer.set(
                   new CompositionPlayer.Builder(applicationContext)
-                      .setPreviewingVideoGraphFactory(
-                          new ListenerCapturingVideoGraphFactory(videoGraphEnded))
-                      .build();
+                      .setVideoGraphFactory(new ListenerCapturingVideoGraphFactory(videoGraphEnded))
+                      .experimentalSetLateThresholdToDropInputUs(C.TIME_UNSET)
+                      .build());
               // Set a surface on the player even though there is no UI on this test. We need a
               // surface otherwise the player will skip/drop video frames.
-              compositionPlayer.setVideoSurfaceView(surfaceView);
-              compositionPlayer.addListener(playerTestListener);
-              compositionPlayer.addListener(
-                  new Player.Listener() {
-                    @Override
-                    public void onPlayerError(PlaybackException error) {
-                      playbackException.set(error);
-                    }
-                  });
-              compositionPlayer.setComposition(
-                  new Composition.Builder(
-                          new EditedMediaItemSequence.Builder(editedMediaItems).build())
-                      .build());
-              compositionPlayer.prepare();
-              compositionPlayer.play();
+              compositionPlayer.get().setVideoSurfaceView(surfaceView);
+              compositionPlayer.get().addListener(playerTestListener);
+              compositionPlayer
+                  .get()
+                  .addListener(
+                      new Player.Listener() {
+                        @Override
+                        public void onPlayerError(PlaybackException error) {
+                          playbackException.set(error);
+                        }
+                      });
+              compositionPlayer
+                  .get()
+                  .setComposition(
+                      new Composition.Builder(
+                              new EditedMediaItemSequence.Builder(editedMediaItems).build())
+                          .build());
+              compositionPlayer.get().prepare();
+              compositionPlayer.get().play();
             });
     playerTestListener.waitUntilPlayerEnded();
     playerTestListener.resetStatus();
-    getInstrumentation().runOnMainSync(() -> compositionPlayer.seekTo(seekTimeMs));
+    getInstrumentation().runOnMainSync(() -> compositionPlayer.get().seekTo(seekTimeMs));
     playerTestListener.waitUntilPlayerEnded();
-
+    getInstrumentation().runOnMainSync(() -> compositionPlayer.get().release());
+    if (playbackException.get() != null
+        && playbackException.get().errorCode != PlaybackException.ERROR_CODE_TIMEOUT) {
+      throw playbackException.get();
+    }
     return inputTimestampRecordingShaderProgram.getInputTimestampsUs();
   }
 
   /**
-   * Creates an {@link InputTimestampRecordingShaderProgram} that blocks input after receiving the
-   * number of frames specified by the provided {@link ResettableCountDownLatch}.
+   * Creates an {@link InputTimestampRecordingShaderProgram} that signals the provided {@link
+   * CountDownLatch} and blocks input after receiving the number of frames specified.
    *
    * <p>Input is unblocked when the shader program is flushed.
    */
   private static InputTimestampRecordingShaderProgram createInputTimestampRecordingShaderProgram(
-      ResettableCountDownLatch frameCountBeforeBlockLatch) {
-    AtomicBoolean shaderProgramShouldBlockInput = new AtomicBoolean();
+      int numberOfFramesBeforeSeeking, CountDownLatch waitUntilNumberOfFrames) {
     return new InputTimestampRecordingShaderProgram() {
+      private int framesQueued;
+      private boolean seekCompleted;
 
       @Override
       public void queueInputFrame(
@@ -991,9 +1212,9 @@ public class CompositionPlayerSeekTest {
           GlTextureInfo inputTexture,
           long presentationTimeUs) {
         super.queueInputFrame(glObjectsProvider, inputTexture, presentationTimeUs);
-        frameCountBeforeBlockLatch.countDown();
-        if (frameCountBeforeBlockLatch.getCount() == 0) {
-          shaderProgramShouldBlockInput.set(true);
+        framesQueued += 1;
+        if (areEnoughFramesQueued()) {
+          waitUntilNumberOfFrames.countDown();
         }
       }
 
@@ -1001,7 +1222,7 @@ public class CompositionPlayerSeekTest {
       public void releaseOutputFrame(GlTextureInfo outputTexture) {
         // The input listener capacity is reported in the super method, block input by skip
         // reporting input capacity.
-        if (shaderProgramShouldBlockInput.get()) {
+        if (!seekCompleted && areEnoughFramesQueued()) {
           return;
         }
         super.releaseOutputFrame(outputTexture);
@@ -1010,13 +1231,16 @@ public class CompositionPlayerSeekTest {
       @Override
       public void flush() {
         super.flush();
-        if (frameCountBeforeBlockLatch.getCount() == 0) {
+        if (areEnoughFramesQueued()) {
           // The flush is caused by the seek operation. We do this check because the shader
           // program can be flushed for other reasons, for example at the transition between 2
           // renderers.
-          shaderProgramShouldBlockInput.set(false);
-          frameCountBeforeBlockLatch.reset(Integer.MAX_VALUE);
+          seekCompleted = true;
         }
+      }
+
+      private boolean areEnoughFramesQueued() {
+        return framesQueued >= numberOfFramesBeforeSeeking;
       }
     };
   }
@@ -1037,27 +1261,25 @@ public class CompositionPlayerSeekTest {
         .build();
   }
 
-  private static final class ListenerCapturingVideoGraphFactory
-      implements PreviewingVideoGraph.Factory {
+  private static final class ListenerCapturingVideoGraphFactory implements VideoGraph.Factory {
 
-    private final PreviewingSingleInputVideoGraph.Factory singleInputVideoGraphFactory;
+    private final VideoGraph.Factory singleInputVideoGraphFactory;
     private final CountDownLatch videoGraphEnded;
 
     public ListenerCapturingVideoGraphFactory(CountDownLatch videoGraphEnded) {
-      singleInputVideoGraphFactory = new PreviewingSingleInputVideoGraph.Factory();
+      singleInputVideoGraphFactory = new SingleInputVideoGraph.Factory();
       this.videoGraphEnded = videoGraphEnded;
     }
 
     @Override
-    public PreviewingVideoGraph create(
+    public VideoGraph create(
         Context context,
         ColorInfo outputColorInfo,
         DebugViewProvider debugViewProvider,
         VideoGraph.Listener listener,
         Executor listenerExecutor,
-        VideoCompositorSettings videoCompositorSettings,
-        List<Effect> compositionEffects,
-        long initialTimestampOffsetUs) {
+        long initialTimestampOffsetUs,
+        boolean renderFramesAutomatically) {
       return singleInputVideoGraphFactory.create(
           context,
           outputColorInfo,
@@ -1075,8 +1297,9 @@ public class CompositionPlayerSeekTest {
             }
 
             @Override
-            public void onOutputFrameAvailableForRendering(long framePresentationTimeUs) {
-              listener.onOutputFrameAvailableForRendering(framePresentationTimeUs);
+            public void onOutputFrameAvailableForRendering(
+                long framePresentationTimeUs, boolean isRedrawnFrame) {
+              listener.onOutputFrameAvailableForRendering(framePresentationTimeUs, isRedrawnFrame);
             }
 
             @Override
@@ -1091,45 +1314,13 @@ public class CompositionPlayerSeekTest {
             }
           },
           listenerExecutor,
-          videoCompositorSettings,
-          compositionEffects,
-          initialTimestampOffsetUs);
+          initialTimestampOffsetUs,
+          renderFramesAutomatically);
     }
 
     @Override
     public boolean supportsMultipleInputs() {
       return singleInputVideoGraphFactory.supportsMultipleInputs();
-    }
-  }
-
-  private static final class ResettableCountDownLatch {
-
-    private CountDownLatch latch;
-
-    public ResettableCountDownLatch(int count) {
-      latch = new CountDownLatch(count);
-    }
-
-    public boolean await() throws InterruptedException {
-      return latch.await(TEST_TIMEOUT_MS, MILLISECONDS);
-    }
-
-    public void countDown() {
-      latch.countDown();
-    }
-
-    public long getCount() {
-      return latch.getCount();
-    }
-
-    public void unblock() {
-      while (latch.getCount() > 0) {
-        latch.countDown();
-      }
-    }
-
-    public void reset(int count) {
-      latch = new CountDownLatch(count);
     }
   }
 

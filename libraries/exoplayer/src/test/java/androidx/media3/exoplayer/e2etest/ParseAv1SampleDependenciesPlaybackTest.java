@@ -25,21 +25,22 @@ import androidx.annotation.Nullable;
 import androidx.media3.common.MediaItem;
 import androidx.media3.common.MediaItem.ClippingConfiguration;
 import androidx.media3.common.Player;
+import androidx.media3.common.util.Clock;
 import androidx.media3.exoplayer.DecoderCounters;
 import androidx.media3.exoplayer.DefaultRenderersFactory;
 import androidx.media3.exoplayer.ExoPlayer;
 import androidx.media3.exoplayer.Renderer;
-import androidx.media3.exoplayer.analytics.AnalyticsListener;
 import androidx.media3.exoplayer.audio.AudioRendererEventListener;
 import androidx.media3.exoplayer.mediacodec.MediaCodecAdapter;
 import androidx.media3.exoplayer.mediacodec.MediaCodecSelector;
 import androidx.media3.exoplayer.metadata.MetadataOutput;
+import androidx.media3.exoplayer.source.ConcatenatingMediaSource2;
 import androidx.media3.exoplayer.text.TextOutput;
 import androidx.media3.exoplayer.video.MediaCodecVideoRenderer;
 import androidx.media3.exoplayer.video.VideoRendererEventListener;
-import androidx.media3.test.utils.CapturingRenderersFactory;
 import androidx.media3.test.utils.DumpFileAsserts;
 import androidx.media3.test.utils.FakeClock;
+import androidx.media3.test.utils.robolectric.CapturingRenderersFactory;
 import androidx.media3.test.utils.robolectric.PlaybackOutput;
 import androidx.media3.test.utils.robolectric.ShadowMediaCodecConfig;
 import androidx.media3.test.utils.robolectric.TestPlayerRunHelper;
@@ -58,17 +59,17 @@ public class ParseAv1SampleDependenciesPlaybackTest {
 
   @Rule
   public ShadowMediaCodecConfig mediaCodecConfig =
-      ShadowMediaCodecConfig.forAllSupportedMimeTypes();
+      ShadowMediaCodecConfig.withAllDefaultSupportedCodecs();
 
   @Test
   public void playback_withClippedMediaItem_skipNonReferenceInputSamples() throws Exception {
     Context applicationContext = ApplicationProvider.getApplicationContext();
-    CapturingRenderersFactory renderersFactory = new CapturingRenderersFactory(applicationContext);
+    FakeClock clock = new FakeClock(/* isAutoAdvancing= */ true);
+    CapturingRenderersFactory renderersFactory =
+        new CapturingRenderersFactory(applicationContext, clock);
     renderersFactory.experimentalSetParseAv1SampleDependencies(true);
     ExoPlayer player =
-        new ExoPlayer.Builder(applicationContext, renderersFactory)
-            .setClock(new FakeClock(/* isAutoAdvancing= */ true))
-            .build();
+        new ExoPlayer.Builder(applicationContext, renderersFactory).setClock(clock).build();
     Surface surface = new Surface(new SurfaceTexture(/* texName= */ 1));
     player.setVideoSurface(surface);
     PlaybackOutput playbackOutput = PlaybackOutput.register(player, renderersFactory);
@@ -91,6 +92,45 @@ public class ParseAv1SampleDependenciesPlaybackTest {
         /* dumpFile= */ "playbackdumps/av1SampleDependencies/clippedMediaItem.dump");
   }
 
+  @Test
+  public void playback_withConcatenatedMediaSource2_skipNonReferenceInputSamples()
+      throws Exception {
+    Context applicationContext = ApplicationProvider.getApplicationContext();
+    FakeClock clock = new FakeClock(/* isAutoAdvancing= */ true);
+    CapturingRenderersFactory renderersFactory =
+        new CapturingRenderersFactory(applicationContext, clock);
+    renderersFactory.experimentalSetParseAv1SampleDependencies(true);
+    ExoPlayer player =
+        new ExoPlayer.Builder(applicationContext, renderersFactory).setClock(clock).build();
+    Surface surface = new Surface(new SurfaceTexture(/* texName= */ 1));
+    player.setVideoSurface(surface);
+    PlaybackOutput playbackOutput = PlaybackOutput.register(player, renderersFactory);
+    player.addMediaSource(
+        new ConcatenatingMediaSource2.Builder()
+            .useDefaultMediaSourceFactory(applicationContext)
+            .add(
+                new MediaItem.Builder()
+                    .setUri(TEST_MP4_URI)
+                    .setClippingConfiguration(
+                        new MediaItem.ClippingConfiguration.Builder()
+                            .setStartPositionMs(200)
+                            .build())
+                    .build(),
+                /* initialPlaceholderDurationMs= */ 1)
+            .build());
+
+    player.prepare();
+    player.play();
+    TestPlayerRunHelper.runUntilPlaybackState(player, Player.STATE_ENDED);
+    player.release();
+    surface.release();
+
+    DumpFileAsserts.assertOutput(
+        applicationContext,
+        playbackOutput,
+        /* dumpFile= */ "playbackdumps/av1SampleDependencies/clippedMediaItem.dump");
+  }
+
   // TODO: b/390604981 - Run the test on older SDK levels to ensure it uses a MediaCodec shadow
   // with more than one buffer slot.
   @Config(minSdk = 30)
@@ -98,20 +138,12 @@ public class ParseAv1SampleDependenciesPlaybackTest {
   public void playback_withLateThresholdToDropDecoderInput_skipNonReferenceInputSamples()
       throws Exception {
     Context applicationContext = ApplicationProvider.getApplicationContext();
+    FakeClock clock = new FakeClock(/* isAutoAdvancing= */ true);
     CapturingRenderersFactoryWithLateThresholdToDropDecoderInputUs renderersFactory =
-        new CapturingRenderersFactoryWithLateThresholdToDropDecoderInputUs(applicationContext);
+        new CapturingRenderersFactoryWithLateThresholdToDropDecoderInputUs(
+            applicationContext, clock);
     ExoPlayer player =
-        new ExoPlayer.Builder(applicationContext, renderersFactory)
-            .setClock(new FakeClock(/* isAutoAdvancing= */ true))
-            .build();
-    player.addAnalyticsListener(
-        new AnalyticsListener() {
-          @Override
-          public void onDroppedVideoFrames(EventTime eventTime, int droppedFrames, long elapsedMs) {
-            // Input buffers near the reset position should not be dropped.
-            assertThat(eventTime.currentPlaybackPositionMs).isAtLeast(200);
-          }
-        });
+        new ExoPlayer.Builder(applicationContext, renderersFactory).setClock(clock).build();
     Surface surface = new Surface(new SurfaceTexture(/* texName= */ 1));
     player.setVideoSurface(surface);
     player.setMediaItem(MediaItem.fromUri(TEST_MP4_URI));
@@ -142,9 +174,11 @@ public class ParseAv1SampleDependenciesPlaybackTest {
      * Creates an instance.
      *
      * @param context The {@link Context}.
+     * @param clock The {@link Clock}.
      */
-    public CapturingRenderersFactoryWithLateThresholdToDropDecoderInputUs(Context context) {
-      super(context);
+    public CapturingRenderersFactoryWithLateThresholdToDropDecoderInputUs(
+        Context context, Clock clock) {
+      super(context, clock);
       this.context = context;
     }
 

@@ -15,18 +15,18 @@
  */
 package androidx.media3.transformer;
 
+import static android.os.Build.VERSION.SDK_INT;
 import static androidx.media3.common.util.Util.usToMs;
-import static androidx.media3.transformer.AndroidTestUtil.JPG_ASSET;
-import static androidx.media3.transformer.AndroidTestUtil.MP4_ASSET;
-import static androidx.media3.transformer.AndroidTestUtil.assumeFormatsSupported;
-import static androidx.media3.transformer.AndroidTestUtil.recordTestSkipped;
+import static androidx.media3.test.utils.AssetInfo.JPG_ASSET;
+import static androidx.media3.test.utils.AssetInfo.MP4_ASSET;
+import static androidx.media3.test.utils.FormatSupportAssumptions.assumeFormatsSupported;
+import static androidx.media3.test.utils.TestSummaryLogger.recordTestSkipped;
 import static com.google.common.truth.Truth.assertThat;
 import static java.util.concurrent.TimeUnit.SECONDS;
 import static org.junit.Assert.assertThrows;
 import static org.junit.Assume.assumeTrue;
 
 import android.content.Context;
-import android.media.MediaCodec;
 import android.media.metrics.EditingEndedEvent;
 import android.media.metrics.LogSessionId;
 import android.media.metrics.MediaItemInfo;
@@ -37,12 +37,16 @@ import androidx.media3.common.Format;
 import androidx.media3.common.MediaItem;
 import androidx.media3.common.MediaLibraryInfo;
 import androidx.media3.common.Metadata;
-import androidx.media3.common.util.Util;
+import androidx.media3.common.audio.SonicAudioProcessor;
+import androidx.media3.effect.Brightness;
+import androidx.media3.muxer.BufferInfo;
+import androidx.media3.muxer.Muxer;
 import androidx.media3.muxer.MuxerException;
 import androidx.test.ext.junit.runners.AndroidJUnit4;
 import androidx.test.platform.app.InstrumentationRegistry;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Range;
+import com.google.common.util.concurrent.SettableFuture;
 import java.nio.ByteBuffer;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeoutException;
@@ -75,7 +79,7 @@ public class EditingMetricsCollectorTest {
 
   @Test
   public void export_usePlatformDiagnosticsDisabled_doesNotCollectMetrics() throws Exception {
-    if (Util.SDK_INT < 35) {
+    if (SDK_INT < 35) {
       String reason = "Metrics collection is unsupported below API 35.";
       recordTestSkipped(context, testId, reason);
       throw new AssumptionViolatedException(reason);
@@ -107,13 +111,13 @@ public class EditingMetricsCollectorTest {
 
   @Test
   public void exportSuccess_populatesEditingEndedEvent() throws Exception {
-    assumeTrue("Reporting metrics requires API 35", Util.SDK_INT >= 35);
+    assumeTrue("Reporting metrics requires API 35", SDK_INT >= 35);
     assumeFormatsSupported(
         context,
         testId,
         /* inputFormat= */ MP4_ASSET.videoFormat,
         /* outputFormat= */ MP4_ASSET.videoFormat);
-    AtomicReference<EditingEndedEvent> editingEndedEventAtomicReference = new AtomicReference<>();
+    SettableFuture<EditingEndedEvent> editingEndedEventFuture = SettableFuture.create();
     Transformer transformer =
         new Transformer.Builder(context)
             .setUsePlatformDiagnostics(true)
@@ -124,12 +128,17 @@ public class EditingMetricsCollectorTest {
 
                       @Override
                       public void onMetricsReported(EditingEndedEvent editingEndedEvent) {
-                        editingEndedEventAtomicReference.set(editingEndedEvent);
+                        editingEndedEventFuture.set(editingEndedEvent);
                       }
                     }))
             .build();
     EditedMediaItem audioVideoItem =
-        new EditedMediaItem.Builder(MediaItem.fromUri(MP4_ASSET.uri)).build();
+        new EditedMediaItem.Builder(MediaItem.fromUri(MP4_ASSET.uri))
+            .setEffects(
+                new Effects(
+                    /* audioProcessors= */ ImmutableList.of(),
+                    /* videoEffects= */ ImmutableList.of(new Brightness(0.5f))))
+            .build();
     EditedMediaItem imageItem =
         new EditedMediaItem.Builder(
                 new MediaItem.Builder().setUri(JPG_ASSET.uri).setImageDurationMs(1500).build())
@@ -150,13 +159,18 @@ public class EditingMetricsCollectorTest {
             .build()
             .run(testId, composition);
 
-    EditingEndedEvent editingEndedEvent = editingEndedEventAtomicReference.get();
+    EditingEndedEvent editingEndedEvent = editingEndedEventFuture.get();
     assertThat(editingEndedEvent.getFinalState())
         .isEqualTo(EditingEndedEvent.FINAL_STATE_SUCCEEDED);
     assertThat(editingEndedEvent.getTimeSinceCreatedMillis()).isAtLeast(0);
     assertThat(editingEndedEvent.getExporterName()).isEqualTo(EXPORTER_NAME);
     assertThat(editingEndedEvent.getMuxerName()).isEqualTo(DefaultMuxer.MUXER_NAME);
     assertThat(editingEndedEvent.getFinalProgressPercent()).isEqualTo(100);
+    assertThat(editingEndedEvent.getOperationTypes())
+        .isEqualTo(
+            EditingEndedEvent.OPERATION_TYPE_AUDIO_TRANSCODE
+                | EditingEndedEvent.OPERATION_TYPE_VIDEO_TRANSCODE
+                | EditingEndedEvent.OPERATION_TYPE_VIDEO_EDIT);
     // Assert video input media item information
     MediaItemInfo firstMediaItemInfo = editingEndedEvent.getInputMediaItemInfos().get(0);
     ExportResult.ProcessedInput firstProcessedInput =
@@ -222,7 +236,7 @@ public class EditingMetricsCollectorTest {
     MediaItemInfo outputMediaItemInfo = editingEndedEvent.getOutputMediaItemInfo();
     assertThat(outputMediaItemInfo).isNotNull();
     assertThat(outputMediaItemInfo.getDurationMillis())
-        .isEqualTo(exportTestResult.exportResult.durationMs);
+        .isEqualTo(exportTestResult.exportResult.approximateDurationMs);
     assertThat(outputMediaItemInfo.getSampleMimeTypes()).isNotEmpty();
     assertThat(outputMediaItemInfo.getAudioChannelCount())
         .isEqualTo(exportTestResult.exportResult.channelCount);
@@ -241,13 +255,13 @@ public class EditingMetricsCollectorTest {
 
   @Test
   public void exportError_populatesEditingEndedEvent() throws Exception {
-    assumeTrue("Reporting metrics requires API 35", Util.SDK_INT >= 35);
+    assumeTrue("Reporting metrics requires API 35", SDK_INT >= 35);
     assumeFormatsSupported(
         context,
         testId,
         /* inputFormat= */ MP4_ASSET.videoFormat,
         /* outputFormat= */ MP4_ASSET.videoFormat);
-    AtomicReference<EditingEndedEvent> editingEndedEventAtomicReference = new AtomicReference<>();
+    SettableFuture<EditingEndedEvent> editingEndedEventFuture = SettableFuture.create();
     Transformer transformer =
         new Transformer.Builder(context)
             .setUsePlatformDiagnostics(true)
@@ -258,13 +272,20 @@ public class EditingMetricsCollectorTest {
 
                       @Override
                       public void onMetricsReported(EditingEndedEvent editingEndedEvent) {
-                        editingEndedEventAtomicReference.set(editingEndedEvent);
+                        editingEndedEventFuture.set(editingEndedEvent);
                       }
                     }))
             .setMuxerFactory(new FailingMuxerFactory())
             .build();
+    SonicAudioProcessor sonicAudioProcessor = new SonicAudioProcessor();
+    sonicAudioProcessor.setPitch(/* pitch= */ 2f);
     EditedMediaItem audioVideoItem =
-        new EditedMediaItem.Builder(MediaItem.fromUri(MP4_ASSET.uri)).build();
+        new EditedMediaItem.Builder(MediaItem.fromUri(MP4_ASSET.uri))
+            .setEffects(
+                new Effects(
+                    /* audioProcessors= */ ImmutableList.of(sonicAudioProcessor),
+                    /* videoEffects= */ ImmutableList.of()))
+            .build();
 
     assertThrows(
         ExportException.class,
@@ -273,24 +294,29 @@ public class EditingMetricsCollectorTest {
                 .build()
                 .run(testId, audioVideoItem));
 
-    EditingEndedEvent editingEndedEvent = editingEndedEventAtomicReference.get();
+    EditingEndedEvent editingEndedEvent = editingEndedEventFuture.get();
     assertThat(editingEndedEvent.getFinalState()).isEqualTo(EditingEndedEvent.FINAL_STATE_ERROR);
     assertThat(editingEndedEvent.getTimeSinceCreatedMillis()).isAtLeast(0);
     assertThat(editingEndedEvent.getExporterName()).isEqualTo(EXPORTER_NAME);
     assertThat(editingEndedEvent.getFinalProgressPercent()).isIn(Range.closed(0f, 100f));
     assertThat(editingEndedEvent.getErrorCode())
         .isEqualTo(EditingEndedEvent.ERROR_CODE_MUXING_FAILED);
+    assertThat(editingEndedEvent.getOperationTypes())
+        .isEqualTo(
+            EditingEndedEvent.OPERATION_TYPE_AUDIO_TRANSCODE
+                | EditingEndedEvent.OPERATION_TYPE_VIDEO_TRANSMUX
+                | EditingEndedEvent.OPERATION_TYPE_AUDIO_EDIT);
   }
 
   @Test
   public void exportCancelled_populatesEditingEndedEvent() throws Exception {
-    assumeTrue("Reporting metrics requires API 35", Util.SDK_INT >= 35);
+    assumeTrue("Reporting metrics requires API 35", SDK_INT >= 35);
     assumeFormatsSupported(
         context,
         testId,
         /* inputFormat= */ MP4_ASSET.videoFormat,
         /* outputFormat= */ MP4_ASSET.videoFormat);
-    AtomicReference<EditingEndedEvent> editingEndedEventAtomicReference = new AtomicReference<>();
+    SettableFuture<EditingEndedEvent> editingEndedEventFuture = SettableFuture.create();
     CountDownLatch countDownLatch = new CountDownLatch(1);
     Transformer transformer =
         new Transformer.Builder(context)
@@ -302,7 +328,7 @@ public class EditingMetricsCollectorTest {
 
                       @Override
                       public void onMetricsReported(EditingEndedEvent editingEndedEvent) {
-                        editingEndedEventAtomicReference.set(editingEndedEvent);
+                        editingEndedEventFuture.set(editingEndedEvent);
                       }
                     }))
             .setMuxerFactory(
@@ -321,7 +347,7 @@ public class EditingMetricsCollectorTest {
     }
     InstrumentationRegistry.getInstrumentation().runOnMainSync(transformer::cancel);
 
-    EditingEndedEvent editingEndedEvent = editingEndedEventAtomicReference.get();
+    EditingEndedEvent editingEndedEvent = editingEndedEventFuture.get();
     assertThat(editingEndedEvent.getFinalState()).isEqualTo(EditingEndedEvent.FINAL_STATE_CANCELED);
     assertThat(editingEndedEvent.getTimeSinceCreatedMillis()).isAtLeast(0);
     assertThat(editingEndedEvent.getExporterName()).isEqualTo(EXPORTER_NAME);
@@ -330,7 +356,7 @@ public class EditingMetricsCollectorTest {
 
   @Test
   public void exportTwice_createsUniqueSessions() throws Exception {
-    assumeTrue("Reporting metrics requires API 35", Util.SDK_INT >= 35);
+    assumeTrue("Reporting metrics requires API 35", SDK_INT >= 35);
     assumeFormatsSupported(
         context,
         testId,
@@ -453,8 +479,7 @@ public class EditingMetricsCollectorTest {
     }
 
     @Override
-    public void writeSampleData(
-        int trackId, ByteBuffer byteBuffer, MediaCodec.BufferInfo bufferInfo)
+    public void writeSampleData(int trackId, ByteBuffer byteBuffer, BufferInfo bufferInfo)
         throws MuxerException {
       if (firstSampleWritten) {
         throw new MuxerException("Failed to write sample data", new RuntimeException());

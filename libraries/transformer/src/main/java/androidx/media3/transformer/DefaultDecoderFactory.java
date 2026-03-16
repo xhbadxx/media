@@ -16,15 +16,16 @@
 
 package androidx.media3.transformer;
 
-import static androidx.media3.common.util.Assertions.checkNotNull;
+import static android.os.Build.VERSION.SDK_INT;
 import static androidx.media3.common.util.MediaFormatUtil.createMediaFormatFromFormat;
-import static androidx.media3.common.util.Util.SDK_INT;
+import static com.google.common.base.Preconditions.checkNotNull;
 import static java.lang.Math.max;
 
 import android.annotation.SuppressLint;
 import android.content.Context;
 import android.media.MediaCodec;
 import android.media.MediaFormat;
+import android.media.metrics.LogSessionId;
 import android.os.Build;
 import android.util.Pair;
 import android.view.Surface;
@@ -34,6 +35,7 @@ import androidx.media3.common.C;
 import androidx.media3.common.ColorInfo;
 import androidx.media3.common.Format;
 import androidx.media3.common.MimeTypes;
+import androidx.media3.common.util.CodecSpecificDataUtil;
 import androidx.media3.common.util.Log;
 import androidx.media3.common.util.MediaFormatUtil;
 import androidx.media3.common.util.UnstableApi;
@@ -237,16 +239,25 @@ public final class DefaultDecoderFactory implements Codec.DecoderFactory {
   }
 
   @Override
-  public DefaultCodec createForAudioDecoding(Format format) throws ExportException {
+  public DefaultCodec createForAudioDecoding(Format format, @Nullable LogSessionId logSessionId)
+      throws ExportException {
     MediaFormat mediaFormat = createMediaFormatFromFormat(format);
     return createCodecForMediaFormat(
-        mediaFormat, format, /* outputSurface= */ null, /* devicePrefersSoftwareDecoder= */ false);
+        mediaFormat,
+        format,
+        /* outputSurface= */ null,
+        /* devicePrefersSoftwareDecoder= */ false,
+        logSessionId);
   }
 
   @SuppressLint("InlinedApi")
   @Override
   public DefaultCodec createForVideoDecoding(
-      Format format, Surface outputSurface, boolean requestSdrToneMapping) throws ExportException {
+      Format format,
+      Surface outputSurface,
+      boolean requestSdrToneMapping,
+      @Nullable LogSessionId logSessionId)
+      throws ExportException {
     if (ColorInfo.isTransferHdr(format.colorInfo)) {
       if (requestSdrToneMapping
           && (SDK_INT < 31
@@ -281,7 +292,8 @@ public final class DefaultDecoderFactory implements Codec.DecoderFactory {
     }
 
     @Nullable
-    Pair<Integer, Integer> codecProfileAndLevel = MediaCodecUtil.getCodecProfileAndLevel(format);
+    Pair<Integer, Integer> codecProfileAndLevel =
+        CodecSpecificDataUtil.getCodecProfileAndLevel(format);
     if (codecProfileAndLevel != null) {
       MediaFormatUtil.maybeSetInteger(
           mediaFormat, MediaFormat.KEY_PROFILE, codecProfileAndLevel.first);
@@ -298,20 +310,22 @@ public final class DefaultDecoderFactory implements Codec.DecoderFactory {
     }
 
     return createCodecForMediaFormat(
-        mediaFormat, format, outputSurface, devicePrefersSoftwareDecoder(format));
+        mediaFormat, format, outputSurface, devicePrefersSoftwareDecoder(format), logSessionId);
   }
 
   private DefaultCodec createCodecForMediaFormat(
       MediaFormat mediaFormat,
       Format format,
       @Nullable Surface outputSurface,
-      boolean devicePrefersSoftwareDecoder)
+      boolean devicePrefersSoftwareDecoder,
+      @Nullable LogSessionId logSessionId)
       throws ExportException {
     List<MediaCodecInfo> decoderInfos = ImmutableList.of();
     checkNotNull(format.sampleMimeType);
     try {
       decoderInfos =
           MediaCodecUtil.getDecoderInfosSortedByFullFormatSupport(
+              context,
               MediaCodecUtil.getDecoderInfosSoftMatch(
                   mediaCodecSelector,
                   format,
@@ -343,6 +357,9 @@ public final class DefaultDecoderFactory implements Codec.DecoderFactory {
       // Ignore the dolby vision dynamic metadata.
       mediaFormat.setInteger(
           MediaFormat.KEY_COLOR_TRANSFER_REQUEST, MediaFormat.COLOR_TRANSFER_HLG);
+    }
+    if (SDK_INT >= 35 && logSessionId != null) {
+      TransformerUtil.Api35.setLogSessionIdToMediaCodecFormat(mediaFormat, logSessionId);
     }
     List<ExportException> codecInitExceptions = new ArrayList<>();
     DefaultCodec codec =

@@ -15,28 +15,32 @@
  */
 package androidx.media3.exoplayer;
 
+import static android.os.Build.VERSION.SDK_INT;
 import static androidx.media3.common.C.AUDIO_SESSION_ID_UNSET;
 import static androidx.media3.common.C.TRACK_TYPE_AUDIO;
 import static androidx.media3.common.C.TRACK_TYPE_CAMERA_MOTION;
 import static androidx.media3.common.C.TRACK_TYPE_IMAGE;
 import static androidx.media3.common.C.TRACK_TYPE_VIDEO;
-import static androidx.media3.common.util.Assertions.checkArgument;
-import static androidx.media3.common.util.Assertions.checkNotNull;
-import static androidx.media3.common.util.Assertions.checkState;
 import static androidx.media3.common.util.Util.castNonNull;
 import static androidx.media3.exoplayer.Renderer.MSG_SET_AUDIO_ATTRIBUTES;
+import static androidx.media3.exoplayer.Renderer.MSG_SET_AUDIO_OUTPUT_PROVIDER;
 import static androidx.media3.exoplayer.Renderer.MSG_SET_AUDIO_SESSION_ID;
 import static androidx.media3.exoplayer.Renderer.MSG_SET_AUX_EFFECT_INFO;
 import static androidx.media3.exoplayer.Renderer.MSG_SET_CAMERA_MOTION_LISTENER;
 import static androidx.media3.exoplayer.Renderer.MSG_SET_CHANGE_FRAME_RATE_STRATEGY;
+import static androidx.media3.exoplayer.Renderer.MSG_SET_CODEC_PARAMETERS;
 import static androidx.media3.exoplayer.Renderer.MSG_SET_IMAGE_OUTPUT;
 import static androidx.media3.exoplayer.Renderer.MSG_SET_PREFERRED_AUDIO_DEVICE;
 import static androidx.media3.exoplayer.Renderer.MSG_SET_PRIORITY;
 import static androidx.media3.exoplayer.Renderer.MSG_SET_SCALING_MODE;
 import static androidx.media3.exoplayer.Renderer.MSG_SET_SKIP_SILENCE_ENABLED;
+import static androidx.media3.exoplayer.Renderer.MSG_SET_SUBSCRIBED_CODEC_PARAMETER_KEYS;
 import static androidx.media3.exoplayer.Renderer.MSG_SET_VIDEO_EFFECTS;
-import static androidx.media3.exoplayer.Renderer.MSG_SET_VIDEO_FRAME_METADATA_LISTENER;
 import static androidx.media3.exoplayer.Renderer.MSG_SET_VIDEO_OUTPUT_RESOLUTION;
+import static androidx.media3.exoplayer.Renderer.MSG_SET_VIRTUAL_DEVICE_ID;
+import static com.google.common.base.Preconditions.checkArgument;
+import static com.google.common.base.Preconditions.checkNotNull;
+import static com.google.common.base.Preconditions.checkState;
 import static java.lang.Math.max;
 import static java.lang.Math.min;
 
@@ -59,6 +63,7 @@ import androidx.media3.common.AudioAttributes;
 import androidx.media3.common.AuxEffectInfo;
 import androidx.media3.common.BasePlayer;
 import androidx.media3.common.C;
+import androidx.media3.common.C.TrackType;
 import androidx.media3.common.DeviceInfo;
 import androidx.media3.common.Effect;
 import androidx.media3.common.Format;
@@ -77,6 +82,7 @@ import androidx.media3.common.TrackSelectionParameters;
 import androidx.media3.common.Tracks;
 import androidx.media3.common.VideoFrameProcessor;
 import androidx.media3.common.VideoSize;
+import androidx.media3.common.audio.AudioBecomingNoisyManager;
 import androidx.media3.common.text.Cue;
 import androidx.media3.common.text.CueGroup;
 import androidx.media3.common.util.BackgroundThreadStateHandler;
@@ -87,7 +93,11 @@ import androidx.media3.common.util.ListenerSet;
 import androidx.media3.common.util.Log;
 import androidx.media3.common.util.NullableType;
 import androidx.media3.common.util.Size;
+import androidx.media3.common.util.StuckPlayerDetector;
+import androidx.media3.common.util.StuckPlayerException;
 import androidx.media3.common.util.Util;
+import androidx.media3.common.util.WakeLockManager;
+import androidx.media3.common.util.WifiLockManager;
 import androidx.media3.exoplayer.PlayerMessage.Target;
 import androidx.media3.exoplayer.Renderer.MessageType;
 import androidx.media3.exoplayer.analytics.AnalyticsCollector;
@@ -117,11 +127,18 @@ import androidx.media3.exoplayer.video.VideoRendererEventListener;
 import androidx.media3.exoplayer.video.spherical.CameraMotionListener;
 import androidx.media3.exoplayer.video.spherical.SphericalGLSurfaceView;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableSet;
+import java.lang.ref.WeakReference;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.concurrent.CopyOnWriteArraySet;
+import java.util.function.IntConsumer;
 
 /** The default implementation of {@link ExoPlayer}. */
 /* package */ final class ExoPlayerImpl extends BasePlayer implements ExoPlayer {
@@ -162,9 +179,6 @@ import java.util.concurrent.CopyOnWriteArraySet;
   private final AnalyticsCollector analyticsCollector;
   private final Looper applicationLooper;
   private final BandwidthMeter bandwidthMeter;
-  private final long seekBackIncrementMs;
-  private final long seekForwardIncrementMs;
-  private final long maxSeekToPreviousPositionMs;
   private final Clock clock;
   private final ComponentListener componentListener;
   private final FrameMetadataListener frameMetadataListener;
@@ -175,6 +189,10 @@ import java.util.concurrent.CopyOnWriteArraySet;
   private final long detachSurfaceTimeoutMs;
   @Nullable private final SuitableOutputChecker suitableOutputChecker;
   private final BackgroundThreadStateHandler<Integer> audioSessionIdState;
+  private final StuckPlayerDetector stuckPlayerDetector;
+  @Nullable private final VirtualDeviceIdChangeListener virtualDeviceIdChangeListener;
+  private final CodecParameterListenerManager audioListenerManager;
+  private final CodecParameterListenerManager videoListenerManager;
 
   private @RepeatMode int repeatMode;
   private boolean shuffleModeEnabled;
@@ -182,6 +200,9 @@ import java.util.concurrent.CopyOnWriteArraySet;
   private @DiscontinuityReason int pendingDiscontinuityReason;
   private boolean pendingDiscontinuity;
   private boolean foregroundMode;
+  private boolean scrubbingModeEnabled;
+  @Nullable private ImmutableSet<@TrackType Integer> disabledTrackTypesWithoutScrubbingMode;
+  private ScrubbingModeParameters scrubbingModeParameters;
   private SeekParameters seekParameters;
   private ShuffleOrder shuffleOrder;
   private PreloadConfiguration preloadConfiguration;
@@ -204,6 +225,7 @@ import java.util.concurrent.CopyOnWriteArraySet;
   @Nullable private DecoderCounters audioDecoderCounters;
   private AudioAttributes audioAttributes;
   private float volume;
+  private float unmuteVolume;
   private boolean skipSilenceEnabled;
   private CueGroup currentCueGroup;
   @Nullable private VideoFrameMetadataListener videoFrameMetadataListener;
@@ -216,6 +238,9 @@ import java.util.concurrent.CopyOnWriteArraySet;
   private boolean playerReleased;
   private DeviceInfo deviceInfo;
   private VideoSize videoSize;
+  private long seekBackIncrementMs;
+  private long seekForwardIncrementMs;
+  private long maxSeekToPreviousPositionMs;
 
   // MediaMetadata built from static (TrackGroup Format) and dynamic (onMetadata(Metadata)) metadata
   // sources.
@@ -226,7 +251,6 @@ import java.util.concurrent.CopyOnWriteArraySet;
 
   // Playback information when there is a pending seek/set source operation.
   private int maskingWindowIndex;
-  private int maskingPeriodIndex;
   private long maskingWindowPositionMs;
 
   @SuppressLint("HandlerLeak")
@@ -284,6 +308,7 @@ import java.util.concurrent.CopyOnWriteArraySet;
       this.seekBackIncrementMs = builder.seekBackIncrementMs;
       this.seekForwardIncrementMs = builder.seekForwardIncrementMs;
       this.maxSeekToPreviousPositionMs = builder.maxSeekToPreviousPositionMs;
+      this.scrubbingModeParameters = builder.scrubbingModeParameters;
       this.pauseAtEndOfMediaItems = builder.pauseAtEndOfMediaItems;
       this.applicationLooper = builder.looper;
       this.clock = builder.clock;
@@ -370,7 +395,9 @@ import java.util.concurrent.CopyOnWriteArraySet;
               playbackInfoUpdateListener,
               playerId,
               builder.playbackLooperProvider,
-              preloadConfiguration);
+              preloadConfiguration,
+              frameMetadataListener,
+              builder.avoidLoadingWhileEnded);
       Looper playbackLooper = internalPlayer.getPlaybackLooper();
 
       volume = 1;
@@ -388,7 +415,7 @@ import java.util.concurrent.CopyOnWriteArraySet;
       if (builder.foregroundModeTimeoutMs > 0) {
         internalPlayer.experimentalSetForegroundModeTimeoutMs(builder.foregroundModeTimeoutMs);
       }
-      if (Util.SDK_INT >= 31) {
+      if (SDK_INT >= 31) {
         Api31.registerMediaMetricsListener(
             applicationContext, /* player= */ this, builder.usePlatformDiagnostics, playerId);
       }
@@ -433,14 +460,40 @@ import java.util.concurrent.CopyOnWriteArraySet;
       } else {
         streamVolumeManager = null;
       }
+      int wakeMode = builder.wakeMode;
+      if (!builder.wakeModeSet) {
+        wakeMode =
+            builder.stuckBufferingDetectionTimeoutMs == Integer.MAX_VALUE
+                    || builder.stuckPlayingDetectionTimeoutMs == Integer.MAX_VALUE
+                    || builder.stuckPlayingNotEndingTimeoutMs == Integer.MAX_VALUE
+                    || builder.stuckSuppressedDetectionTimeoutMs == Integer.MAX_VALUE
+                ? C.WAKE_MODE_NONE
+                : C.WAKE_MODE_LOCAL;
+      }
       wakeLockManager = new WakeLockManager(builder.context, playbackLooper, clock);
-      wakeLockManager.setEnabled(builder.wakeMode != C.WAKE_MODE_NONE);
+      wakeLockManager.setEnabled(wakeMode != C.WAKE_MODE_NONE);
       wifiLockManager = new WifiLockManager(builder.context, playbackLooper, clock);
-      wifiLockManager.setEnabled(builder.wakeMode == C.WAKE_MODE_NETWORK);
+      wifiLockManager.setEnabled(wakeMode == C.WAKE_MODE_NETWORK);
       deviceInfo = DeviceInfo.UNKNOWN;
       videoSize = VideoSize.UNKNOWN;
       surfaceSize = Size.UNKNOWN;
+      virtualDeviceIdChangeListener =
+          SDK_INT >= 34 ? new VirtualDeviceIdChangeListener(builder.context) : null;
 
+      this.audioListenerManager = new CodecParameterListenerManager(C.TRACK_TYPE_AUDIO);
+      this.videoListenerManager = new CodecParameterListenerManager(C.TRACK_TYPE_VIDEO);
+
+      stuckPlayerDetector =
+          new StuckPlayerDetector(
+              /* player= */ this,
+              componentListener,
+              clock,
+              builder.stuckBufferingDetectionTimeoutMs,
+              builder.stuckPlayingDetectionTimeoutMs,
+              builder.stuckPlayingNotEndingTimeoutMs,
+              builder.stuckSuppressedDetectionTimeoutMs);
+
+      internalPlayer.setScrubbingModeParameters(scrubbingModeParameters);
       internalPlayer.setAudioAttributes(audioAttributes, builder.handleAudioFocus);
       sendRendererMessage(TRACK_TYPE_AUDIO, MSG_SET_AUDIO_ATTRIBUTES, audioAttributes);
       sendRendererMessage(TRACK_TYPE_VIDEO, MSG_SET_SCALING_MODE, videoScalingMode);
@@ -448,10 +501,12 @@ import java.util.concurrent.CopyOnWriteArraySet;
           TRACK_TYPE_VIDEO, MSG_SET_CHANGE_FRAME_RATE_STRATEGY, videoChangeFrameRateStrategy);
       sendRendererMessage(TRACK_TYPE_AUDIO, MSG_SET_SKIP_SILENCE_ENABLED, skipSilenceEnabled);
       sendRendererMessage(
-          TRACK_TYPE_VIDEO, MSG_SET_VIDEO_FRAME_METADATA_LISTENER, frameMetadataListener);
-      sendRendererMessage(
           TRACK_TYPE_CAMERA_MOTION, MSG_SET_CAMERA_MOTION_LISTENER, frameMetadataListener);
       sendRendererMessage(MSG_SET_PRIORITY, priority);
+      if (builder.audioOutputProvider != null) {
+        sendRendererMessage(
+            TRACK_TYPE_AUDIO, MSG_SET_AUDIO_OUTPUT_PROVIDER, builder.audioOutputProvider);
+      }
     } finally {
       constructorFinished.open();
     }
@@ -644,7 +699,7 @@ import java.util.concurrent.CopyOnWriteArraySet;
     verifyApplicationThread();
     checkArgument(index >= 0);
     index = min(index, mediaSourceHolderSnapshots.size());
-    if (mediaSourceHolderSnapshots.isEmpty()) {
+    if (playbackInfo.timeline.isEmpty()) {
       // Handle initial items in a playlist as a set operation to ensure state changes and initial
       // position are updated correctly.
       setMediaSources(mediaSources, /* resetPosition= */ maskingWindowIndex == C.INDEX_UNSET);
@@ -698,6 +753,7 @@ import java.util.concurrent.CopyOnWriteArraySet;
     Timeline oldTimeline = getCurrentTimeline();
     pendingOperationAcks++;
     Util.moveItems(mediaSourceHolderSnapshots, fromIndex, toIndex, newFromIndex);
+    shuffleOrder = shuffleOrder.cloneAndMove(fromIndex, toIndex, newFromIndex);
     Timeline newTimeline = createMaskingTimeline();
     PlaybackInfo newPlaybackInfo =
         maskTimelineAndPosition(
@@ -735,7 +791,7 @@ import java.util.concurrent.CopyOnWriteArraySet;
       return;
     }
     List<MediaSource> mediaSources = createMediaSources(mediaItems);
-    if (mediaSourceHolderSnapshots.isEmpty()) {
+    if (playbackInfo.timeline.isEmpty()) {
       // Handle initial items in a playlist as a set operation to ensure state changes and initial
       // position are updated correctly.
       setMediaSources(mediaSources, /* resetPosition= */ maskingWindowIndex == C.INDEX_UNSET);
@@ -777,6 +833,12 @@ import java.util.concurrent.CopyOnWriteArraySet;
         /* ignored */ C.TIME_UNSET,
         /* ignored */ C.INDEX_UNSET,
         /* repeatCurrentMediaItem= */ false);
+  }
+
+  @Override
+  public ShuffleOrder getShuffleOrder() {
+    verifyApplicationThread();
+    return shuffleOrder;
   }
 
   @Override
@@ -982,6 +1044,45 @@ import java.util.concurrent.CopyOnWriteArraySet;
   }
 
   @Override
+  public void setMaxSeekToPreviousPositionMs(long maxSeekToPreviousPositionMs) {
+    verifyApplicationThread();
+    checkArgument(maxSeekToPreviousPositionMs >= 0);
+    if (this.maxSeekToPreviousPositionMs == maxSeekToPreviousPositionMs) {
+      return;
+    }
+    this.maxSeekToPreviousPositionMs = maxSeekToPreviousPositionMs;
+    listeners.sendEvent(
+        EVENT_MAX_SEEK_TO_PREVIOUS_POSITION_CHANGED,
+        listener -> listener.onMaxSeekToPreviousPositionChanged(maxSeekToPreviousPositionMs));
+  }
+
+  @Override
+  public void setSeekBackIncrementMs(long seekBackIncrementMs) {
+    verifyApplicationThread();
+    checkArgument(seekBackIncrementMs > 0);
+    if (this.seekBackIncrementMs == seekBackIncrementMs) {
+      return;
+    }
+    this.seekBackIncrementMs = seekBackIncrementMs;
+    listeners.sendEvent(
+        EVENT_SEEK_BACK_INCREMENT_CHANGED,
+        listener -> listener.onSeekBackIncrementChanged(seekBackIncrementMs));
+  }
+
+  @Override
+  public void setSeekForwardIncrementMs(long seekForwardIncrementMs) {
+    verifyApplicationThread();
+    checkArgument(seekForwardIncrementMs > 0);
+    if (this.seekForwardIncrementMs == seekForwardIncrementMs) {
+      return;
+    }
+    this.seekForwardIncrementMs = seekForwardIncrementMs;
+    listeners.sendEvent(
+        EVENT_SEEK_FORWARD_INCREMENT_CHANGED,
+        listener -> listener.onSeekForwardIncrementChanged(seekForwardIncrementMs));
+  }
+
+  @Override
   public void setForegroundMode(boolean foregroundMode) {
     verifyApplicationThread();
     if (this.foregroundMode != foregroundMode) {
@@ -1026,6 +1127,10 @@ import java.util.concurrent.CopyOnWriteArraySet;
     if (suitableOutputChecker != null) {
       suitableOutputChecker.disable();
     }
+    if (virtualDeviceIdChangeListener != null && SDK_INT >= 34) {
+      virtualDeviceIdChangeListener.release();
+    }
+    stuckPlayerDetector.release();
     if (!internalPlayer.release()) {
       // One of the renderers timed out releasing its resources.
       listeners.sendEvent(
@@ -1076,7 +1181,7 @@ import java.util.concurrent.CopyOnWriteArraySet;
   public int getCurrentPeriodIndex() {
     verifyApplicationThread();
     if (playbackInfo.timeline.isEmpty()) {
-      return maskingPeriodIndex;
+      return maskingWindowIndex == C.INDEX_UNSET ? 0 : maskingWindowIndex;
     } else {
       return playbackInfo.timeline.getIndexOfPeriod(playbackInfo.periodId.periodUid);
     }
@@ -1225,20 +1330,38 @@ import java.util.concurrent.CopyOnWriteArraySet;
   @Override
   public TrackSelectionParameters getTrackSelectionParameters() {
     verifyApplicationThread();
-    return trackSelector.getParameters();
+    TrackSelectionParameters parameters = trackSelector.getParameters();
+    return scrubbingModeEnabled
+        ? parameters
+            .buildUpon()
+            .setDisabledTrackTypes(disabledTrackTypesWithoutScrubbingMode)
+            .build()
+        : parameters;
   }
 
   @Override
   public void setTrackSelectionParameters(TrackSelectionParameters parameters) {
     verifyApplicationThread();
-    if (!trackSelector.isSetParametersSupported()
-        || parameters.equals(trackSelector.getParameters())) {
+    if (!trackSelector.isSetParametersSupported()) {
       return;
     }
-    trackSelector.setParameters(parameters);
-    listeners.sendEvent(
-        EVENT_TRACK_SELECTION_PARAMETERS_CHANGED,
-        listener -> listener.onTrackSelectionParametersChanged(parameters));
+    TrackSelectionParameters publicParametersBeforeUpdate = getTrackSelectionParameters();
+    TrackSelectionParameters internalParameters;
+    if (scrubbingModeEnabled) {
+      this.disabledTrackTypesWithoutScrubbingMode = parameters.disabledTrackTypes;
+      internalParameters =
+          addDisabledTrackTypes(parameters, scrubbingModeParameters.disabledTrackTypes);
+    } else {
+      internalParameters = parameters;
+    }
+    if (!internalParameters.equals(trackSelector.getParameters())) {
+      trackSelector.setParameters(internalParameters);
+    }
+    if (!publicParametersBeforeUpdate.equals(parameters)) {
+      listeners.sendEvent(
+          EVENT_TRACK_SELECTION_PARAMETERS_CHANGED,
+          listener -> listener.onTrackSelectionParametersChanged(parameters));
+    }
   }
 
   @Override
@@ -1278,7 +1401,7 @@ import java.util.concurrent.CopyOnWriteArraySet;
     verifyApplicationThread();
     try {
       // LINT.IfChange(set_video_effects)
-      Class.forName("androidx.media3.effect.PreviewingSingleInputVideoGraph$Factory")
+      Class.forName("androidx.media3.effect.SingleInputVideoGraph$Factory")
           .getConstructor(VideoFrameProcessor.Factory.class);
       // LINT.ThenChange(video/PlaybackVideoGraphWrapper.java)
     } catch (ClassNotFoundException | NoSuchMethodException e) {
@@ -1508,11 +1631,16 @@ import java.util.concurrent.CopyOnWriteArraySet;
     setAuxEffectInfo(new AuxEffectInfo(AuxEffectInfo.NO_AUX_EFFECT_ID, /* sendLevel= */ 0f));
   }
 
-  @RequiresApi(23)
   @Override
   public void setPreferredAudioDevice(@Nullable AudioDeviceInfo audioDeviceInfo) {
     verifyApplicationThread();
     sendRendererMessage(TRACK_TYPE_AUDIO, MSG_SET_PREFERRED_AUDIO_DEVICE, audioDeviceInfo);
+  }
+
+  @Override
+  public void setVirtualDeviceId(int virtualDeviceId) {
+    verifyApplicationThread();
+    sendRendererMessage(TRACK_TYPE_AUDIO, MSG_SET_VIRTUAL_DEVICE_ID, virtualDeviceId);
   }
 
   @Override
@@ -1522,6 +1650,7 @@ import java.util.concurrent.CopyOnWriteArraySet;
     if (this.volume == volume) {
       return;
     }
+    unmuteVolume = volume != 0 ? volume : this.volume;
     this.volume = volume;
     internalPlayer.setVolume(volume);
     float finalVolume = volume;
@@ -1532,6 +1661,22 @@ import java.util.concurrent.CopyOnWriteArraySet;
   public float getVolume() {
     verifyApplicationThread();
     return volume;
+  }
+
+  @Override
+  public void mute() {
+    verifyApplicationThread();
+    if (volume != 0) {
+      setVolume(0f);
+    }
+  }
+
+  @Override
+  public void unmute() {
+    verifyApplicationThread();
+    if (volume == 0 && unmuteVolume != 0) {
+      setVolume(unmuteVolume);
+    }
   }
 
   @Override
@@ -1551,6 +1696,78 @@ import java.util.concurrent.CopyOnWriteArraySet;
     listeners.sendEvent(
         EVENT_SKIP_SILENCE_ENABLED_CHANGED,
         listener -> listener.onSkipSilenceEnabledChanged(newSkipSilenceEnabled));
+  }
+
+  @Override
+  public void setScrubbingModeEnabled(boolean scrubbingModeEnabled) {
+    verifyApplicationThread();
+    if (scrubbingModeEnabled == this.scrubbingModeEnabled) {
+      return;
+    }
+    this.scrubbingModeEnabled = scrubbingModeEnabled;
+    if (!scrubbingModeParameters.disabledTrackTypes.isEmpty()
+        && trackSelector.isSetParametersSupported()) {
+      TrackSelectionParameters previousTrackSelectionParameters = trackSelector.getParameters();
+      TrackSelectionParameters newTrackSelectionParameters;
+      if (scrubbingModeEnabled) {
+        this.disabledTrackTypesWithoutScrubbingMode =
+            previousTrackSelectionParameters.disabledTrackTypes;
+        newTrackSelectionParameters =
+            addDisabledTrackTypes(
+                previousTrackSelectionParameters, scrubbingModeParameters.disabledTrackTypes);
+      } else {
+        newTrackSelectionParameters =
+            previousTrackSelectionParameters
+                .buildUpon()
+                .setDisabledTrackTypes(disabledTrackTypesWithoutScrubbingMode)
+                .build();
+        this.disabledTrackTypesWithoutScrubbingMode = null;
+      }
+      // Set the parameters directly, to avoid firing onTrackSelectionParametersChanged (because
+      // the return value of getTrackSelectionParameters won't change).
+      if (!newTrackSelectionParameters.equals(previousTrackSelectionParameters)) {
+        trackSelector.setParameters(newTrackSelectionParameters);
+      }
+    }
+    internalPlayer.setScrubbingModeEnabled(scrubbingModeEnabled);
+    maybeUpdatePlaybackSuppressionReason();
+  }
+
+  @Override
+  public boolean isScrubbingModeEnabled() {
+    verifyApplicationThread();
+    return scrubbingModeEnabled;
+  }
+
+  @Override
+  public void setScrubbingModeParameters(ScrubbingModeParameters scrubbingModeParameters) {
+    verifyApplicationThread();
+    if (this.scrubbingModeParameters.equals(scrubbingModeParameters)) {
+      return;
+    }
+    ScrubbingModeParameters previousParameters = this.scrubbingModeParameters;
+    this.scrubbingModeParameters = scrubbingModeParameters;
+    internalPlayer.setScrubbingModeParameters(scrubbingModeParameters);
+    if (scrubbingModeEnabled
+        && trackSelector.isSetParametersSupported()
+        && !previousParameters.disabledTrackTypes.equals(
+            scrubbingModeParameters.disabledTrackTypes)) {
+      // We are already in scrubbing mode, but the tracks we should disable while scrubbing have
+      // changed, so we need to re-calculate the track selection parameters.
+      TrackSelectionParameters trackSelectionParameters =
+          addDisabledTrackTypes(
+              getTrackSelectionParameters(), scrubbingModeParameters.disabledTrackTypes);
+      if (!trackSelectionParameters.equals(trackSelector.getParameters())) {
+        // Set the parameters directly, to avoid firing onTrackSelectionParametersChanged.
+        trackSelector.setParameters(trackSelectionParameters);
+      }
+    }
+  }
+
+  @Override
+  public ScrubbingModeParameters getScrubbingModeParameters() {
+    verifyApplicationThread();
+    return scrubbingModeParameters;
   }
 
   @Override
@@ -1848,6 +2065,52 @@ import java.util.concurrent.CopyOnWriteArraySet;
     sendRendererMessage(TRACK_TYPE_IMAGE, MSG_SET_IMAGE_OUTPUT, imageOutput);
   }
 
+  @Override
+  public void setAudioCodecParameters(CodecParameters codecParameters) {
+    verifyApplicationThread();
+    checkNotNull(codecParameters);
+    sendRendererMessage(C.TRACK_TYPE_AUDIO, MSG_SET_CODEC_PARAMETERS, codecParameters);
+  }
+
+  @Override
+  public void addAudioCodecParametersChangeListener(
+      CodecParametersChangeListener listener, List<String> keys) {
+    verifyApplicationThread();
+    checkNotNull(listener);
+    checkNotNull(keys);
+    audioListenerManager.addListener(listener, keys);
+  }
+
+  @Override
+  public void removeAudioCodecParametersChangeListener(CodecParametersChangeListener listener) {
+    verifyApplicationThread();
+    checkNotNull(listener);
+    audioListenerManager.removeListener(listener);
+  }
+
+  @Override
+  public void setVideoCodecParameters(CodecParameters codecParameters) {
+    verifyApplicationThread();
+    checkNotNull(codecParameters);
+    sendRendererMessage(C.TRACK_TYPE_VIDEO, MSG_SET_CODEC_PARAMETERS, codecParameters);
+  }
+
+  @Override
+  public void addVideoCodecParametersChangeListener(
+      CodecParametersChangeListener listener, List<String> keys) {
+    verifyApplicationThread();
+    checkNotNull(listener);
+    checkNotNull(keys);
+    videoListenerManager.addListener(listener, keys);
+  }
+
+  @Override
+  public void removeVideoCodecParametersChangeListener(CodecParametersChangeListener listener) {
+    verifyApplicationThread();
+    checkNotNull(listener);
+    videoListenerManager.removeListener(listener);
+  }
+
   @SuppressWarnings("deprecation") // Calling deprecated methods.
   /* package */ void setThrowsWhenUsingWrongThread(boolean throwsWhenUsingWrongThread) {
     this.throwsWhenUsingWrongThread = throwsWhenUsingWrongThread;
@@ -1943,7 +2206,6 @@ import java.util.concurrent.CopyOnWriteArraySet;
         // ConcatenatingMediaSource has been cleared.
         maskingWindowIndex = C.INDEX_UNSET;
         maskingWindowPositionMs = 0;
-        maskingPeriodIndex = 0;
       }
       if (!newTimeline.isEmpty()) {
         List<Timeline> timelines = ((PlaylistTimeline) newTimeline).getChildTimelines();
@@ -1954,12 +2216,17 @@ import java.util.concurrent.CopyOnWriteArraySet;
       }
       boolean positionDiscontinuity = false;
       long discontinuityWindowStartPositionUs = C.TIME_UNSET;
+      int oldMaskingMediaItemIndex = C.INDEX_UNSET;
       if (pendingDiscontinuity) {
-        positionDiscontinuity =
-            !playbackInfoUpdate.playbackInfo.periodId.equals(playbackInfo.periodId)
-                || playbackInfoUpdate.playbackInfo.discontinuityStartPositionUs
-                    != playbackInfo.positionUs;
+        boolean oldAndNewTimelineEmpty =
+            playbackInfoUpdate.playbackInfo.timeline.isEmpty() && playbackInfo.timeline.isEmpty();
+        boolean sameMediaPeriodId =
+            playbackInfoUpdate.playbackInfo.periodId.equals(playbackInfo.periodId);
+        boolean samePositon =
+            playbackInfoUpdate.playbackInfo.discontinuityStartPositionUs == playbackInfo.positionUs;
+        positionDiscontinuity = !oldAndNewTimelineEmpty && (!sameMediaPeriodId || !samePositon);
         if (positionDiscontinuity) {
+          oldMaskingMediaItemIndex = getCurrentMediaItemIndex();
           discontinuityWindowStartPositionUs =
               newTimeline.isEmpty() || playbackInfoUpdate.playbackInfo.periodId.isAd()
                   ? playbackInfoUpdate.playbackInfo.discontinuityStartPositionUs
@@ -1976,7 +2243,7 @@ import java.util.concurrent.CopyOnWriteArraySet;
           positionDiscontinuity,
           pendingDiscontinuityReason,
           discontinuityWindowStartPositionUs,
-          /* ignored */ C.INDEX_UNSET,
+          oldMaskingMediaItemIndex,
           /* repeatCurrentMediaItem= */ false);
     }
   }
@@ -2152,7 +2419,7 @@ import java.util.concurrent.CopyOnWriteArraySet;
     @Nullable Object oldWindowUid = null;
     @Nullable Object oldPeriodUid = null;
     int oldMediaItemIndex = oldMaskingMediaItemIndex;
-    int oldPeriodIndex = C.INDEX_UNSET;
+    int oldPeriodIndex = oldMaskingMediaItemIndex;
     @Nullable MediaItem oldMediaItem = null;
     Timeline.Period oldPeriod = new Timeline.Period();
     if (!oldPlaybackInfo.timeline.isEmpty()) {
@@ -2206,7 +2473,7 @@ import java.util.concurrent.CopyOnWriteArraySet;
     @Nullable Object newWindowUid = null;
     @Nullable Object newPeriodUid = null;
     int newMediaItemIndex = getCurrentMediaItemIndex();
-    int newPeriodIndex = C.INDEX_UNSET;
+    int newPeriodIndex = getCurrentPeriodIndex();
     @Nullable MediaItem newMediaItem = null;
     if (!playbackInfo.timeline.isEmpty()) {
       newPeriodUid = playbackInfo.periodId.periodUid;
@@ -2312,12 +2579,8 @@ import java.util.concurrent.CopyOnWriteArraySet;
     int currentWindowIndex = getCurrentWindowIndexInternal(playbackInfo);
     long currentPositionMs = getCurrentPosition();
     pendingOperationAcks++;
-    if (!mediaSourceHolderSnapshots.isEmpty()) {
-      removeMediaSourceHolders(
-          /* fromIndex= */ 0, /* toIndexExclusive= */ mediaSourceHolderSnapshots.size());
-    }
     List<MediaSourceList.MediaSourceHolder> holders =
-        addMediaSourceHolders(/* index= */ 0, mediaSources);
+        setMediaSourceHolders(mediaSources, startWindowIndex);
     Timeline timeline = createMaskingTimeline();
     if (!timeline.isEmpty() && startWindowIndex >= timeline.getWindowCount()) {
       throw new IllegalSeekPositionException(timeline, startWindowIndex, startPositionMs);
@@ -2335,16 +2598,17 @@ import java.util.concurrent.CopyOnWriteArraySet;
             playbackInfo,
             timeline,
             maskWindowPositionMsOrGetPeriodPositionUs(timeline, startWindowIndex, startPositionMs));
-    // Mask the playback state.
-    int maskingPlaybackState = newPlaybackInfo.playbackState;
-    if (startWindowIndex != C.INDEX_UNSET && newPlaybackInfo.playbackState != STATE_IDLE) {
-      // Position reset to startWindowIndex (results in pending initial seek).
-      if (timeline.isEmpty() || startWindowIndex >= timeline.getWindowCount()) {
-        // Setting an empty timeline or invalid seek transitions to ended.
-        maskingPlaybackState = STATE_ENDED;
-      } else {
-        maskingPlaybackState = STATE_BUFFERING;
-      }
+    int maskingPlaybackState;
+    if (newPlaybackInfo.playbackState == STATE_IDLE) {
+      maskingPlaybackState = STATE_IDLE; // never move out of IDLE automatically
+    } else if (timeline.isEmpty()) {
+      maskingPlaybackState = STATE_ENDED; // ensure ENDED for empty playlist
+    } else if (startWindowIndex == C.INDEX_UNSET) {
+      maskingPlaybackState = newPlaybackInfo.playbackState; // no implicit seek, keep old state
+    } else if (startWindowIndex >= timeline.getWindowCount()) {
+      maskingPlaybackState = STATE_ENDED; // invalid seek, transition to ENDED
+    } else {
+      maskingPlaybackState = STATE_BUFFERING;
     }
     newPlaybackInfo = maskPlaybackState(newPlaybackInfo, maskingPlaybackState);
     internalPlayer.setMediaSources(
@@ -2360,6 +2624,21 @@ import java.util.concurrent.CopyOnWriteArraySet;
         /* discontinuityWindowStartPositionUs= */ getCurrentPositionUsInternal(newPlaybackInfo),
         /* ignored */ C.INDEX_UNSET,
         /* repeatCurrentMediaItem= */ false);
+  }
+
+  private List<MediaSourceList.MediaSourceHolder> setMediaSourceHolders(
+      List<MediaSource> mediaSources, int startIndex) {
+    mediaSourceHolderSnapshots.clear();
+    List<MediaSourceList.MediaSourceHolder> holders = new ArrayList<>();
+    for (int i = 0; i < mediaSources.size(); i++) {
+      MediaSourceList.MediaSourceHolder holder =
+          new MediaSourceList.MediaSourceHolder(mediaSources.get(i), useLazyPreparation);
+      holders.add(holder);
+      mediaSourceHolderSnapshots.add(
+          i, new MediaSourceHolderSnapshot(holder.uid, holder.mediaSource));
+    }
+    shuffleOrder = shuffleOrder.cloneAndSet(/* insertionCount= */ holders.size(), startIndex);
+    return holders;
   }
 
   private List<MediaSourceList.MediaSourceHolder> addMediaSourceHolders(
@@ -2402,7 +2681,6 @@ import java.util.concurrent.CopyOnWriteArraySet;
     int currentIndex = getCurrentWindowIndexInternal(playbackInfo);
     long contentPositionMs = getContentPositionInternal(playbackInfo);
     Timeline oldTimeline = playbackInfo.timeline;
-    int currentMediaSourceCount = mediaSourceHolderSnapshots.size();
     pendingOperationAcks++;
     removeMediaSourceHolders(fromIndex, /* toIndexExclusive= */ toIndex);
     Timeline newTimeline = createMaskingTimeline();
@@ -2412,15 +2690,19 @@ import java.util.concurrent.CopyOnWriteArraySet;
             newTimeline,
             getPeriodPositionUsAfterTimelineChanged(
                 oldTimeline, newTimeline, currentIndex, contentPositionMs));
-    // Player transitions to STATE_ENDED if the current index is part of the removed tail.
-    final boolean transitionsToEnded =
-        newPlaybackInfo.playbackState != STATE_IDLE
-            && newPlaybackInfo.playbackState != STATE_ENDED
-            && fromIndex < toIndex
-            && toIndex == currentMediaSourceCount
-            && currentIndex >= newPlaybackInfo.timeline.getWindowCount();
-    if (transitionsToEnded) {
-      newPlaybackInfo = maskPlaybackState(newPlaybackInfo, STATE_ENDED);
+    if (newPlaybackInfo.playbackState != STATE_IDLE
+        && newPlaybackInfo.playbackState != STATE_ENDED
+        && currentIndex >= fromIndex
+        && currentIndex < toIndex) {
+      // Check if we need to transition to STATE_ENDED after the current item was removed and no
+      // subsequent period can be found.
+      Object periodUid = playbackInfo.periodId.periodUid;
+      int resolvedWindowIndex =
+          ExoPlayerImplInternal.resolveSubsequentPeriod(
+              window, period, repeatMode, shuffleModeEnabled, periodUid, oldTimeline, newTimeline);
+      if (resolvedWindowIndex == C.INDEX_UNSET) {
+        newPlaybackInfo = maskPlaybackState(newPlaybackInfo, STATE_ENDED);
+      }
     }
     internalPlayer.removeMediaSources(fromIndex, toIndex, shuffleOrder);
     return newPlaybackInfo;
@@ -2474,6 +2756,14 @@ import java.util.concurrent.CopyOnWriteArraySet;
     if (!oldTimeline.isEmpty()) {
       oldContentPositionUs -=
           oldTimeline.getPeriodByUid(oldPeriodUid, period).getPositionInWindowUs();
+      if (!playingPeriodChanged && oldContentPositionUs - newContentPositionUs == 1) {
+        long oldDurationUs = oldTimeline.getPeriodByUid(oldPeriodUid, period).durationUs;
+        boolean endOfSameStream = oldContentPositionUs == oldDurationUs;
+        if (endOfSameStream) {
+          // Correct the old position to be durationUs - 1.
+          oldContentPositionUs -= 1;
+        }
+      }
     }
 
     if (playingPeriodChanged || newContentPositionUs < oldContentPositionUs) {
@@ -2598,7 +2888,6 @@ import java.util.concurrent.CopyOnWriteArraySet;
       // If empty we store the initial seek in the masking variables.
       maskingWindowIndex = windowIndex;
       maskingWindowPositionMs = windowPositionMs == C.TIME_UNSET ? 0 : windowPositionMs;
-      maskingPeriodIndex = 0;
       return null;
     }
     if (windowIndex == C.INDEX_UNSET || windowIndex >= timeline.getWindowCount()) {
@@ -2730,6 +3019,10 @@ import java.util.concurrent.CopyOnWriteArraySet;
     }
   }
 
+  private void maybeUpdatePlaybackSuppressionReason() {
+    updatePlayWhenReady(playbackInfo.playWhenReady, playbackInfo.playWhenReadyChangeReason);
+  }
+
   private void updatePlayWhenReady(
       boolean playWhenReady, @Player.PlayWhenReadyChangeReason int playWhenReadyChangeReason) {
     @PlaybackSuppressionReason
@@ -2761,6 +3054,9 @@ import java.util.concurrent.CopyOnWriteArraySet;
   }
 
   private @PlaybackSuppressionReason int computePlaybackSuppressionReason(boolean playWhenReady) {
+    if (scrubbingModeEnabled) {
+      return Player.PLAYBACK_SUPPRESSION_REASON_SCRUBBING;
+    }
     if (suitableOutputChecker != null
         && !suitableOutputChecker.isSelectedOutputSuitableForPlayback()) {
       return Player.PLAYBACK_SUPPRESSION_REASON_UNSUITABLE_AUDIO_OUTPUT;
@@ -2866,7 +3162,8 @@ import java.util.concurrent.CopyOnWriteArraySet;
     for (int i = fromIndex; i < toIndex; i++) {
       MediaSourceHolderSnapshot snapshot = mediaSourceHolderSnapshots.get(i);
       snapshot.updateTimeline(
-          new TimelineWithUpdatedMediaItem(snapshot.getTimeline(), mediaItems.get(i - fromIndex)));
+          TimelineWithUpdatedMediaItem.create(
+              snapshot.getTimeline(), mediaItems.get(i - fromIndex)));
     }
     Timeline newTimeline = createMaskingTimeline();
     PlaybackInfo newPlaybackInfo = playbackInfo.copyWithTimeline(newTimeline);
@@ -2888,10 +3185,10 @@ import java.util.concurrent.CopyOnWriteArraySet;
     if (isSelectedOutputSuitableForPlayback) {
       if (playbackInfo.playbackSuppressionReason
           == Player.PLAYBACK_SUPPRESSION_REASON_UNSUITABLE_AUDIO_OUTPUT) {
-        updatePlayWhenReady(playbackInfo.playWhenReady, PLAY_WHEN_READY_CHANGE_REASON_USER_REQUEST);
+        maybeUpdatePlaybackSuppressionReason();
       }
     } else {
-      updatePlayWhenReady(playbackInfo.playWhenReady, PLAY_WHEN_READY_CHANGE_REASON_USER_REQUEST);
+      maybeUpdatePlaybackSuppressionReason();
     }
   }
 
@@ -2908,6 +3205,82 @@ import java.util.concurrent.CopyOnWriteArraySet;
         .setMinVolume(streamVolumeManager != null ? streamVolumeManager.getMinVolume() : 0)
         .setMaxVolume(streamVolumeManager != null ? streamVolumeManager.getMaxVolume() : 0)
         .build();
+  }
+
+  private static TrackSelectionParameters addDisabledTrackTypes(
+      TrackSelectionParameters parameters, ImmutableSet<@C.TrackType Integer> trackTypesToDisable) {
+    TrackSelectionParameters.Builder parametersBuilder = parameters.buildUpon();
+    for (@C.TrackType Integer trackType : trackTypesToDisable) {
+      parametersBuilder.setTrackTypeDisabled(trackType, true);
+    }
+    return parametersBuilder.build();
+  }
+
+  private final class CodecParameterListenerManager {
+
+    private final @C.TrackType int trackType;
+    private final Map<CodecParametersChangeListener, List<String>> listeners;
+    private CodecParameters lastNotifiedParameters;
+
+    private CodecParameterListenerManager(@C.TrackType int trackType) {
+      this.trackType = trackType;
+      this.listeners = new HashMap<>();
+      this.lastNotifiedParameters = CodecParameters.EMPTY;
+    }
+
+    private void addListener(CodecParametersChangeListener listener, List<String> keys) {
+      listeners.put(listener, keys);
+      updateAndSendSubscribedKeysToRenderer();
+      // Immediately notify the new listener with its filtered view of the last known state.
+      CodecParameters listenerInitialState =
+          createFilteredCodecParameters(lastNotifiedParameters, keys);
+      listener.onCodecParametersChanged(listenerInitialState);
+    }
+
+    private void removeListener(CodecParametersChangeListener listener) {
+      if (listeners.remove(listener) != null) {
+        updateAndSendSubscribedKeysToRenderer();
+      }
+    }
+
+    private void onParametersChanged(CodecParameters newParameters) {
+      for (Map.Entry<CodecParametersChangeListener, List<String>> entry :
+          new HashMap<>(listeners).entrySet()) {
+        CodecParametersChangeListener listener = entry.getKey();
+        List<String> listenerKeys = entry.getValue();
+
+        CodecParameters listenerCurrentState =
+            createFilteredCodecParameters(newParameters, listenerKeys);
+        CodecParameters listenerPreviousState =
+            createFilteredCodecParameters(lastNotifiedParameters, listenerKeys);
+
+        if (!listenerCurrentState.equals(listenerPreviousState)) {
+          listener.onCodecParametersChanged(listenerCurrentState);
+        }
+      }
+      lastNotifiedParameters = newParameters;
+    }
+
+    private void updateAndSendSubscribedKeysToRenderer() {
+      ImmutableSet.Builder<String> newKeysBuilder = ImmutableSet.builder();
+      for (List<String> keys : listeners.values()) {
+        newKeysBuilder.addAll(keys);
+      }
+      sendRendererMessage(
+          trackType, MSG_SET_SUBSCRIBED_CODEC_PARAMETER_KEYS, newKeysBuilder.build());
+    }
+
+    private CodecParameters createFilteredCodecParameters(
+        CodecParameters source, List<String> keys) {
+      CodecParameters.Builder builder = source.buildUpon();
+      Set<String> keysToKeep = new HashSet<>(keys);
+      for (String key : source.keySet()) {
+        if (!keysToKeep.contains(key)) {
+          builder.remove(key);
+        }
+      }
+      return builder.build();
+    }
   }
 
   private static final class MediaSourceHolderSnapshot implements MediaSourceInfoHolder {
@@ -2946,9 +3319,10 @@ import java.util.concurrent.CopyOnWriteArraySet;
           SurfaceHolder.Callback,
           TextureView.SurfaceTextureListener,
           SphericalGLSurfaceView.VideoSurfaceListener,
-          AudioBecomingNoisyManager.EventListener,
+          AudioBecomingNoisyManager.Listener,
           StreamVolumeManager.Listener,
-          AudioOffloadListener {
+          AudioOffloadListener,
+          StuckPlayerDetector.Callback {
 
     // VideoRendererEventListener implementation
 
@@ -3089,6 +3463,23 @@ import java.util.concurrent.CopyOnWriteArraySet;
       analyticsCollector.onAudioTrackReleased(audioTrackConfig);
     }
 
+    @Override
+    public void onAudioSessionIdChanged(int audioSessionId) {
+      audioSessionIdState.updateStateAsync(
+          /* placeholderState= */ previousId -> audioSessionId,
+          /* backgroundStateUpdate= */ previousId -> audioSessionId);
+    }
+
+    @Override
+    public void onAudioCodecParametersChanged(CodecParameters newParameters) {
+      audioListenerManager.onParametersChanged(newParameters);
+    }
+
+    @Override
+    public void onVideoCodecParametersChanged(CodecParameters newParameters) {
+      videoListenerManager.onParametersChanged(newParameters);
+    }
+
     // TextOutput implementation
     @SuppressWarnings("deprecation") // Intentionally forwarding deprecating callback
     @Override
@@ -3211,6 +3602,15 @@ import java.util.concurrent.CopyOnWriteArraySet;
     public void onSleepingForOffloadChanged(boolean sleepingForOffload) {
       updateWakeAndWifiLock();
     }
+
+    // StuckPlayerDetector.Callback implementation.
+
+    @Override
+    public void onStuckPlayerDetected(StuckPlayerException exception) {
+      stopInternal(
+          ExoPlaybackException.createForUnexpected(
+              exception, PlaybackException.ERROR_CODE_TIMEOUT));
+    }
   }
 
   /** Listeners that are called on the playback thread. */
@@ -3324,6 +3724,41 @@ import java.util.concurrent.CopyOnWriteArraySet;
             }
             playerId.setLogSessionId(listener.getLogSessionId());
           });
+    }
+  }
+
+  @RequiresApi(34)
+  private final class VirtualDeviceIdChangeListener {
+
+    // We must not keep a strong reference to the original Context to prevent leaking it if the
+    // player outlives the Context (e.g. an Activity or Service). However, we need the original
+    // Context instance to register and unregister the listener as the application Context does not
+    // have the device ID handling.
+    private final WeakReference<Context> contextReference;
+    private final IntConsumer listener;
+
+    private VirtualDeviceIdChangeListener(Context context) {
+      contextReference = new WeakReference<>(context);
+      listener = this::onVirtualDeviceIdChanged;
+      HandlerWrapper handler = clock.createHandler(applicationLooper, /* callback= */ null);
+      context.registerDeviceIdChangeListener(handler::post, listener);
+    }
+
+    private void release() {
+      @Nullable Context context = contextReference.get();
+      if (context == null) {
+        // The original context is already garbage collected, so no need to unregister the listener.
+        return;
+      }
+      context.unregisterDeviceIdChangeListener(listener);
+    }
+
+    private void onVirtualDeviceIdChanged(int virtualDeviceId) {
+      if (playerReleased) {
+        // Stale event.
+        return;
+      }
+      sendRendererMessage(TRACK_TYPE_AUDIO, MSG_SET_VIRTUAL_DEVICE_ID, virtualDeviceId);
     }
   }
 }

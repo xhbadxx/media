@@ -20,6 +20,8 @@ track 0:
     maxNumReorderSamples = 0
     width = 1024
     height = 768
+    decodedWidth = 1024
+    decodedHeight = 768
     frameRate = 27.61
     rotationDegrees = 90
     maxSubLayers = 1
@@ -29,7 +31,7 @@ track 0:
       colorTransfer = 3
       lumaBitdepth = 8
       chromaBitdepth = 8
-    metadata = entries=[Mp4Timestamp: creation time=3784612704, modification time=3784612704, timescale=10000]
+    metadata = entries=[Mp4Timestamp: creation time=3784612704, modification time=3784612704, timescale=10000, ThumbnailMetadata: presentationTimeUs=1767244]
     initializationData:
       data = length 82, hash C508E2F1
   sample 0:
@@ -138,6 +140,8 @@ track 1:
     maxNumReorderSamples = 0
     width = 2048
     height = 1536
+    decodedWidth = 2048
+    decodedHeight = 1536
     frameRate = 2.14
     rotationDegrees = 90
     maxSubLayers = 1
@@ -147,7 +151,7 @@ track 1:
       colorTransfer = 3
       lumaBitdepth = 8
       chromaBitdepth = 8
-    metadata = entries=[Mp4Timestamp: creation time=3784612704, modification time=3784612704, timescale=10000]
+    metadata = entries=[Mp4Timestamp: creation time=3784612704, modification time=3784612704, timescale=10000, ThumbnailMetadata: presentationTimeUs=0]
     initializationData:
       data = length 82, hash 1924973
   sample 0:

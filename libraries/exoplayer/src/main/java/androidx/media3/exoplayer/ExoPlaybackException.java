@@ -15,6 +15,9 @@
  */
 package androidx.media3.exoplayer;
 
+import static com.google.common.base.Preconditions.checkArgument;
+import static com.google.common.base.Preconditions.checkNotNull;
+import static com.google.common.base.Preconditions.checkState;
 import static java.lang.annotation.ElementType.FIELD;
 import static java.lang.annotation.ElementType.LOCAL_VARIABLE;
 import static java.lang.annotation.ElementType.METHOD;
@@ -31,7 +34,6 @@ import androidx.media3.common.C;
 import androidx.media3.common.C.FormatSupport;
 import androidx.media3.common.Format;
 import androidx.media3.common.PlaybackException;
-import androidx.media3.common.util.Assertions;
 import androidx.media3.common.util.UnstableApi;
 import androidx.media3.common.util.Util;
 import androidx.media3.exoplayer.source.MediaSource;
@@ -133,6 +135,31 @@ public final class ExoPlaybackException extends PlaybackException {
   }
 
   /**
+   * @deprecated Use {@link #createForRenderer(Throwable, String, int, Format, int, MediaPeriodId,
+   *     boolean, int)} instead.
+   */
+  @Deprecated
+  @UnstableApi
+  public static ExoPlaybackException createForRenderer(
+      Throwable cause,
+      String rendererName,
+      int rendererIndex,
+      @Nullable Format rendererFormat,
+      @FormatSupport int rendererFormatSupport,
+      boolean isRecoverable,
+      @ErrorCode int errorCode) {
+    return createForRenderer(
+        cause,
+        rendererName,
+        rendererIndex,
+        rendererFormat,
+        rendererFormatSupport,
+        /* mediaPeriodId= */ null,
+        isRecoverable,
+        errorCode);
+  }
+
+  /**
    * Creates an instance of type {@link #TYPE_RENDERER}.
    *
    * @param cause The cause of the failure.
@@ -143,6 +170,8 @@ public final class ExoPlaybackException extends PlaybackException {
    *     or null if the renderer wasn't using a {@link Format}.
    * @param rendererFormatSupport The {@link FormatSupport} of the renderer for {@code
    *     rendererFormat}. Ignored if {@code rendererFormat} is null.
+   * @param mediaPeriodId The {@link MediaPeriodId mediaPeriodId} of the media associated with this
+   *     error, or null if undetermined.
    * @param isRecoverable If the failure can be recovered by disabling and re-enabling the renderer.
    * @param errorCode See {@link #errorCode}.
    * @return The created instance.
@@ -154,9 +183,9 @@ public final class ExoPlaybackException extends PlaybackException {
       int rendererIndex,
       @Nullable Format rendererFormat,
       @FormatSupport int rendererFormatSupport,
+      @Nullable MediaPeriodId mediaPeriodId,
       boolean isRecoverable,
       @ErrorCode int errorCode) {
-
     return new ExoPlaybackException(
         TYPE_RENDERER,
         cause,
@@ -166,6 +195,7 @@ public final class ExoPlaybackException extends PlaybackException {
         rendererIndex,
         rendererFormat,
         rendererFormat == null ? C.FORMAT_HANDLED : rendererFormatSupport,
+        mediaPeriodId,
         isRecoverable);
   }
 
@@ -209,6 +239,7 @@ public final class ExoPlaybackException extends PlaybackException {
         /* rendererIndex= */ C.INDEX_UNSET,
         /* rendererFormat= */ null,
         /* rendererFormatSupport= */ C.FORMAT_HANDLED,
+        /* mediaPeriodId= */ null,
         /* isRecoverable= */ false);
   }
 
@@ -222,6 +253,7 @@ public final class ExoPlaybackException extends PlaybackException {
         /* rendererIndex= */ C.INDEX_UNSET,
         /* rendererFormat= */ null,
         /* rendererFormatSupport= */ C.FORMAT_HANDLED,
+        /* mediaPeriodId= */ null,
         /* isRecoverable= */ false);
   }
 
@@ -234,6 +266,7 @@ public final class ExoPlaybackException extends PlaybackException {
       int rendererIndex,
       @Nullable Format rendererFormat,
       @FormatSupport int rendererFormatSupport,
+      @Nullable MediaPeriodId mediaPeriodId,
       boolean isRecoverable) {
     this(
         deriveMessage(
@@ -250,7 +283,7 @@ public final class ExoPlaybackException extends PlaybackException {
         rendererIndex,
         rendererFormat,
         rendererFormatSupport,
-        /* mediaPeriodId= */ null,
+        mediaPeriodId,
         /* timestampMs= */ SystemClock.elapsedRealtime(),
         isRecoverable);
   }
@@ -268,8 +301,8 @@ public final class ExoPlaybackException extends PlaybackException {
       long timestampMs,
       boolean isRecoverable) {
     super(message, cause, errorCode, Bundle.EMPTY, timestampMs);
-    Assertions.checkArgument(!isRecoverable || type == TYPE_RENDERER);
-    Assertions.checkArgument(cause != null || type == TYPE_REMOTE);
+    checkArgument(!isRecoverable || type == TYPE_RENDERER);
+    checkArgument(cause != null || type == TYPE_REMOTE);
     this.type = type;
     this.rendererName = rendererName;
     this.rendererIndex = rendererIndex;
@@ -286,8 +319,8 @@ public final class ExoPlaybackException extends PlaybackException {
    */
   @UnstableApi
   public IOException getSourceException() {
-    Assertions.checkState(type == TYPE_SOURCE);
-    return (IOException) Assertions.checkNotNull(getCause());
+    checkState(type == TYPE_SOURCE);
+    return (IOException) checkNotNull(getCause());
   }
 
   /**
@@ -297,8 +330,8 @@ public final class ExoPlaybackException extends PlaybackException {
    */
   @UnstableApi
   public Exception getRendererException() {
-    Assertions.checkState(type == TYPE_RENDERER);
-    return (Exception) Assertions.checkNotNull(getCause());
+    checkState(type == TYPE_RENDERER);
+    return (Exception) checkNotNull(getCause());
   }
 
   /**
@@ -308,8 +341,8 @@ public final class ExoPlaybackException extends PlaybackException {
    */
   @UnstableApi
   public RuntimeException getUnexpectedException() {
-    Assertions.checkState(type == TYPE_UNEXPECTED);
-    return (RuntimeException) Assertions.checkNotNull(getCause());
+    checkState(type == TYPE_UNEXPECTED);
+    return (RuntimeException) checkNotNull(getCause());
   }
 
   @Override

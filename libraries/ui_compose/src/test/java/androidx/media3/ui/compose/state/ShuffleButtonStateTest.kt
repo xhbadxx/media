@@ -16,10 +16,15 @@
 
 package androidx.media3.ui.compose.state
 
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.test.junit4.createComposeRule
-import androidx.media3.ui.compose.utils.TestPlayer
+import androidx.media3.common.Player
+import androidx.media3.common.Player.COMMAND_SET_SHUFFLE_MODE
+import androidx.media3.test.utils.FakePlayer
+import androidx.media3.ui.compose.testutils.createReadyPlayerWithTwoItems
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.google.common.truth.Truth.assertThat
+import org.junit.Assert.assertThrows
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -33,7 +38,7 @@ class ShuffleButtonStateTest {
 
   @Test
   fun playerShuffleModeChanged_buttonShuffleModeChanged() {
-    val player = TestPlayer()
+    val player = FakePlayer()
 
     lateinit var state: ShuffleButtonState
     composeTestRule.setContent { state = rememberShuffleButtonState(player = player) }
@@ -48,13 +53,50 @@ class ShuffleButtonStateTest {
 
   @Test
   fun buttonClicked_playerShuffleModeChanged() {
-    val player = TestPlayer()
+    val player = FakePlayer()
     val state = ShuffleButtonState(player)
     assertThat(state.shuffleOn).isFalse()
 
     state.onClick()
 
     assertThat(player.shuffleModeEnabled).isTrue()
+  }
+
+  @Test
+  fun onClick_whenCommandNotAvailable_throwsIllegalStateException() {
+    val player = FakePlayer()
+    player.removeCommands(COMMAND_SET_SHUFFLE_MODE)
+    val state = ShuffleButtonState(player)
+
+    assertThat(state.isEnabled).isFalse()
+    assertThrows(IllegalStateException::class.java) { state.onClick() }
+  }
+
+  @Test
+  fun onClick_stateBecomesDisabled_throwsException() {
+    val player = createReadyPlayerWithTwoItems()
+    lateinit var state: ShuffleButtonState
+    composeTestRule.setContent { state = rememberShuffleButtonState(player) }
+
+    player.removeCommands(Player.COMMAND_SET_SHUFFLE_MODE)
+    composeTestRule.waitForIdle()
+
+    assertThrows(IllegalStateException::class.java) { state.onClick() }
+  }
+
+  @Test
+  fun onClick_justAfterCommandRemovedWhileStillEnabled_isNoOp() {
+    val player = createReadyPlayerWithTwoItems()
+    player.shuffleModeEnabled = true
+    lateinit var state: ShuffleButtonState
+    composeTestRule.setContent { state = rememberShuffleButtonState(player) }
+
+    // Simulate command becoming disabled without yet receiving the event callback
+    player.removeCommands(Player.COMMAND_SET_SHUFFLE_MODE)
+    check(state.isEnabled)
+    state.onClick()
+
+    assertThat(player.shuffleModeEnabled).isEqualTo(true)
   }
 
   @Test
@@ -74,7 +116,7 @@ class ShuffleButtonStateTest {
     // irrelevant because we are operating on the live mutable Player object). The expectation then
     // is that the State object and Player finally synchronise, even if it means the UI interaction
     // would have been confusing.
-    val player = TestPlayer()
+    val player = FakePlayer()
     lateinit var state: ShuffleButtonState
     composeTestRule.setContent { state = rememberShuffleButtonState(player = player) }
     assertThat(state.shuffleOn).isFalse() // Correct UI state in sync with Player
@@ -92,5 +134,22 @@ class ShuffleButtonStateTest {
 
     assertThat(player.shuffleModeEnabled).isFalse()
     assertThat(state.shuffleOn).isFalse() // UI state synchronises with Player
+  }
+
+  @Test
+  fun playerChangesShuffleModeCommandsBeforeEventListenerRegisters_observeGetsTheLatestValues_uiIconInSync() {
+    val player = FakePlayer()
+
+    lateinit var state: ShuffleButtonState
+    composeTestRule.setContent {
+      // Schedule LaunchedEffect to update player state before ShuffleButtonState is created.
+      // This update could end up being executed *before* ShuffleButtonState schedules the start of
+      // event listening and we don't want to lose it.
+      LaunchedEffect(player) { player.shuffleModeEnabled = !player.shuffleModeEnabled }
+      state = rememberShuffleButtonState(player)
+    }
+
+    // UI syncs up with the fact that shuffle mode got flipped to true
+    assertThat(state.shuffleOn).isTrue()
   }
 }

@@ -33,11 +33,14 @@ import static androidx.media3.common.Player.COMMAND_SEEK_TO_NEXT;
 import static androidx.media3.common.Player.COMMAND_SEEK_TO_NEXT_MEDIA_ITEM;
 import static androidx.media3.common.Player.COMMAND_SEEK_TO_PREVIOUS;
 import static androidx.media3.common.Player.COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM;
-import static androidx.media3.common.util.Assertions.checkArgument;
-import static androidx.media3.common.util.Assertions.checkNotNull;
+import static com.google.common.base.Preconditions.checkArgument;
+import static com.google.common.base.Preconditions.checkNotNull;
+import static com.google.common.base.Preconditions.checkState;
 import static java.lang.Math.abs;
 import static java.lang.Math.max;
 import static java.lang.Math.min;
+import static java.nio.ByteOrder.LITTLE_ENDIAN;
+import static java.nio.charset.StandardCharsets.US_ASCII;
 
 import android.Manifest.permission;
 import android.annotation.SuppressLint;
@@ -47,6 +50,7 @@ import android.app.Service;
 import android.app.UiModeManager;
 import android.content.BroadcastReceiver;
 import android.content.ComponentName;
+import android.content.ContentResolver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
@@ -66,6 +70,7 @@ import android.media.MediaCodec;
 import android.media.MediaDrm;
 import android.net.Uri;
 import android.os.Build;
+import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.Parcel;
@@ -80,7 +85,6 @@ import android.util.SparseLongArray;
 import android.view.Display;
 import android.view.SurfaceView;
 import android.view.WindowManager;
-import androidx.annotation.ChecksSdkIntAtLeast;
 import androidx.annotation.DrawableRes;
 import androidx.annotation.Nullable;
 import androidx.annotation.RequiresApi;
@@ -98,6 +102,8 @@ import androidx.media3.common.Player.Commands;
 import androidx.media3.common.audio.AudioManagerCompat;
 import androidx.media3.common.audio.AudioProcessor;
 import com.google.common.base.Ascii;
+import com.google.common.base.Preconditions;
+import com.google.common.io.BaseEncoding;
 import com.google.common.io.ByteStreams;
 import com.google.common.math.DoubleMath;
 import com.google.common.math.LongMath;
@@ -108,6 +114,7 @@ import com.google.common.util.concurrent.Futures;
 import com.google.common.util.concurrent.ListenableFuture;
 import com.google.common.util.concurrent.MoreExecutors;
 import com.google.common.util.concurrent.SettableFuture;
+import com.google.errorprone.annotations.CheckReturnValue;
 import com.google.errorprone.annotations.InlineMe;
 import java.io.ByteArrayOutputStream;
 import java.io.Closeable;
@@ -155,10 +162,9 @@ import org.checkerframework.checker.nullness.qual.PolyNull;
 public final class Util {
 
   /**
-   * Like {@link Build.VERSION#SDK_INT}, but in a place where it can be conveniently overridden for
-   * local testing.
+   * @deprecated Use {@link Build.VERSION#SDK_INT} instead.
    */
-  @UnstableApi public static final int SDK_INT = Build.VERSION.SDK_INT;
+  @UnstableApi @Deprecated public static final int SDK_INT = Build.VERSION.SDK_INT;
 
   /**
    * @deprecated Use {@link Build#DEVICE} instead.
@@ -178,7 +184,7 @@ public final class Util {
   /** A concise description of the device that it can be useful to log for debugging purposes. */
   @UnstableApi
   public static final String DEVICE_DEBUG_INFO =
-      Build.DEVICE + ", " + Build.MODEL + ", " + Build.MANUFACTURER + ", " + SDK_INT;
+      Build.DEVICE + ", " + Build.MODEL + ", " + Build.MANUFACTURER + ", " + Build.VERSION.SDK_INT;
 
   /** An empty byte array. */
   @UnstableApi public static final byte[] EMPTY_BYTE_ARRAY = new byte[0];
@@ -189,9 +195,9 @@ public final class Util {
   private static final String TAG = "Util";
   private static final Pattern XS_DATE_TIME_PATTERN =
       Pattern.compile(
-          "(\\d\\d\\d\\d)\\-(\\d\\d)\\-(\\d\\d)[Tt]"
+          "(\\d\\d\\d\\d)\\-(\\d\\d)\\-(\\d\\d)[Tt ]"
               + "(\\d\\d):(\\d\\d):(\\d\\d)([\\.,](\\d+))?"
-              + "([Zz]|((\\+|\\-)(\\d?\\d):?(\\d\\d)))?");
+              + "([Zz]|((\\+|\\-)(\\d?\\d):?(\\d\\d)?))?");
   private static final Pattern XS_DURATION_PATTERN =
       Pattern.compile(
           "^(-)?P(([0-9]*)Y)?(([0-9]*)M)?(([0-9]*)D)?"
@@ -249,7 +255,7 @@ public final class Util {
   /**
    * Registers a {@link BroadcastReceiver} that's not intended to receive broadcasts from other
    * apps. This will be enforced by specifying {@link Context#RECEIVER_NOT_EXPORTED} if {@link
-   * #SDK_INT} is 33 or above.
+   * Build.VERSION#SDK_INT} is 33 or above.
    *
    * <p>Do not use this method if registering a receiver for a <a
    * href="https://android.googlesource.com/platform/frameworks/base/+/master/core/res/AndroidManifest.xml">protected
@@ -264,7 +270,7 @@ public final class Util {
   @Nullable
   public static Intent registerReceiverNotExported(
       Context context, @Nullable BroadcastReceiver receiver, IntentFilter filter) {
-    if (SDK_INT < 33) {
+    if (Build.VERSION.SDK_INT < 33) {
       return context.registerReceiver(receiver, filter);
     } else {
       return context.registerReceiver(receiver, filter, Context.RECEIVER_NOT_EXPORTED);
@@ -272,8 +278,8 @@ public final class Util {
   }
 
   /**
-   * Calls {@link Context#startForegroundService(Intent)} if {@link #SDK_INT} is 26 or higher, or
-   * {@link Context#startService(Intent)} otherwise.
+   * Calls {@link Context#startForegroundService(Intent)} if {@link Build.VERSION#SDK_INT} is 26 or
+   * higher, or {@link Context#startService(Intent)} otherwise.
    *
    * @param context The context to call.
    * @param intent The intent to pass to the called method.
@@ -282,7 +288,7 @@ public final class Util {
   @UnstableApi
   @Nullable
   public static ComponentName startForegroundService(Context context, Intent intent) {
-    if (SDK_INT >= 26) {
+    if (Build.VERSION.SDK_INT >= 26) {
       return context.startForegroundService(intent);
     } else {
       return context.startService(intent);
@@ -307,7 +313,7 @@ public final class Util {
       Notification notification,
       int foregroundServiceType,
       String foregroundServiceManifestType) {
-    if (Util.SDK_INT >= 29) {
+    if (Build.VERSION.SDK_INT >= 29) {
       Api29.startForeground(
           service,
           notificationId,
@@ -352,9 +358,6 @@ public final class Util {
    */
   public static boolean maybeRequestReadStoragePermission(
       Activity activity, MediaItem... mediaItems) {
-    if (SDK_INT < 23) {
-      return false;
-    }
     for (MediaItem mediaItem : mediaItems) {
       if (mediaItem.localConfiguration == null) {
         continue;
@@ -377,19 +380,14 @@ public final class Util {
     if (!isReadStoragePermissionRequestNeeded(activity, uri)) {
       return false;
     }
-    if (SDK_INT < 33) {
+    if (Build.VERSION.SDK_INT < 33) {
       return requestExternalStoragePermission(activity);
     } else {
       return requestReadMediaPermissions(activity);
     }
   }
 
-  @ChecksSdkIntAtLeast(api = 23)
   private static boolean isReadStoragePermissionRequestNeeded(Activity activity, Uri uri) {
-    if (SDK_INT < 23) {
-      // Permission automatically granted via manifest below API 23.
-      return false;
-    }
     if (isLocalFileUri(uri)) {
       return !isAppSpecificStorageFileUri(activity, uri);
     }
@@ -420,7 +418,8 @@ public final class Util {
   }
 
   private static boolean isMediaStoreExternalContentUri(Uri uri) {
-    if (!"content".equals(uri.getScheme()) || !MediaStore.AUTHORITY.equals(uri.getAuthority())) {
+    if (!Objects.equals(uri.getScheme(), ContentResolver.SCHEME_CONTENT)
+        || !Objects.equals(uri.getAuthority(), MediaStore.AUTHORITY)) {
       return false;
     }
     List<String> pathSegments = uri.getPathSegments();
@@ -440,7 +439,7 @@ public final class Util {
    * @return Whether it may be possible to load the URIs of the given media items.
    */
   public static boolean checkCleartextTrafficPermitted(MediaItem... mediaItems) {
-    if (SDK_INT < 24) {
+    if (Build.VERSION.SDK_INT < 24) {
       // We assume cleartext traffic is permitted.
       return true;
     }
@@ -468,7 +467,7 @@ public final class Util {
   @UnstableApi
   public static boolean isLocalFileUri(Uri uri) {
     String scheme = uri.getScheme();
-    return TextUtils.isEmpty(scheme) || "file".equals(scheme);
+    return TextUtils.isEmpty(scheme) || Objects.equals(scheme, ContentResolver.SCHEME_FILE);
   }
 
   /** Returns true if the code path is currently running on an emulator. */
@@ -511,7 +510,7 @@ public final class Util {
       return false;
     }
 
-    if (Util.SDK_INT >= 31) {
+    if (Build.VERSION.SDK_INT >= 31) {
       return sparseArray1.contentEquals(sparseArray2);
     }
 
@@ -540,7 +539,7 @@ public final class Util {
    */
   @UnstableApi
   public static <T> int contentHashCode(SparseArray<T> sparseArray) {
-    if (Util.SDK_INT >= 31) {
+    if (Build.VERSION.SDK_INT >= 31) {
       return sparseArray.contentHashCode();
     }
     int hash = 17;
@@ -605,7 +604,7 @@ public final class Util {
   /**
    * Casts a nullable variable to a non-null variable without runtime null check.
    *
-   * <p>Use {@link Assertions#checkNotNull(Object)} to throw if the value is null.
+   * <p>Use {@link Preconditions#checkNotNull(Object)} to throw if the value is null.
    */
   @UnstableApi
   @SuppressWarnings({"nullness:contracts.postcondition", "nullness:return"})
@@ -699,7 +698,7 @@ public final class Util {
   @UnstableApi
   @SuppressWarnings("nullness:toArray.nullable.elements.not.newarray")
   public static <T> void nullSafeListToArray(List<T> list, T[] array) {
-    Assertions.checkState(list.size() == array.length);
+    checkState(list.size() == array.length);
     list.toArray(array);
   }
 
@@ -728,7 +727,7 @@ public final class Util {
   @UnstableApi
   public static Handler createHandlerForCurrentLooper(
       @Nullable Handler.@UnknownInitialization Callback callback) {
-    return createHandler(Assertions.checkStateNotNull(Looper.myLooper()), callback);
+    return createHandler(checkNotNull(Looper.myLooper()), callback);
   }
 
   /**
@@ -792,6 +791,29 @@ public final class Util {
    */
   @UnstableApi
   public static boolean postOrRun(Handler handler, Runnable runnable) {
+    Looper looper = handler.getLooper();
+    if (!looper.getThread().isAlive()) {
+      return false;
+    }
+    if (looper == Looper.myLooper()) {
+      runnable.run();
+      return true;
+    } else {
+      return handler.post(runnable);
+    }
+  }
+
+  /**
+   * Posts the {@link Runnable} if the calling thread differs with the {@link Looper} of the {@link
+   * HandlerWrapper}. Otherwise, runs the {@link Runnable} directly.
+   *
+   * @param handler The {@link HandlerWrapper} to which the {@link Runnable} will be posted.
+   * @param runnable The runnable to either post or run.
+   * @return {@code true} if the {@link Runnable} was successfully posted to the {@link
+   *     HandlerWrapper} or run. {@code false} otherwise.
+   */
+  @UnstableApi
+  public static boolean postOrRun(HandlerWrapper handler, Runnable runnable) {
     Looper looper = handler.getLooper();
     if (!looper.getThread().isAlive()) {
       return false;
@@ -1197,12 +1219,11 @@ public final class Util {
    */
   @UnstableApi
   public static long addWithOverflowDefault(long x, long y, long overflowResult) {
-    long result = x + y;
-    // See Hacker's Delight 2-13 (H. Warren Jr).
-    if (((x ^ result) & (y ^ result)) < 0) {
-      return overflowResult;
-    }
-    return result;
+    long result = LongMath.saturatedAdd(x, y);
+    return (result == Long.MIN_VALUE && x + y != Long.MIN_VALUE)
+            || (result == Long.MAX_VALUE && x + y != Long.MAX_VALUE)
+        ? overflowResult
+        : result;
   }
 
   /**
@@ -1215,12 +1236,41 @@ public final class Util {
    */
   @UnstableApi
   public static long subtractWithOverflowDefault(long x, long y, long overflowResult) {
-    long result = x - y;
-    // See Hacker's Delight 2-13 (H. Warren Jr).
-    if (((x ^ y) & (x ^ result)) < 0) {
-      return overflowResult;
+    long result = LongMath.saturatedSubtract(x, y);
+    return (result == Long.MIN_VALUE && x - y != Long.MIN_VALUE)
+            || (result == Long.MAX_VALUE && x - y != Long.MAX_VALUE)
+        ? overflowResult
+        : result;
+  }
+
+  /**
+   * Returns the integer percentage of {@code numerator} divided by {@code denominator}. This uses
+   * integer arithmetic (round down).
+   *
+   * <p>The result is cast from {@code long} to {@code int} following the rules of {@link
+   * Ints#saturatedCast(long)}.
+   */
+  @UnstableApi
+  public static int percentInt(long numerator, long denominator) {
+    long numeratorTimes100 = LongMath.saturatedMultiply(numerator, 100);
+    long result =
+        numeratorTimes100 != Long.MAX_VALUE && numeratorTimes100 != Long.MIN_VALUE
+            ? numeratorTimes100 / denominator
+            : (numerator / (denominator / 100));
+    return Ints.saturatedCast(result);
+  }
+
+  /**
+   * Returns the floating point percentage of {@code numerator} divided by {@code denominator}. Note
+   * that this may return {@link Float#POSITIVE_INFINITY}, {@link Float#NEGATIVE_INFINITY} or {@link
+   * Float#NaN} if the denominator is zero.
+   */
+  @UnstableApi
+  public static float percentFloat(long numerator, long denominator) {
+    if (denominator != 0 && numerator == denominator) {
+      return 100f;
     }
-    return result;
+    return ((float) numerator / denominator) * 100;
   }
 
   /**
@@ -1513,17 +1563,25 @@ public final class Util {
     return stayInBounds ? min(list.size() - 1, index) : index;
   }
 
+  /** Returns whether {@code values} is sorted in ascending order. */
+  @UnstableApi
+  public static boolean isSorted(long[] values) {
+    for (int i = 0; i < values.length - 1; i++) {
+      if (values[i] > values[i + 1]) {
+        return false;
+      }
+    }
+    return true;
+  }
+
   /**
-   * Compares two long values and returns the same value as {@code Long.compare(long, long)}.
-   *
-   * @param left The left operand.
-   * @param right The right operand.
-   * @return 0, if left == right, a negative value if left &lt; right, or a positive value if left
-   *     &gt; right.
+   * @deprecated Use {@link Long#compare(long, long)}.
    */
   @UnstableApi
+  @Deprecated
+  @InlineMe(replacement = "Long.compare(left, right)")
   public static int compareLong(long left, long right) {
-    return left < right ? -1 : left == right ? 0 : 1;
+    return Long.compare(left, right);
   }
 
   /**
@@ -1658,6 +1716,10 @@ public final class Util {
    * Parses an xs:dateTime attribute value, returning the parsed timestamp in milliseconds since the
    * epoch.
    *
+   * <p>The parsing implemented here is deliberately more tolerant than the <a
+   * href="https://www.w3.org/TR/xmlschema-2/#dateTime">XML spec</a> allows, as this method is also
+   * used to parse ISO 8601 and RFC 3339 date-time strings.
+   *
    * @param value The attribute value to decode.
    * @return The parsed timestamp in milliseconds since the epoch.
    * @throws ParserException if an error occurs parsing the dateTime attribute value.
@@ -1680,8 +1742,11 @@ public final class Util {
     } else if (matcher.group(9).equalsIgnoreCase("Z")) {
       timezoneShift = 0;
     } else {
-      timezoneShift =
-          ((Integer.parseInt(matcher.group(12)) * 60 + Integer.parseInt(matcher.group(13))));
+      timezoneShift = Integer.parseInt(matcher.group(12)) * 60;
+      String timezoneOffsetMinutes = matcher.group(13);
+      if (timezoneOffsetMinutes != null) {
+        timezoneShift += Integer.parseInt(timezoneOffsetMinutes);
+      }
       if ("-".equals(matcher.group(11))) {
         timezoneShift *= -1;
       }
@@ -2024,15 +2089,7 @@ public final class Util {
    */
   @UnstableApi
   public static byte[] getBytesFromHexString(String hexString) {
-    byte[] data = new byte[hexString.length() / 2];
-    for (int i = 0; i < data.length; i++) {
-      int stringOffset = i * 2;
-      data[i] =
-          (byte)
-              ((Character.digit(hexString.charAt(stringOffset), 16) << 4)
-                  + Character.digit(hexString.charAt(stringOffset + 1), 16));
-    }
-    return data;
+    return BaseEncoding.base16().ignoreCase().decode(hexString);
   }
 
   /**
@@ -2043,13 +2100,12 @@ public final class Util {
    */
   @UnstableApi
   public static String toHexString(byte[] bytes) {
-    StringBuilder result = new StringBuilder(bytes.length * 2);
-    for (int i = 0; i < bytes.length; i++) {
-      result
-          .append(Character.forDigit((bytes[i] >> 4) & 0xF, 16))
-          .append(Character.forDigit(bytes[i] & 0xF, 16));
-    }
-    return result.toString();
+    return BaseEncoding.base16().lowerCase().encode(bytes);
+  }
+
+  @UnstableApi
+  public static String toFourccString(int fourcc) {
+    return new String(Ints.toByteArray(fourcc), US_ASCII);
   }
 
   /**
@@ -2059,7 +2115,6 @@ public final class Util {
    * @param applicationName String that will be prefix'ed to the generated user agent.
    * @return A user agent string generated using the applicationName and the library version.
    */
-  @UnstableApi
   public static String getUserAgent(Context context, String applicationName) {
     String versionName;
     try {
@@ -2185,7 +2240,7 @@ public final class Util {
   }
 
   /**
-   * Converts a sample bit depth to a corresponding PCM encoding constant.
+   * Converts a sample bit depth to a corresponding little-endian integer PCM encoding constant.
    *
    * @param bitDepth The bit depth. Supported values are 8, 16, 24 and 32.
    * @return The corresponding encoding. One of {@link C#ENCODING_PCM_8BIT}, {@link
@@ -2194,15 +2249,35 @@ public final class Util {
    */
   @UnstableApi
   public static @C.PcmEncoding int getPcmEncoding(int bitDepth) {
+    return getPcmEncoding(bitDepth, LITTLE_ENDIAN);
+  }
+
+  /**
+   * Converts a sample bit depth and byte order to a corresponding integer PCM encoding constant.
+   *
+   * @param bitDepth The bit depth. Supported values are 8, 16, 24 and 32.
+   * @param byteOrder The byte order.
+   * @return The corresponding integer PCM encoding. If the bit depth is unsupported then {@link
+   *     C#ENCODING_INVALID} is returned.
+   */
+  @UnstableApi
+  public static @C.PcmEncoding int getPcmEncoding(int bitDepth, ByteOrder byteOrder) {
     switch (bitDepth) {
       case 8:
+        // Byte order has no effect for single-byte encodings.
         return C.ENCODING_PCM_8BIT;
       case 16:
-        return C.ENCODING_PCM_16BIT;
+        return byteOrder.equals(LITTLE_ENDIAN)
+            ? C.ENCODING_PCM_16BIT
+            : C.ENCODING_PCM_16BIT_BIG_ENDIAN;
       case 24:
-        return C.ENCODING_PCM_24BIT;
+        return byteOrder.equals(LITTLE_ENDIAN)
+            ? C.ENCODING_PCM_24BIT
+            : C.ENCODING_PCM_24BIT_BIG_ENDIAN;
       case 32:
-        return C.ENCODING_PCM_32BIT;
+        return byteOrder.equals(LITTLE_ENDIAN)
+            ? C.ENCODING_PCM_32BIT
+            : C.ENCODING_PCM_32BIT_BIG_ENDIAN;
       default:
         return C.ENCODING_INVALID;
     }
@@ -2270,7 +2345,7 @@ public final class Util {
       case 8:
         return AudioFormat.CHANNEL_OUT_7POINT1_SURROUND;
       case 10:
-        if (Util.SDK_INT >= 32) {
+        if (Build.VERSION.SDK_INT >= 32) {
           return AudioFormat.CHANNEL_OUT_5POINT1POINT4;
         } else {
           // Before API 32, height channel masks are not available. For those 10-channel streams
@@ -2279,8 +2354,40 @@ public final class Util {
         }
       case 12:
         return AudioFormat.CHANNEL_OUT_7POINT1POINT4;
+      case 13:
+        if (Build.VERSION.SDK_INT >= 32) {
+          // TODO(b/238402306): Replace with the public AudioFormat.CHANNEL_OUT_13POINT0 constant
+          // once it is released.
+          return AudioFormat.CHANNEL_OUT_FRONT_LEFT
+              | AudioFormat.CHANNEL_OUT_FRONT_CENTER
+              | AudioFormat.CHANNEL_OUT_FRONT_RIGHT
+              | AudioFormat.CHANNEL_OUT_SIDE_LEFT
+              | AudioFormat.CHANNEL_OUT_SIDE_RIGHT
+              | AudioFormat.CHANNEL_OUT_TOP_FRONT_LEFT
+              | AudioFormat.CHANNEL_OUT_TOP_FRONT_CENTER
+              | AudioFormat.CHANNEL_OUT_TOP_FRONT_RIGHT
+              | AudioFormat.CHANNEL_OUT_TOP_BACK_LEFT
+              | AudioFormat.CHANNEL_OUT_TOP_BACK_RIGHT
+              | AudioFormat.CHANNEL_OUT_BOTTOM_FRONT_LEFT
+              | AudioFormat.CHANNEL_OUT_BOTTOM_FRONT_CENTER
+              | AudioFormat.CHANNEL_OUT_BOTTOM_FRONT_RIGHT;
+        } else {
+          return AudioFormat.CHANNEL_INVALID;
+        }
+      case 14:
+        if (Build.VERSION.SDK_INT >= 32) {
+          return AudioFormat.CHANNEL_OUT_9POINT1POINT4;
+        } else {
+          return AudioFormat.CHANNEL_INVALID;
+        }
+      case 16:
+        if (Build.VERSION.SDK_INT >= 32) {
+          return AudioFormat.CHANNEL_OUT_9POINT1POINT6;
+        } else {
+          return AudioFormat.CHANNEL_INVALID;
+        }
       case 24:
-        if (Util.SDK_INT >= 32) {
+        if (Build.VERSION.SDK_INT >= 32) {
           return AudioFormat.CHANNEL_OUT_7POINT1POINT4
               | AudioFormat.CHANNEL_OUT_FRONT_LEFT_OF_CENTER
               | AudioFormat.CHANNEL_OUT_FRONT_RIGHT_OF_CENTER
@@ -2345,6 +2452,7 @@ public final class Util {
         return 28;
       case C.ENCODING_OPUS:
         return 30;
+      case C.ENCODING_PCM_24BIT:
       case C.ENCODING_PCM_32BIT:
         return 31;
       case C.ENCODING_DTS_UHD_P2:
@@ -2479,14 +2587,15 @@ public final class Util {
   }
 
   /**
-   * Returns a newly generated audio session identifier, or {@link AudioManager#ERROR} if an error
-   * occurred in which case audio playback may fail.
+   * Returns a newly generated audio session identifier, or {@link C#AUDIO_SESSION_ID_UNSET} if
+   * failed to generate an identifier and in which case audio playback may fail.
    *
    * @see AudioManager#generateAudioSessionId()
    */
   @UnstableApi
   public static int generateAudioSessionIdV21(Context context) {
-    return AudioManagerCompat.getAudioManager(context).generateAudioSessionId();
+    int audioSessionId = AudioManagerCompat.getAudioManager(context).generateAudioSessionId();
+    return audioSessionId != AudioManager.ERROR ? audioSessionId : C.AUDIO_SESSION_ID_UNSET;
   }
 
   /**
@@ -2730,6 +2839,19 @@ public final class Util {
     return hours > 0
         ? formatter.format("%s%d:%02d:%02d", prefix, hours, minutes, seconds).toString()
         : formatter.format("%s%02d:%02d", prefix, minutes, seconds).toString();
+  }
+
+  /**
+   * Returns the specified millisecond time formatted as a string.
+   *
+   * @param timeMs The time to format as a string, in milliseconds.
+   * @return The time formatted as a string.
+   */
+  @UnstableApi
+  public static String getStringForTime(long timeMs) {
+    StringBuilder builder = new StringBuilder();
+    Formatter formatter = new Formatter(builder, Locale.getDefault());
+    return getStringForTime(builder, formatter, timeMs);
   }
 
   /**
@@ -3044,7 +3166,9 @@ public final class Util {
   /** Returns the default {@link Locale.Category#DISPLAY DISPLAY} {@link Locale}. */
   @UnstableApi
   public static Locale getDefaultDisplayLocale() {
-    return SDK_INT >= 24 ? Locale.getDefault(Locale.Category.DISPLAY) : Locale.getDefault();
+    return Build.VERSION.SDK_INT >= 24
+        ? Locale.getDefault(Locale.Category.DISPLAY)
+        : Locale.getDefault();
   }
 
   /**
@@ -3062,7 +3186,7 @@ public final class Util {
   @UnstableApi
   public static boolean inflate(
       ParsableByteArray input, ParsableByteArray output, @Nullable Inflater inflater) {
-    if (input.bytesLeft() <= 0) {
+    if (input.bytesLeft() == 0) {
       return false;
     }
     if (output.capacity() < input.bytesLeft()) {
@@ -3139,8 +3263,7 @@ public final class Util {
    */
   @UnstableApi
   public static boolean isAutomotive(Context context) {
-    return SDK_INT >= 23
-        && context.getPackageManager().hasSystemFeature(PackageManager.FEATURE_AUTOMOTIVE);
+    return context.getPackageManager().hasSystemFeature(PackageManager.FEATURE_AUTOMOTIVE);
   }
 
   /**
@@ -3215,7 +3338,7 @@ public final class Util {
       // vendor.display-size instead.
       @Nullable
       String displaySize =
-          SDK_INT < 28
+          Build.VERSION.SDK_INT < 28
               ? getSystemProperty("sys.display-size")
               : getSystemProperty("vendor.display-size");
       // If we managed to read the display size, attempt to parse it.
@@ -3244,11 +3367,7 @@ public final class Util {
     }
 
     Point displaySize = new Point();
-    if (SDK_INT >= 23) {
-      getDisplaySizeV23(display, displaySize);
-    } else {
-      display.getRealSize(displaySize);
-    }
+    getDisplaySize(display, displaySize);
     return displaySize;
   }
 
@@ -3298,9 +3417,9 @@ public final class Util {
         return true;
       case MimeTypes.IMAGE_HEIF:
       case MimeTypes.IMAGE_HEIC:
-        return Util.SDK_INT >= 26;
+        return Build.VERSION.SDK_INT >= 26;
       case MimeTypes.IMAGE_AVIF:
-        return Util.SDK_INT >= 34;
+        return Build.VERSION.SDK_INT >= 34;
       default:
         return false;
     }
@@ -3423,6 +3542,51 @@ public final class Util {
   }
 
   /**
+   * Returns the sign-extended 24-bit integer value at {@code index}.
+   *
+   * @param buffer The buffer from which to read the 24-bit integer.
+   * @param index The index of the 24-bit integer.
+   */
+  @UnstableApi
+  public static int getInt24(ByteBuffer buffer, int index) {
+    byte component1 = buffer.get(buffer.order() == ByteOrder.BIG_ENDIAN ? index : index + 2);
+    byte component2 = buffer.get(index + 1);
+    byte component3 = buffer.get(buffer.order() == ByteOrder.BIG_ENDIAN ? index + 2 : index);
+    return (((component1 << 24) & 0xff000000)
+            | ((component2 << 16) & 0xff0000)
+            | ((component3 << 8) & 0xff00))
+        >> 8;
+  }
+
+  /**
+   * Writes a 24-bit integer value to a buffer at its current {@link ByteBuffer#position()}.
+   *
+   * <p>This is a relative operation that affects the buffer's position.
+   *
+   * @param buffer The buffer on which to write the integer.
+   * @param value The integer value to write.
+   * @throws IllegalArgumentException If {@code value} is out of range for a 24-bit integer.
+   */
+  @UnstableApi
+  public static void putInt24(ByteBuffer buffer, int value) {
+    checkArgument(
+        (value & ~0xffffff) == 0 || (value & ~0x7fffff) == 0xff800000,
+        "Value out of range of 24-bit integer: %s",
+        Integer.toHexString(value));
+    checkArgument(buffer.remaining() >= 3);
+    byte component1 =
+        buffer.order() == ByteOrder.BIG_ENDIAN
+            ? (byte) ((value & 0xFF0000) >> 16)
+            : (byte) (value & 0xFF);
+    byte component2 = (byte) ((value & 0xFF00) >> 8);
+    byte component3 =
+        buffer.order() == ByteOrder.BIG_ENDIAN
+            ? (byte) (value & 0xFF)
+            : (byte) ((value & 0xFF0000) >> 16);
+    buffer.put(component1).put(component2).put(component3);
+  }
+
+  /**
    * Moves the elements starting at {@code fromIndex} to {@code newFromIndex}.
    *
    * @param items The list of which to move elements.
@@ -3478,6 +3642,20 @@ public final class Util {
     }
   }
 
+  /** Returns {@link C.BufferFlags} corresponding to {@link MediaCodec} flags. */
+  @UnstableApi
+  public static @C.BufferFlags int getBufferFlagsFromMediaCodecFlags(int mediaCodecFlags) {
+    @C.BufferFlags int flags = 0;
+    if ((mediaCodecFlags & MediaCodec.BUFFER_FLAG_KEY_FRAME) == MediaCodec.BUFFER_FLAG_KEY_FRAME) {
+      flags |= C.BUFFER_FLAG_KEY_FRAME;
+    }
+    if ((mediaCodecFlags & MediaCodec.BUFFER_FLAG_END_OF_STREAM)
+        == MediaCodec.BUFFER_FLAG_END_OF_STREAM) {
+      flags |= C.BUFFER_FLAG_END_OF_STREAM;
+    }
+    return flags;
+  }
+
   @UnstableApi
   public static boolean isFrameDropAllowedOnSurfaceInput(Context context) {
     // Prior to API 29, decoders may drop frames to keep their output surface from growing out of
@@ -3486,12 +3664,12 @@ public final class Util {
     // full.
     // Some devices might drop frames despite setting {@link
     // MediaFormat#KEY_ALLOW_FRAME_DROP} to 0. See b/307518793, b/289983935 and b/353487886.
-    return SDK_INT < 29
+    return Build.VERSION.SDK_INT < 29
         || context.getApplicationInfo().targetSdkVersion < 29
-        || ((SDK_INT == 30
+        || ((Build.VERSION.SDK_INT == 30
                 && (Ascii.equalsIgnoreCase(Build.MODEL, "moto g(20)")
                     || Ascii.equalsIgnoreCase(Build.MODEL, "rmx3231")))
-            || (SDK_INT == 34 && Ascii.equalsIgnoreCase(Build.MODEL, "sm-x200")));
+            || (Build.VERSION.SDK_INT == 34 && Ascii.equalsIgnoreCase(Build.MODEL, "sm-x200")));
   }
 
   /**
@@ -3538,7 +3716,7 @@ public final class Util {
       case C.FORMAT_UNSUPPORTED_DRM:
         return "NO_UNSUPPORTED_DRM";
       case C.FORMAT_UNSUPPORTED_SUBTYPE:
-        return "NO_UNSUPPORTED_TYPE";
+        return "NO_UNSUPPORTED_SUBTYPE";
       case C.FORMAT_UNSUPPORTED_TYPE:
         return "NO";
       default:
@@ -3603,7 +3781,7 @@ public final class Util {
    * Returns a {@link Drawable} for the given resource or throws a {@link
    * Resources.NotFoundException} if not found.
    *
-   * @param context The context to get the theme from starting with API 21.
+   * @param context The context to get the theme from.
    * @param resources The resources to load the drawable from.
    * @param drawableRes The drawable resource int.
    * @return The loaded {@link Drawable}.
@@ -3649,7 +3827,7 @@ public final class Util {
    */
   @EnsuresNonNullIf(result = false, expression = "#1")
   public static boolean shouldShowPlayButton(@Nullable Player player) {
-    return shouldShowPlayButton(player, /* playIfSuppressed= */ true);
+    return shouldShowPlayButton(player, /* shouldShowPlayIfSuppressed= */ true);
   }
 
   /**
@@ -3660,18 +3838,21 @@ public final class Util {
    * #handlePauseButtonAction} to handle the interaction with the play or pause button UI element.
    *
    * @param player The {@link Player}. May be {@code null}.
-   * @param playIfSuppressed Whether to show a play button if playback is {@linkplain
+   * @param shouldShowPlayIfSuppressed Whether to show a play button if playback is {@linkplain
    *     Player#getPlaybackSuppressionReason() suppressed}.
    */
   @UnstableApi
   @EnsuresNonNullIf(result = false, expression = "#1")
-  public static boolean shouldShowPlayButton(@Nullable Player player, boolean playIfSuppressed) {
+  public static boolean shouldShowPlayButton(
+      @Nullable Player player, boolean shouldShowPlayIfSuppressed) {
     return player == null
         || !player.getPlayWhenReady()
         || player.getPlaybackState() == Player.STATE_IDLE
         || player.getPlaybackState() == Player.STATE_ENDED
-        || (playIfSuppressed
-            && player.getPlaybackSuppressionReason() != Player.PLAYBACK_SUPPRESSION_REASON_NONE);
+        || (shouldShowPlayIfSuppressed
+            && player.getPlaybackSuppressionReason() != Player.PLAYBACK_SUPPRESSION_REASON_NONE
+            && player.getPlaybackSuppressionReason()
+                != Player.PLAYBACK_SUPPRESSION_REASON_SCRUBBING);
   }
 
   /**
@@ -3755,6 +3936,35 @@ public final class Util {
     }
   }
 
+  /**
+   * Converts the provided {@link Bundle} to {@code null} if it is invalid.
+   *
+   * <p>Typical reasons for why the validation may fail are {@link android.os.Parcelable} classes in
+   * this bundle that are not part of the app class loader or a corrupt internal state caused by
+   * concurrent writes.
+   *
+   * @param bundle The {@link Bundle} to verify, or null.
+   * @return The same {@link Bundle}, or null if the verification failed or the parameter is null.
+   */
+  @Nullable
+  @CheckReturnValue
+  @UnstableApi
+  public static Bundle convertToNullIfInvalid(@Nullable Bundle bundle) {
+    if (bundle == null) {
+      return null;
+    }
+    // Handle cases where the Bundle doesn't have a valid class loader. See b/110768808.
+    bundle.setClassLoader(checkNotNull(Util.class.getClassLoader()));
+    try {
+      // Force validation.
+      bundle.isEmpty();
+      return bundle;
+    } catch (RuntimeException e) {
+      Log.e(TAG, "Ignoring invalid bundle", e);
+      return null;
+    }
+  }
+
   @Nullable
   private static String getSystemProperty(String name) {
     try {
@@ -3768,8 +3978,7 @@ public final class Util {
     }
   }
 
-  @RequiresApi(23)
-  private static void getDisplaySizeV23(Display display, Point outSize) {
+  private static void getDisplaySize(Display display, Point outSize) {
     Display.Mode mode = display.getMode();
     outSize.x = mode.getPhysicalWidth();
     outSize.y = mode.getPhysicalHeight();
@@ -3777,7 +3986,7 @@ public final class Util {
 
   private static String[] getSystemLocales() {
     Configuration config = Resources.getSystem().getConfiguration();
-    return SDK_INT >= 24
+    return Build.VERSION.SDK_INT >= 24
         ? getSystemLocalesV24(config)
         : new String[] {getLocaleLanguageTag(config.locale)};
   }
@@ -3811,7 +4020,6 @@ public final class Util {
     return replacedLanguages;
   }
 
-  @RequiresApi(api = Build.VERSION_CODES.M)
   private static boolean requestExternalStoragePermission(Activity activity) {
     if (activity.checkSelfPermission(permission.READ_EXTERNAL_STORAGE)
         != PackageManager.PERMISSION_GRANTED) {
@@ -3840,7 +4048,7 @@ public final class Util {
     return false;
   }
 
-  @RequiresApi(api = Build.VERSION_CODES.N)
+  @RequiresApi(api = 24)
   private static boolean isTrafficRestricted(Uri uri) {
     return "http".equals(uri.getScheme())
         && !NetworkSecurityPolicy.getInstance()

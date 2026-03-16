@@ -17,8 +17,10 @@
 package androidx.media3.transformer;
 
 import static androidx.media3.common.util.Util.sampleCountToDurationUs;
+import static com.google.common.base.Preconditions.checkNotNull;
 
 import androidx.annotation.Nullable;
+import androidx.media3.common.AudioAttributes;
 import androidx.media3.common.C;
 import androidx.media3.common.Format;
 import androidx.media3.common.audio.AudioProcessor;
@@ -27,7 +29,9 @@ import androidx.media3.common.util.Util;
 import androidx.media3.exoplayer.audio.AudioSink;
 import com.google.common.collect.ImmutableList;
 import java.nio.ByteBuffer;
+import java.util.List;
 import java.util.Objects;
+import org.checkerframework.checker.nullness.qual.MonotonicNonNull;
 
 /**
  * Processes input from {@link AudioGraphInputAudioSink} instances, plumbing the data through an
@@ -39,36 +43,47 @@ import java.util.Objects;
   private static final int PRIMARY_SEQUENCE_INDEX = 0;
 
   private final AudioSink finalAudioSink;
-  private final AudioGraph audioGraph;
+  private final AudioMixer.Factory mixerFactory;
 
+  private @MonotonicNonNull AudioGraph audioGraph;
   private int audioGraphInputsCreated;
   private int inputAudioSinksCreated;
   private boolean hasRegisteredPrimaryFormat;
   private AudioFormat outputAudioFormat;
   private long outputFramesWritten;
   private long seekPositionUs;
+  private boolean isRenderingStarted;
+  private ImmutableList<AudioProcessor> effects;
 
   /**
    * Creates an instance.
    *
    * @param mixerFactory The {@linkplain AudioMixer.Factory factory} used to {@linkplain
    *     AudioMixer.Factory#create() create} the underlying {@link AudioMixer}.
-   * @param effects The composition-level audio effects that are applied after mixing.
    * @param finalAudioSink The {@linkplain AudioSink sink} for processed output audio.
    */
-  public PlaybackAudioGraphWrapper(
-      AudioMixer.Factory mixerFactory,
-      ImmutableList<AudioProcessor> effects,
-      AudioSink finalAudioSink) {
-    audioGraph = new AudioGraph(mixerFactory, effects);
+  public PlaybackAudioGraphWrapper(AudioMixer.Factory mixerFactory, AudioSink finalAudioSink) {
     this.finalAudioSink = finalAudioSink;
-
+    this.mixerFactory = mixerFactory;
     outputAudioFormat = AudioFormat.NOT_SET;
+    effects = ImmutableList.of();
+  }
+
+  /** Sets the composition-level audio effects that are applied after mixing. */
+  public void setAudioProcessors(List<AudioProcessor> audioProcessors) {
+    if (audioGraph != null) {
+      throw new UnsupportedOperationException(
+          "Setting AudioProcessors after creating the AudioGraph is not supported");
+    }
+    effects = ImmutableList.copyOf(audioProcessors);
+    audioGraph = new AudioGraph(mixerFactory, effects);
   }
 
   /** Releases any underlying resources. */
   public void release() {
-    audioGraph.reset();
+    if (audioGraph != null) {
+      audioGraph.reset();
+    }
     finalAudioSink.reset();
     finalAudioSink.release();
     audioGraphInputsCreated = 0;
@@ -96,7 +111,7 @@ import java.util.Objects;
     }
 
     if (Objects.equals(outputAudioFormat, AudioFormat.NOT_SET)) {
-      AudioFormat audioGraphAudioFormat = audioGraph.getOutputAudioFormat();
+      AudioFormat audioGraphAudioFormat = checkNotNull(audioGraph).getOutputAudioFormat();
       if (Objects.equals(audioGraphAudioFormat, AudioFormat.NOT_SET)) {
         return false;
       }
@@ -108,7 +123,7 @@ import java.util.Objects;
       outputAudioFormat = audioGraphAudioFormat;
     }
 
-    if (audioGraph.isEnded()) {
+    if (checkNotNull(audioGraph).isEnded()) {
       if (finalAudioSink.isEnded()) {
         return false;
       }
@@ -116,7 +131,7 @@ import java.util.Objects;
       return false;
     }
 
-    ByteBuffer audioBuffer = audioGraph.getOutput();
+    ByteBuffer audioBuffer = checkNotNull(audioGraph).getOutput();
     if (!audioBuffer.hasRemaining()) {
       return false;
     }
@@ -135,6 +150,24 @@ import java.util.Objects;
         + sampleCountToDurationUs(outputFramesWritten, outputAudioFormat.sampleRate);
   }
 
+  public void startRendering() {
+    finalAudioSink.play();
+    isRenderingStarted = true;
+  }
+
+  public void stopRendering() {
+    if (!isRenderingStarted) {
+      // The finalAudioSink cannot be paused more than once.
+      return;
+    }
+    finalAudioSink.pause();
+    isRenderingStarted = false;
+  }
+
+  public void setVolume(float volume) {
+    finalAudioSink.setVolume(volume);
+  }
+
   /**
    * Handles the steps that need to be executed for a seek before seeking the upstream players.
    *
@@ -144,10 +177,9 @@ import java.util.Objects;
     if (positionUs == C.TIME_UNSET) {
       positionUs = 0;
     }
-    finalAudioSink.pause();
-    audioGraph.blockInput();
-    audioGraph.setPendingStartTimeUs(positionUs);
-    audioGraph.flush();
+    stopRendering();
+    checkNotNull(audioGraph).blockInput();
+    checkNotNull(audioGraph).flush(positionUs);
     finalAudioSink.flush();
     outputFramesWritten = 0;
     seekPositionUs = positionUs;
@@ -155,7 +187,12 @@ import java.util.Objects;
 
   /** Handles the steps that need to be executed for a seek after seeking the upstream players. */
   public void endSeek() {
-    audioGraph.unblockInput();
+    checkNotNull(audioGraph).unblockInput();
+  }
+
+  /** Updates the {@link AudioAttributes} on the {@linkplain #finalAudioSink final audio sink}. */
+  public void setAudioAttributes(AudioAttributes attributes) {
+    finalAudioSink.setAudioAttributes(attributes);
   }
 
   private final class SinkController implements AudioGraphInputAudioSink.Controller {
@@ -176,7 +213,8 @@ import java.util.Objects;
         return null;
       }
 
-      AudioGraphInput audioGraphInput = audioGraph.registerInput(editedMediaItem, format);
+      AudioGraphInput audioGraphInput =
+          checkNotNull(audioGraph).registerInput(editedMediaItem, format);
       audioGraphInputsCreated++;
       if (isSequencePrimary) {
         hasRegisteredPrimaryFormat = true;
@@ -187,6 +225,11 @@ import java.util.Objects;
     @Override
     public long getCurrentPositionUs(boolean sourceEnded) {
       return finalAudioSink.getCurrentPositionUs(sourceEnded);
+    }
+
+    @Override
+    public boolean hasPendingData() {
+      return finalAudioSink.hasPendingData();
     }
   }
 }

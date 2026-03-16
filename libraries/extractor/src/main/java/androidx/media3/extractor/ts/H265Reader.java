@@ -15,6 +15,7 @@
  */
 package androidx.media3.extractor.ts;
 
+import static com.google.common.base.Preconditions.checkNotNull;
 import static com.google.common.base.Preconditions.checkState;
 
 import androidx.annotation.Nullable;
@@ -22,7 +23,6 @@ import androidx.media3.common.C;
 import androidx.media3.common.ColorInfo;
 import androidx.media3.common.Format;
 import androidx.media3.common.MimeTypes;
-import androidx.media3.common.util.Assertions;
 import androidx.media3.common.util.CodecSpecificDataUtil;
 import androidx.media3.common.util.ParsableByteArray;
 import androidx.media3.common.util.UnstableApi;
@@ -276,6 +276,8 @@ public final class H265Reader implements ElementaryStreamReader {
         .setCodecs(codecs)
         .setWidth(spsData.width)
         .setHeight(spsData.height)
+        .setDecodedWidth(spsData.decodedWidth)
+        .setDecodedHeight(spsData.decodedHeight)
         .setColorInfo(
             new ColorInfo.Builder()
                 .setColorSpace(spsData.colorSpace)
@@ -293,7 +295,7 @@ public final class H265Reader implements ElementaryStreamReader {
 
   @EnsuresNonNull({"output", "sampleReader"})
   private void assertTracksCreated() {
-    Assertions.checkStateNotNull(output);
+    checkNotNull(output);
     Util.castNonNull(sampleReader);
   }
 

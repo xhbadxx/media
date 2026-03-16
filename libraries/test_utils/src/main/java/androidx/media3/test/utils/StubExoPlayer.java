@@ -26,11 +26,14 @@ import androidx.media3.common.Format;
 import androidx.media3.common.PriorityTaskManager;
 import androidx.media3.common.util.Clock;
 import androidx.media3.common.util.UnstableApi;
+import androidx.media3.exoplayer.CodecParameters;
+import androidx.media3.exoplayer.CodecParametersChangeListener;
 import androidx.media3.exoplayer.DecoderCounters;
 import androidx.media3.exoplayer.ExoPlaybackException;
 import androidx.media3.exoplayer.ExoPlayer;
 import androidx.media3.exoplayer.PlayerMessage;
 import androidx.media3.exoplayer.Renderer;
+import androidx.media3.exoplayer.ScrubbingModeParameters;
 import androidx.media3.exoplayer.SeekParameters;
 import androidx.media3.exoplayer.analytics.AnalyticsCollector;
 import androidx.media3.exoplayer.analytics.AnalyticsListener;
@@ -176,6 +179,11 @@ public class StubExoPlayer extends StubPlayer implements ExoPlayer {
   }
 
   @Override
+  public ShuffleOrder getShuffleOrder() {
+    throw new UnsupportedOperationException();
+  }
+
+  @Override
   public void setAudioAttributes(AudioAttributes audioAttributes, boolean handleAudioFocus) {
     throw new UnsupportedOperationException();
   }
@@ -206,12 +214,37 @@ public class StubExoPlayer extends StubPlayer implements ExoPlayer {
   }
 
   @Override
+  public void setVirtualDeviceId(int virtualDeviceId) {
+    throw new UnsupportedOperationException();
+  }
+
+  @Override
   public void setSkipSilenceEnabled(boolean skipSilenceEnabled) {
     throw new UnsupportedOperationException();
   }
 
   @Override
   public boolean getSkipSilenceEnabled() {
+    throw new UnsupportedOperationException();
+  }
+
+  @Override
+  public void setScrubbingModeEnabled(boolean scrubbingModeEnabled) {
+    throw new UnsupportedOperationException();
+  }
+
+  @Override
+  public boolean isScrubbingModeEnabled() {
+    throw new UnsupportedOperationException();
+  }
+
+  @Override
+  public void setScrubbingModeParameters(ScrubbingModeParameters scrubbingModeParameters) {
+    throw new UnsupportedOperationException();
+  }
+
+  @Override
+  public ScrubbingModeParameters getScrubbingModeParameters() {
     throw new UnsupportedOperationException();
   }
 
@@ -271,6 +304,21 @@ public class StubExoPlayer extends StubPlayer implements ExoPlayer {
   }
 
   @Override
+  public void setMaxSeekToPreviousPositionMs(long maxSeekToPreviousPositionMs) {
+    throw new UnsupportedOperationException();
+  }
+
+  @Override
+  public void setSeekBackIncrementMs(long seekBackIncrementMs) {
+    throw new UnsupportedOperationException();
+  }
+
+  @Override
+  public void setSeekForwardIncrementMs(long seekForwardIncrementMs) {
+    throw new UnsupportedOperationException();
+  }
+
+  @Override
   public PlayerMessage createMessage(PlayerMessage.Target target) {
     throw new UnsupportedOperationException();
   }
@@ -287,6 +335,11 @@ public class StubExoPlayer extends StubPlayer implements ExoPlayer {
 
   @Override
   public Renderer getRenderer(int index) {
+    throw new UnsupportedOperationException();
+  }
+
+  @Override
+  public Renderer getSecondaryRenderer(int index) {
     throw new UnsupportedOperationException();
   }
 
@@ -390,6 +443,38 @@ public class StubExoPlayer extends StubPlayer implements ExoPlayer {
 
   @Override
   public void setImageOutput(@Nullable ImageOutput imageOutput) {
+    throw new UnsupportedOperationException();
+  }
+
+  @Override
+  public void setAudioCodecParameters(CodecParameters codecParameters) {
+    throw new UnsupportedOperationException();
+  }
+
+  @Override
+  public void addAudioCodecParametersChangeListener(
+      CodecParametersChangeListener listener, List<String> keys) {
+    throw new UnsupportedOperationException();
+  }
+
+  @Override
+  public void removeAudioCodecParametersChangeListener(CodecParametersChangeListener listener) {
+    throw new UnsupportedOperationException();
+  }
+
+  @Override
+  public void setVideoCodecParameters(CodecParameters codecParameters) {
+    throw new UnsupportedOperationException();
+  }
+
+  @Override
+  public void addVideoCodecParametersChangeListener(
+      CodecParametersChangeListener listener, List<String> keys) {
+    throw new UnsupportedOperationException();
+  }
+
+  @Override
+  public void removeVideoCodecParametersChangeListener(CodecParametersChangeListener listener) {
     throw new UnsupportedOperationException();
   }
 }

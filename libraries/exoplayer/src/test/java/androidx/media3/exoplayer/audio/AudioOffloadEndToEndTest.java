@@ -61,7 +61,7 @@ public class AudioOffloadEndToEndTest {
 
   @Rule
   public ShadowMediaCodecConfig mediaCodecConfig =
-      ShadowMediaCodecConfig.forAllSupportedMimeTypes();
+      ShadowMediaCodecConfig.withAllDefaultSupportedCodecs();
 
   @Before
   public void setup() {
@@ -80,7 +80,7 @@ public class AudioOffloadEndToEndTest {
         new DefaultRenderersFactory(applicationContext) {
           @Override
           protected AudioSink buildAudioSink(
-              Context context, boolean enableFloatOutput, boolean enableAudioTrackPlaybackParams) {
+              Context context, boolean enableFloatOutput, boolean enableAudioOutputPlaybackParams) {
             AudioOffloadListener audioOffloadListener =
                 new AudioOffloadListener() {
                   @Override
@@ -90,7 +90,7 @@ public class AudioOffloadEndToEndTest {
                 };
             return new DefaultAudioSink.Builder(applicationContext)
                 .setEnableFloatOutput(enableFloatOutput)
-                .setEnableAudioTrackPlaybackParams(enableAudioTrackPlaybackParams)
+                .setEnableAudioOutputPlaybackParameters(enableAudioOutputPlaybackParams)
                 .setExperimentalAudioOffloadListener(audioOffloadListener)
                 .build();
           }

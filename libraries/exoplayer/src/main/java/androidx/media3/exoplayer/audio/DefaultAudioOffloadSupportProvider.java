@@ -15,7 +15,8 @@
  */
 package androidx.media3.exoplayer.audio;
 
-import static androidx.media3.common.util.Assertions.checkNotNull;
+import static android.os.Build.VERSION.SDK_INT;
+import static com.google.common.base.Preconditions.checkNotNull;
 
 import android.content.Context;
 import android.media.AudioFormat;
@@ -62,7 +63,7 @@ public final class DefaultAudioOffloadSupportProvider
    *     offload variable rate support.
    */
   public DefaultAudioOffloadSupportProvider(@Nullable Context context) {
-    this.context = context;
+    this.context = context == null ? null : context.getApplicationContext();
   }
 
   @Override
@@ -71,7 +72,7 @@ public final class DefaultAudioOffloadSupportProvider
     checkNotNull(format);
     checkNotNull(audioAttributes);
 
-    if (Util.SDK_INT < 29 || format.sampleRate == Format.NO_VALUE) {
+    if (SDK_INT < 29 || format.sampleRate == Format.NO_VALUE) {
       return AudioOffloadSupport.DEFAULT_UNSUPPORTED;
     }
 
@@ -82,7 +83,7 @@ public final class DefaultAudioOffloadSupportProvider
     @C.Encoding
     int encoding = MimeTypes.getEncoding(checkNotNull(format.sampleMimeType), format.codecs);
     if (encoding == C.ENCODING_INVALID
-        || Util.SDK_INT < Util.getApiLevelThatAudioFormatIntroducedAudioEncoding(encoding)) {
+        || SDK_INT < Util.getApiLevelThatAudioFormatIntroducedAudioEncoding(encoding)) {
       // Example: AudioFormat.ENCODING_OPUS is supported only from API 30.
       return AudioOffloadSupport.DEFAULT_UNSUPPORTED;
     }
@@ -99,16 +100,14 @@ public final class DefaultAudioOffloadSupportProvider
       return AudioOffloadSupport.DEFAULT_UNSUPPORTED;
     }
 
-    if (Util.SDK_INT >= 31) {
+    if (SDK_INT >= 31) {
       return Api31.getOffloadedPlaybackSupport(
           audioFormat,
-          audioAttributes.getAudioAttributesV21().audioAttributes,
+          audioAttributes.getPlatformAudioAttributes(),
           isOffloadVariableRateSupported);
     }
     return Api29.getOffloadedPlaybackSupport(
-        audioFormat,
-        audioAttributes.getAudioAttributesV21().audioAttributes,
-        isOffloadVariableRateSupported);
+        audioFormat, audioAttributes.getPlatformAudioAttributes(), isOffloadVariableRateSupported);
   }
 
   private boolean isOffloadVariableRateSupported(@Nullable Context context) {
@@ -165,8 +164,7 @@ public final class DefaultAudioOffloadSupportProvider
       // (b/191950723) Gapless is not supported pre-API 33 due to playback position
       // issue upon transition of gapless tracks
       boolean isGaplessSupported =
-          Util.SDK_INT > 32
-              && playbackOffloadSupport == AudioManager.PLAYBACK_OFFLOAD_GAPLESS_SUPPORTED;
+          SDK_INT > 32 && playbackOffloadSupport == AudioManager.PLAYBACK_OFFLOAD_GAPLESS_SUPPORTED;
       return audioOffloadSupport
           .setIsFormatSupported(true)
           .setIsGaplessSupported(isGaplessSupported)

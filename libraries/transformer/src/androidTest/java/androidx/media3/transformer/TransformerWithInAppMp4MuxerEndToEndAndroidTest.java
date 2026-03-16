@@ -15,9 +15,9 @@
  */
 package androidx.media3.transformer;
 
-import static androidx.media3.common.util.Assertions.checkNotNull;
-import static androidx.media3.transformer.AndroidTestUtil.MP4_ASSET;
-import static androidx.media3.transformer.AndroidTestUtil.assumeFormatsSupported;
+import static androidx.media3.test.utils.AssetInfo.MP4_ASSET;
+import static androidx.media3.test.utils.FormatSupportAssumptions.assumeFormatsSupported;
+import static com.google.common.base.Preconditions.checkNotNull;
 import static com.google.common.truth.Truth.assertThat;
 import static org.junit.Assume.assumeTrue;
 
@@ -92,7 +92,8 @@ public class TransformerWithInAppMp4MuxerEndToEndAndroidTest {
         new Transformer.Builder(context).setMuxerFactory(new InAppMp4Muxer.Factory()).build();
     ChannelMixingAudioProcessor channelMixingAudioProcessor = new ChannelMixingAudioProcessor();
     channelMixingAudioProcessor.putChannelMixingMatrix(
-        ChannelMixingMatrix.create(/* inputChannelCount= */ 1, /* outputChannelCount= */ 2));
+        ChannelMixingMatrix.createForConstantGain(
+            /* inputChannelCount= */ 1, /* outputChannelCount= */ 2));
     MediaItem mediaItem = MediaItem.fromUri(Uri.parse(MP4_FILE_ASSET_DIRECTORY + H264_MP4));
     EditedMediaItem editedMediaItem =
         new EditedMediaItem.Builder(mediaItem)

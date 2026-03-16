@@ -16,6 +16,9 @@
 
 package androidx.media3.transformer;
 
+import static androidx.media3.common.C.TRACK_TYPE_AUDIO;
+import static androidx.media3.common.C.TRACK_TYPE_VIDEO;
+import static androidx.media3.test.utils.robolectric.ShadowMediaCodecConfig.CODEC_INFO_RAW;
 import static androidx.media3.transformer.TestUtil.ASSET_URI_PREFIX;
 import static androidx.media3.transformer.TestUtil.FILE_AUDIO_AMR_NB;
 import static androidx.media3.transformer.TestUtil.FILE_AUDIO_RAW;
@@ -23,23 +26,20 @@ import static androidx.media3.transformer.TestUtil.FILE_AUDIO_RAW_STEREO_48000KH
 import static androidx.media3.transformer.TestUtil.FILE_AUDIO_RAW_VIDEO;
 import static androidx.media3.transformer.TestUtil.FILE_AUDIO_VIDEO;
 import static androidx.media3.transformer.TestUtil.FILE_VIDEO_ONLY;
-import static androidx.media3.transformer.TestUtil.addAudioDecoders;
-import static androidx.media3.transformer.TestUtil.addAudioEncoders;
 import static androidx.media3.transformer.TestUtil.createAudioEffects;
 import static androidx.media3.transformer.TestUtil.createVolumeScalingAudioProcessor;
 import static androidx.media3.transformer.TestUtil.getDumpFileName;
-import static androidx.media3.transformer.TestUtil.removeEncodersAndDecoders;
 import static org.junit.Assume.assumeFalse;
 
 import android.content.Context;
+import androidx.media3.common.C.TrackType;
 import androidx.media3.common.MediaItem;
-import androidx.media3.common.MimeTypes;
 import androidx.media3.test.utils.DumpFileAsserts;
+import androidx.media3.test.utils.TestTransformerBuilder;
+import androidx.media3.test.utils.robolectric.ShadowMediaCodecConfig;
 import androidx.test.core.app.ApplicationProvider;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
-import org.junit.After;
-import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
@@ -53,10 +53,12 @@ import org.robolectric.ParameterizedRobolectricTestRunner.Parameters;
  * and asserting on the dump (golden) files.
  *
  * <ul>
- *   <li>Video can not be transcoded, due to OpenGL not being supported with Robolectric.
+ *   <li>Video can not be transcoded, because decoder do not decode and OpenGL is not supported with
+ *       Robolectric.
  *   <li>Non RAW audio can not be transcoded, because AudioGraph requires decoded data but
  *       Robolectric decoders do not decode.
- *   <li>RAW audio will always be transcoded, because the muxer does not support RAW audio as input.
+ *   <li>RAW audio can be transcoded (like apply effects) but the output will remain RAW audio
+ *       because Robolectric encoders do not encode.
  * </ul>
  */
 @RunWith(ParameterizedRobolectricTestRunner.class)
@@ -86,24 +88,30 @@ public final class ParameterizedItemExportTest {
         .build();
   }
 
+  private static ImmutableSet<@TrackType Integer> getTrackTypesForAsset(String assetFile) {
+    if (AUDIO_ONLY_ASSETS.contains(assetFile)) {
+      return ImmutableSet.of(TRACK_TYPE_AUDIO);
+    } else if (VIDEO_ONLY_ASSETS.contains(assetFile)) {
+      return ImmutableSet.of(TRACK_TYPE_VIDEO);
+    } else if (AUDIO_VIDEO_ASSETS.contains(assetFile)) {
+      return ImmutableSet.of(TRACK_TYPE_AUDIO, TRACK_TYPE_VIDEO);
+    }
+    throw new IllegalArgumentException("Unknown assetFile: " + assetFile);
+  }
+
   @Rule public final TemporaryFolder outputDir = new TemporaryFolder();
 
   @Parameter public String assetFile;
 
   private final Context context = ApplicationProvider.getApplicationContext();
 
-  @Before
-  public void setUp() {
-    // Only add RAW decoder, so non-RAW audio has no options for decoding.
-    addAudioDecoders(MimeTypes.AUDIO_RAW);
-    // Use an AAC encoder because muxer supports AAC.
-    addAudioEncoders(MimeTypes.AUDIO_AAC);
-  }
-
-  @After
-  public void tearDown() {
-    removeEncodersAndDecoders();
-  }
+  // Only add RAW decoder, so non-RAW audio has no options for decoding.
+  // Use an AAC encoder because muxer supports AAC.
+  @Rule
+  public ShadowMediaCodecConfig shadowMediaCodecConfig =
+      ShadowMediaCodecConfig.withCodecs(
+          /* decoders= */ ImmutableList.of(CODEC_INFO_RAW),
+          /* encoders= */ ImmutableList.of(CODEC_INFO_RAW));
 
   @Test
   public void export() throws Exception {
@@ -133,9 +141,10 @@ public final class ParameterizedItemExportTest {
         new EditedMediaItem.Builder(MediaItem.fromUri(ASSET_URI_PREFIX + assetFile))
             .setRemoveAudio(true)
             .build();
+    // Sequence should have both audio and video tracks. Audio will be silent.
     Composition composition =
-        new Composition.Builder(new EditedMediaItemSequence.Builder(item).build())
-            .experimentalSetForceAudioTrack(true)
+        new Composition.Builder(
+                EditedMediaItemSequence.withAudioAndVideoFrom(ImmutableList.of(item)))
             .build();
 
     transformer.start(composition, outputDir.newFile().getPath());
@@ -162,7 +171,11 @@ public final class ParameterizedItemExportTest {
             .setEffects(createAudioEffects(createVolumeScalingAudioProcessor(0f)))
             .build();
     Composition composition =
-        new Composition.Builder(new EditedMediaItemSequence.Builder(item).build()).build();
+        new Composition.Builder(
+                new EditedMediaItemSequence.Builder(getTrackTypesForAsset(assetFile))
+                    .addItem(item)
+                    .build())
+            .build();
 
     transformer.start(composition, outputDir.newFile().getPath());
     TransformerTestRunner.runLooper(transformer);
@@ -186,7 +199,10 @@ public final class ParameterizedItemExportTest {
     EditedMediaItem item =
         new EditedMediaItem.Builder(MediaItem.fromUri(ASSET_URI_PREFIX + assetFile)).build();
     Composition composition =
-        new Composition.Builder(new EditedMediaItemSequence.Builder(item).build())
+        new Composition.Builder(
+                new EditedMediaItemSequence.Builder(getTrackTypesForAsset(assetFile))
+                    .addItem(item)
+                    .build())
             .setEffects(createAudioEffects(createVolumeScalingAudioProcessor(0f)))
             .build();
 

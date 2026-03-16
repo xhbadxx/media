@@ -17,10 +17,11 @@ package androidx.media3.effect;
 
 import static android.opengl.GLES20.GL_FALSE;
 import static android.opengl.GLES20.GL_TRUE;
+import static android.os.Build.VERSION.SDK_INT;
 import static androidx.media3.common.VideoFrameProcessor.INPUT_TYPE_BITMAP;
-import static androidx.media3.common.util.Assertions.checkArgument;
-import static androidx.media3.common.util.Assertions.checkState;
 import static androidx.media3.effect.DefaultVideoFrameProcessor.WORKING_COLOR_SPACE_LINEAR;
+import static com.google.common.base.Preconditions.checkArgument;
+import static com.google.common.base.Preconditions.checkState;
 import static java.lang.Math.max;
 
 import android.content.Context;
@@ -36,7 +37,6 @@ import androidx.media3.common.util.GlProgram;
 import androidx.media3.common.util.GlUtil;
 import androidx.media3.common.util.GlUtil.GlException;
 import androidx.media3.common.util.Size;
-import androidx.media3.common.util.Util;
 import androidx.media3.effect.DefaultVideoFrameProcessor.WorkingColorSpace;
 import com.google.common.collect.ImmutableList;
 import java.io.IOException;
@@ -733,7 +733,7 @@ import org.checkerframework.checker.nullness.qual.MonotonicNonNull;
     if (lastGainmap == null) {
       return;
     }
-    if (Util.SDK_INT < 34) {
+    if (SDK_INT < 34) {
       throw new IllegalStateException("Gainmaps not supported under API 34.");
     }
     glProgram.setSamplerTexIdUniform("uGainmapTexSampler", gainmapTexId, /* texUnitIndex= */ 1);

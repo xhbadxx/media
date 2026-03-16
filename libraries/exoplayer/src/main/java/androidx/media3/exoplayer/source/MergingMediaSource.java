@@ -15,7 +15,7 @@
  */
 package androidx.media3.exoplayer.source;
 
-import static androidx.media3.common.util.Assertions.checkNotNull;
+import static com.google.common.base.Preconditions.checkNotNull;
 import static java.lang.Math.min;
 import static java.lang.annotation.ElementType.TYPE_USE;
 
@@ -245,8 +245,9 @@ public final class MergingMediaSource extends CompositeMediaSource<Integer> {
     MergingMediaPeriod mergingPeriod = (MergingMediaPeriod) mediaPeriod;
     for (int i = 0; i < mediaSources.length; i++) {
       List<MediaPeriodAndId> mediaPeriodsForSource = mediaPeriods.get(i);
+      MediaPeriod childPeriod = mergingPeriod.getChildPeriod(i);
       for (int j = 0; j < mediaPeriodsForSource.size(); j++) {
-        if (mediaPeriodsForSource.get(j).mediaPeriod.equals(mediaPeriod)) {
+        if (mediaPeriodsForSource.get(j).mediaPeriod.equals(childPeriod)) {
           mediaPeriodsForSource.remove(j);
           break;
         }

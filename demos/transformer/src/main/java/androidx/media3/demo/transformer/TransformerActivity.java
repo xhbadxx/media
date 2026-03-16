@@ -16,11 +16,10 @@
 package androidx.media3.demo.transformer;
 
 import static android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION;
-import static androidx.media3.common.util.Assertions.checkNotNull;
-import static androidx.media3.common.util.Assertions.checkState;
-import static androidx.media3.exoplayer.DefaultLoadControl.DEFAULT_BUFFER_FOR_PLAYBACK_AFTER_REBUFFER_MS;
-import static androidx.media3.exoplayer.DefaultLoadControl.DEFAULT_BUFFER_FOR_PLAYBACK_MS;
+import static android.os.Build.VERSION.SDK_INT;
 import static androidx.media3.transformer.Transformer.PROGRESS_STATE_NOT_STARTED;
+import static com.google.common.base.Preconditions.checkNotNull;
+import static com.google.common.base.Preconditions.checkState;
 
 import android.app.Activity;
 import android.app.Notification;
@@ -91,7 +90,6 @@ import androidx.media3.effect.SingleColorLut;
 import androidx.media3.effect.StaticOverlaySettings;
 import androidx.media3.effect.TextOverlay;
 import androidx.media3.effect.TextureOverlay;
-import androidx.media3.exoplayer.DefaultLoadControl;
 import androidx.media3.exoplayer.ExoPlayer;
 import androidx.media3.exoplayer.audio.SilenceSkippingAudioProcessor;
 import androidx.media3.exoplayer.util.DebugTextViewHelper;
@@ -405,6 +403,14 @@ public final class TransformerActivity extends AppCompatActivity {
         transformerBuilder.setDebugViewProvider(new DemoDebugViewProvider());
       }
 
+      if (bundle.getBoolean(ConfigurationActivity.ENABLE_TRIM_OPTIMIZATION)) {
+        transformerBuilder.experimentalSetTrimOptimizationEnabled(true);
+      }
+
+      if (bundle.getBoolean(ConfigurationActivity.ENABLE_MP4_EDIT_LIST_TRIMMING)) {
+        transformerBuilder.experimentalSetMp4EditListTrimEnabled(true);
+      }
+
       if (bundle.getBoolean(ConfigurationActivity.ENABLE_ANALYZER_MODE)) {
         return ExperimentalAnalyzerModeFactory.buildAnalyzer(
             this.getApplicationContext(), transformerBuilder.build());
@@ -434,6 +440,7 @@ public final class TransformerActivity extends AppCompatActivity {
     transformerBuilder.setEncoderFactory(
         new DefaultEncoderFactory.Builder(this.getApplicationContext())
             .setEnableFallback(bundle.getBoolean(ConfigurationActivity.ENABLE_FALLBACK))
+            .setEnableCodecDbLite(bundle.getBoolean(ConfigurationActivity.ENABLE_CODECDB_LITE))
             .setRequestedVideoEncoderSettings(videoEncoderSettings)
             .build());
 
@@ -466,14 +473,16 @@ public final class TransformerActivity extends AppCompatActivity {
               bundle.getBoolean(ConfigurationActivity.SHOULD_FLATTEN_FOR_SLOW_MOTION))
           .setEffects(new Effects(audioProcessors, videoEffects));
     }
-    Composition.Builder compositionBuilder =
-        new Composition.Builder(
-            new EditedMediaItemSequence.Builder(editedMediaItemBuilder.build()).build());
+    EditedMediaItemSequence.Builder editedMediaItemSequenceBuilder =
+        new EditedMediaItemSequence.Builder(editedMediaItemBuilder.build());
     if (bundle != null) {
-      compositionBuilder
-          .setHdrMode(bundle.getInt(ConfigurationActivity.HDR_MODE))
-          .experimentalSetForceAudioTrack(
-              bundle.getBoolean(ConfigurationActivity.FORCE_AUDIO_TRACK));
+      editedMediaItemSequenceBuilder.experimentalSetForceAudioTrack(
+          bundle.getBoolean(ConfigurationActivity.FORCE_AUDIO_TRACK));
+    }
+    Composition.Builder compositionBuilder =
+        new Composition.Builder(editedMediaItemSequenceBuilder.build());
+    if (bundle != null) {
+      compositionBuilder.setHdrMode(bundle.getInt(ConfigurationActivity.HDR_MODE));
     }
     return compositionBuilder.build();
   }
@@ -677,8 +686,8 @@ public final class TransformerActivity extends AppCompatActivity {
     int resolutionHeight =
         bundle.getInt(ConfigurationActivity.RESOLUTION_HEIGHT, /* defaultValue= */ C.LENGTH_UNSET);
     if (resolutionHeight != C.LENGTH_UNSET) {
-      effects.add(LanczosResample.scaleToFit(10000, resolutionHeight));
-      effects.add(Presentation.createForHeight(resolutionHeight));
+      effects.add(LanczosResample.scaleToFitWithFlexibleOrientation(10000, resolutionHeight));
+      effects.add(Presentation.createForShortSide(resolutionHeight));
     }
 
     return effects.build();
@@ -804,17 +813,7 @@ public final class TransformerActivity extends AppCompatActivity {
     outputPlayerView.setPlayer(null);
     releasePlayers();
 
-    ExoPlayer outputPlayer =
-        new ExoPlayer.Builder(/* context= */ this)
-            .setLoadControl(
-                new DefaultLoadControl.Builder()
-                    .setBufferDurationsMs(
-                        LOAD_CONTROL_MIN_BUFFER_MS,
-                        LOAD_CONTROL_MAX_BUFFER_MS,
-                        DEFAULT_BUFFER_FOR_PLAYBACK_MS,
-                        DEFAULT_BUFFER_FOR_PLAYBACK_AFTER_REBUFFER_MS)
-                    .build())
-            .build();
+    ExoPlayer outputPlayer = new ExoPlayer.Builder(/* context= */ this).build();
     outputPlayerView.setPlayer(outputPlayer);
     outputPlayerView.setControllerAutoShow(false);
     outputPlayer.setMediaItem(outputMediaItem);
@@ -828,7 +827,8 @@ public final class TransformerActivity extends AppCompatActivity {
       inputImageView.setVisibility(View.VISIBLE);
       inputTextView.setText(getString(R.string.input_image));
 
-      BitmapLoader bitmapLoader = new DataSourceBitmapLoader(getApplicationContext());
+      BitmapLoader bitmapLoader =
+          new DataSourceBitmapLoader.Builder(getApplicationContext()).build();
       ListenableFuture<Bitmap> future = bitmapLoader.loadBitmap(uri);
       try {
         Bitmap bitmap = future.get();
@@ -847,17 +847,7 @@ public final class TransformerActivity extends AppCompatActivity {
       inputImageView.setVisibility(View.GONE);
       inputTextView.setText(getString(R.string.input_video_no_sound));
 
-      ExoPlayer inputPlayer =
-          new ExoPlayer.Builder(/* context= */ this)
-              .setLoadControl(
-                  new DefaultLoadControl.Builder()
-                      .setBufferDurationsMs(
-                          LOAD_CONTROL_MIN_BUFFER_MS,
-                          LOAD_CONTROL_MAX_BUFFER_MS,
-                          DEFAULT_BUFFER_FOR_PLAYBACK_MS,
-                          DEFAULT_BUFFER_FOR_PLAYBACK_AFTER_REBUFFER_MS)
-                      .build())
-              .build();
+      ExoPlayer inputPlayer = new ExoPlayer.Builder(/* context= */ this).build();
       inputPlayerView.setPlayer(inputPlayer);
       inputPlayerView.setControllerAutoShow(false);
       inputPlayerView.setOnClickListener(this::handlePlayerViewClick);
@@ -981,16 +971,16 @@ public final class TransformerActivity extends AppCompatActivity {
         Notification notification =
             new NotificationCompat.Builder(context, CHANNEL_ID)
                 .setOngoing(true)
-                .setSmallIcon(R.drawable.exo_icon_play)
+                .setSmallIcon(androidx.media3.ui.R.drawable.exo_icon_play)
                 .build();
-        if (Util.SDK_INT >= 26) {
+        if (SDK_INT >= 26) {
           NotificationChannel channel =
               new NotificationChannel(
                   CHANNEL_ID, CHANNEL_NAME, NotificationManager.IMPORTANCE_HIGH);
           NotificationManager manager = getSystemService(NotificationManager.class);
           manager.createNotificationChannel(channel);
         }
-        if (Util.SDK_INT >= 29) {
+        if (SDK_INT >= 29) {
           startForeground(NOTIFICATION_ID, notification, FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION);
         } else {
           startForeground(NOTIFICATION_ID, notification);

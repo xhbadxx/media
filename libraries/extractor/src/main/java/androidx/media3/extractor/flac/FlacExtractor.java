@@ -16,6 +16,7 @@
 package androidx.media3.extractor.flac;
 
 import static androidx.media3.common.util.Util.castNonNull;
+import static com.google.common.base.Preconditions.checkNotNull;
 import static java.lang.Math.max;
 import static java.lang.Math.min;
 import static java.lang.annotation.ElementType.TYPE_USE;
@@ -26,7 +27,6 @@ import androidx.media3.common.C;
 import androidx.media3.common.Format;
 import androidx.media3.common.Metadata;
 import androidx.media3.common.MimeTypes;
-import androidx.media3.common.util.Assertions;
 import androidx.media3.common.util.ParsableByteArray;
 import androidx.media3.common.util.UnstableApi;
 import androidx.media3.extractor.Extractor;
@@ -51,7 +51,7 @@ import org.checkerframework.checker.nullness.qual.MonotonicNonNull;
 /**
  * Extracts data from FLAC container format.
  *
- * <p>The format specification can be found at https://xiph.org/flac/format.html.
+ * <p>The format is specified in RFC 9639.
  */
 @UnstableApi
 public final class FlacExtractor implements Extractor {
@@ -233,7 +233,7 @@ public final class FlacExtractor implements Extractor {
       flacStreamMetadata = castNonNull(metadataHolder.flacStreamMetadata);
     }
 
-    Assertions.checkNotNull(flacStreamMetadata);
+    checkNotNull(flacStreamMetadata);
     minFrameSize = max(flacStreamMetadata.minFrameSize, FlacConstants.MIN_FRAME_HEADER_SIZE);
     Format format = flacStreamMetadata.getFormat(streamMarkerAndInfoBlock, id3Metadata);
     castNonNull(trackOutput)
@@ -256,8 +256,8 @@ public final class FlacExtractor implements Extractor {
 
   private @ReadResult int readFrames(ExtractorInput input, PositionHolder seekPosition)
       throws IOException {
-    Assertions.checkNotNull(trackOutput);
-    Assertions.checkNotNull(flacStreamMetadata);
+    checkNotNull(trackOutput);
+    checkNotNull(flacStreamMetadata);
 
     // Handle pending binary search seek if necessary.
     if (binarySearchSeeker != null && binarySearchSeeker.isSeeking()) {
@@ -328,8 +328,9 @@ public final class FlacExtractor implements Extractor {
   }
 
   private SeekMap getSeekMap(long firstFramePosition, long streamLength) {
-    Assertions.checkNotNull(flacStreamMetadata);
-    if (flacStreamMetadata.seekTable != null) {
+    checkNotNull(flacStreamMetadata);
+    if (flacStreamMetadata.seekTable != null
+        && flacStreamMetadata.seekTable.pointSampleNumbers.length > 0) {
       return new FlacSeekTableSeekMap(flacStreamMetadata, firstFramePosition);
     } else if (streamLength != C.LENGTH_UNSET && flacStreamMetadata.totalSamples > 0) {
       binarySearchSeeker =
@@ -355,7 +356,7 @@ public final class FlacExtractor implements Extractor {
    *     the search was not successful.
    */
   private long findFrame(ParsableByteArray data, boolean foundEndOfInput) {
-    Assertions.checkNotNull(flacStreamMetadata);
+    checkNotNull(flacStreamMetadata);
 
     int frameOffset = data.getPosition();
     while (frameOffset <= data.limit() - FlacConstants.MAX_FRAME_HEADER_SIZE) {

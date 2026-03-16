@@ -15,8 +15,8 @@
  */
 package androidx.media3.transformer.mh;
 
-import static androidx.media3.transformer.AndroidTestUtil.MP4_LONG_ASSET_WITH_AUDIO_AND_INCREASING_TIMESTAMPS;
-import static androidx.media3.transformer.AndroidTestUtil.assumeFormatsSupported;
+import static androidx.media3.test.utils.AssetInfo.MP4_LONG_ASSET_WITH_AUDIO_AND_INCREASING_TIMESTAMPS;
+import static androidx.media3.test.utils.FormatSupportAssumptions.assumeFormatsSupported;
 import static com.google.common.truth.Truth.assertThat;
 import static org.junit.Assume.assumeTrue;
 
@@ -152,7 +152,8 @@ public class TranscodeForegroundSpeedTest {
             .setShouldConfigureOperatingRate(true)
             .build();
     AssetLoader.Factory assetLoaderFactory =
-        new DefaultAssetLoaderFactory(context, decoderFactory, Clock.DEFAULT);
+        new DefaultAssetLoaderFactory(
+            context, decoderFactory, Clock.DEFAULT, /* logSessionId= */ null);
     Transformer transformer =
         new Transformer.Builder(context)
             .setVideoMimeType(MimeTypes.VIDEO_H264)
@@ -169,7 +170,8 @@ public class TranscodeForegroundSpeedTest {
     sonicAudioProcessor.setOutputSampleRateHz(44_100);
     ChannelMixingAudioProcessor mixingAudioProcessor = new ChannelMixingAudioProcessor();
     mixingAudioProcessor.putChannelMixingMatrix(
-        ChannelMixingMatrix.create(/* inputChannelCount= */ 2, /* outputChannelCount= */ 1));
+        ChannelMixingMatrix.createForConstantGain(
+            /* inputChannelCount= */ 2, /* outputChannelCount= */ 1));
     EditedMediaItem editedMediaItem =
         new EditedMediaItem.Builder(mediaItem)
             .setEffects(

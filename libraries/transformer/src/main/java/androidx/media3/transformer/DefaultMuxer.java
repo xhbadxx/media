@@ -15,12 +15,13 @@
  */
 package androidx.media3.transformer;
 
-import android.media.MediaCodec.BufferInfo;
 import androidx.media3.common.C;
 import androidx.media3.common.Format;
 import androidx.media3.common.Metadata;
 import androidx.media3.common.util.UnstableApi;
 import androidx.media3.common.util.Util;
+import androidx.media3.muxer.BufferInfo;
+import androidx.media3.muxer.Muxer;
 import androidx.media3.muxer.MuxerException;
 import com.google.common.collect.ImmutableList;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
@@ -32,11 +33,11 @@ public final class DefaultMuxer implements Muxer {
 
   /** A {@link Muxer.Factory} for {@link DefaultMuxer}. */
   public static final class Factory implements Muxer.Factory {
-    private final FrameworkMuxer.Factory muxerFactory;
+    private final InAppMp4Muxer.Factory muxerFactory;
 
     /** Creates an instance. */
     public Factory() {
-      this.muxerFactory = new FrameworkMuxer.Factory();
+      this.muxerFactory = new InAppMp4Muxer.Factory();
     }
 
     /**
@@ -46,7 +47,7 @@ public final class DefaultMuxer implements Muxer {
     @Deprecated
     public Factory(long videoDurationMs) {
       this.muxerFactory =
-          new FrameworkMuxer.Factory().setVideoDurationUs(Util.msToUs(videoDurationMs));
+          new InAppMp4Muxer.Factory().setVideoDurationUs(Util.msToUs(videoDurationMs));
     }
 
     /**

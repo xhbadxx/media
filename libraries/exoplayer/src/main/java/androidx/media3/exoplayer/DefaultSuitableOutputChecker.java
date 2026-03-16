@@ -15,8 +15,8 @@
  */
 package androidx.media3.exoplayer;
 
-import static androidx.media3.common.util.Assertions.checkNotNull;
-import static androidx.media3.common.util.Assertions.checkStateNotNull;
+import static android.os.Build.VERSION.SDK_INT;
+import static com.google.common.base.Preconditions.checkNotNull;
 
 import android.annotation.SuppressLint;
 import android.content.Context;
@@ -44,16 +44,14 @@ import org.checkerframework.checker.nullness.qual.MonotonicNonNull;
 /** Default implementation for {@link SuitableOutputChecker}. */
 /* package */ final class DefaultSuitableOutputChecker implements SuitableOutputChecker {
 
-  @Nullable private final SuitableOutputChecker impl;
+  private final SuitableOutputChecker impl;
 
   /** Creates the default {@link SuitableOutputChecker}. */
   public DefaultSuitableOutputChecker() {
-    if (Util.SDK_INT >= 35) {
+    if (SDK_INT >= 35) {
       impl = new ImplApi35();
-    } else if (Util.SDK_INT >= 23) {
-      impl = new ImplApi23();
     } else {
-      impl = null;
+      impl = new ImplApi23();
     }
   }
 
@@ -64,21 +62,17 @@ import org.checkerframework.checker.nullness.qual.MonotonicNonNull;
       Looper callbackLooper,
       Looper backgroundLooper,
       Clock clock) {
-    if (impl != null) {
-      impl.enable(callback, context, callbackLooper, backgroundLooper, clock);
-    }
+    impl.enable(callback, context, callbackLooper, backgroundLooper, clock);
   }
 
   @Override
   public void disable() {
-    if (impl != null) {
-      impl.disable();
-    }
+    impl.disable();
   }
 
   @Override
   public boolean isSelectedOutputSuitableForPlayback() {
-    return impl == null || impl.isSelectedOutputSuitableForPlayback();
+    return impl.isSelectedOutputSuitableForPlayback();
   }
 
   @RequiresApi(35)
@@ -133,7 +127,7 @@ import org.checkerframework.checker.nullness.qual.MonotonicNonNull;
 
     @Override
     public void disable() {
-      checkStateNotNull(isSuitableForPlaybackState)
+      checkNotNull(isSuitableForPlaybackState)
           .runInBackground(
               () -> {
                 checkNotNull(router).unregisterControllerCallback(checkNotNull(controllerCallback));
@@ -175,7 +169,6 @@ import org.checkerframework.checker.nullness.qual.MonotonicNonNull;
     }
   }
 
-  @RequiresApi(23)
   private static final class ImplApi23 implements SuitableOutputChecker {
 
     @Nullable private AudioManager audioManager;
@@ -245,7 +238,7 @@ import org.checkerframework.checker.nullness.qual.MonotonicNonNull;
 
     private boolean hasSupportedAudioOutput() {
       AudioDeviceInfo[] audioDeviceInfos =
-          checkStateNotNull(audioManager).getDevices(AudioManager.GET_DEVICES_OUTPUTS);
+          checkNotNull(audioManager).getDevices(AudioManager.GET_DEVICES_OUTPUTS);
       for (AudioDeviceInfo device : audioDeviceInfos) {
         if (device.getType() == AudioDeviceInfo.TYPE_BLUETOOTH_A2DP
             || device.getType() == AudioDeviceInfo.TYPE_LINE_ANALOG
@@ -255,18 +248,18 @@ import org.checkerframework.checker.nullness.qual.MonotonicNonNull;
             || device.getType() == AudioDeviceInfo.TYPE_WIRED_HEADSET) {
           return true;
         }
-        if (Util.SDK_INT >= 26 && device.getType() == AudioDeviceInfo.TYPE_USB_HEADSET) {
+        if (SDK_INT >= 26 && device.getType() == AudioDeviceInfo.TYPE_USB_HEADSET) {
           return true;
         }
-        if (Util.SDK_INT >= 28 && device.getType() == AudioDeviceInfo.TYPE_HEARING_AID) {
+        if (SDK_INT >= 28 && device.getType() == AudioDeviceInfo.TYPE_HEARING_AID) {
           return true;
         }
-        if (Util.SDK_INT >= 31
+        if (SDK_INT >= 31
             && (device.getType() == AudioDeviceInfo.TYPE_BLE_HEADSET
                 || device.getType() == AudioDeviceInfo.TYPE_BLE_SPEAKER)) {
           return true;
         }
-        if (Util.SDK_INT >= 33 && device.getType() == AudioDeviceInfo.TYPE_BLE_BROADCAST) {
+        if (SDK_INT >= 33 && device.getType() == AudioDeviceInfo.TYPE_BLE_BROADCAST) {
           return true;
         }
       }

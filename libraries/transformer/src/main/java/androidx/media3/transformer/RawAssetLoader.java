@@ -15,9 +15,7 @@
  */
 package androidx.media3.transformer;
 
-import static androidx.media3.common.util.Assertions.checkArgument;
-import static androidx.media3.common.util.Assertions.checkNotNull;
-import static androidx.media3.common.util.Assertions.checkState;
+import static androidx.media3.common.util.Util.percentInt;
 import static androidx.media3.transformer.ExportException.ERROR_CODE_UNSPECIFIED;
 import static androidx.media3.transformer.SampleConsumer.INPUT_RESULT_END_OF_STREAM;
 import static androidx.media3.transformer.SampleConsumer.INPUT_RESULT_TRY_AGAIN_LATER;
@@ -25,8 +23,10 @@ import static androidx.media3.transformer.Transformer.PROGRESS_STATE_AVAILABLE;
 import static androidx.media3.transformer.Transformer.PROGRESS_STATE_NOT_STARTED;
 import static androidx.media3.transformer.Transformer.PROGRESS_STATE_UNAVAILABLE;
 import static androidx.media3.transformer.TransformerUtil.getValidColor;
+import static com.google.common.base.Preconditions.checkArgument;
+import static com.google.common.base.Preconditions.checkNotNull;
+import static com.google.common.base.Preconditions.checkState;
 import static java.lang.Math.min;
-import static java.lang.Math.round;
 
 import androidx.annotation.Nullable;
 import androidx.media3.common.C;
@@ -141,7 +141,7 @@ public final class RawAssetLoader implements AssetLoader {
       if (lastTimestampUs == Long.MAX_VALUE) {
         lastTimestampUs = 0;
       }
-      progressHolder.progress = round((lastTimestampUs / (float) editedMediaItem.durationUs) * 100);
+      progressHolder.progress = percentInt(lastTimestampUs, editedMediaItem.durationUs);
     }
     return progressState;
   }

@@ -15,20 +15,21 @@
  */
 package androidx.media3.muxer;
 
-import static androidx.media3.common.util.Assertions.checkNotNull;
-import static androidx.media3.common.util.Assertions.checkState;
 import static androidx.media3.muxer.AnnexBUtils.doesSampleContainAnnexBNalUnits;
+import static androidx.media3.muxer.Av1ConfigUtil.createAv1CodecConfigurationRecord;
 import static androidx.media3.muxer.Boxes.BOX_HEADER_SIZE;
 import static androidx.media3.muxer.Boxes.LARGE_SIZE_BOX_HEADER_SIZE;
 import static androidx.media3.muxer.Boxes.getAxteBoxHeader;
 import static androidx.media3.muxer.MuxerUtil.getAuxiliaryTracksLengthMetadata;
 import static androidx.media3.muxer.MuxerUtil.getAuxiliaryTracksOffsetMetadata;
 import static androidx.media3.muxer.MuxerUtil.populateAuxiliaryTracksMetadata;
+import static com.google.common.base.Preconditions.checkNotNull;
+import static com.google.common.base.Preconditions.checkState;
 import static java.lang.Math.max;
 import static java.lang.Math.min;
 
-import android.media.MediaCodec.BufferInfo;
 import androidx.media3.common.Format;
+import androidx.media3.common.MimeTypes;
 import androidx.media3.common.util.Util;
 import androidx.media3.container.MdtaMetadataEntry;
 import com.google.common.collect.Range;
@@ -38,6 +39,7 @@ import java.nio.channels.FileChannel;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Objects;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /** Writes all media samples into a single mdat box. */
@@ -48,7 +50,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
   private static final int DEFAULT_MOOV_BOX_SIZE_BYTES = 400_000;
   private static final String FREE_BOX_TYPE = "free";
 
-  private final FileChannel outputFileChannel;
+  private final SeekableMuxerOutput muxerOutput;
   private final MetadataCollector metadataCollector;
   private final AnnexBToAvccConverter annexBToAvccConverter;
   private final @Mp4Muxer.LastSampleDurationBehavior int lastSampleDurationBehavior;
@@ -58,6 +60,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
   private final List<Track> auxiliaryTracks;
   private final AtomicBoolean hasWrittenSamples;
   private final LinearByteBufferAllocator linearByteBufferAllocator;
+  private final int freeSpaceAfterFtypInBytes;
 
   // Stores location of the space reserved for the moov box at the beginning of the file (after ftyp
   // box)
@@ -75,9 +78,9 @@ import java.util.concurrent.atomic.AtomicBoolean;
   /**
    * Creates an instance.
    *
-   * @param fileChannel The {@link FileChannel} to write the data to. The {@link FileChannel} can be
-   *     closed after {@linkplain #finishWritingSamplesAndFinalizeMoovBox() finishing writing
-   *     samples}.
+   * @param muxerOutput The {@link SeekableMuxerOutput} to write the data to. The {@link
+   *     SeekableMuxerOutput} can be closed after {@linkplain
+   *     #finishWritingSamplesAndFinalizeMoovBox() finishing writing samples}.
    * @param metadataCollector A {@link MetadataCollector}.
    * @param annexBToAvccConverter The {@link AnnexBToAvccConverter} to be used to convert H.264 and
    *     H.265 NAL units from the Annex-B format (using start codes to delineate NAL units) to the
@@ -86,21 +89,27 @@ import java.util.concurrent.atomic.AtomicBoolean;
    * @param sampleCopyEnabled Whether sample copying is enabled.
    * @param sampleBatchingEnabled Whether sample batching is enabled.
    * @param attemptStreamableOutputEnabled Whether to attempt to write a streamable output.
+   * @param freeSpaceAfterFtypInBytes Free space to be reserved (in bytes) after the ftyp box.
    */
   public Mp4Writer(
-      FileChannel fileChannel,
+      SeekableMuxerOutput muxerOutput,
       MetadataCollector metadataCollector,
       AnnexBToAvccConverter annexBToAvccConverter,
       @Mp4Muxer.LastSampleDurationBehavior int lastSampleDurationBehavior,
       boolean sampleCopyEnabled,
       boolean sampleBatchingEnabled,
-      boolean attemptStreamableOutputEnabled) {
-    this.outputFileChannel = fileChannel;
+      boolean attemptStreamableOutputEnabled,
+      int freeSpaceAfterFtypInBytes) {
+    this.muxerOutput = muxerOutput;
     this.metadataCollector = metadataCollector;
     this.annexBToAvccConverter = annexBToAvccConverter;
     this.lastSampleDurationBehavior = lastSampleDurationBehavior;
     this.sampleCopyEnabled = sampleCopyEnabled;
     this.sampleBatchingEnabled = sampleBatchingEnabled;
+    this.freeSpaceAfterFtypInBytes =
+        freeSpaceAfterFtypInBytes > 0
+            ? freeSpaceAfterFtypInBytes
+            : (attemptStreamableOutputEnabled ? DEFAULT_MOOV_BOX_SIZE_BYTES : 0);
     tracks = new ArrayList<>();
     auxiliaryTracks = new ArrayList<>();
     hasWrittenSamples = new AtomicBoolean(false);
@@ -152,6 +161,11 @@ import java.util.concurrent.atomic.AtomicBoolean;
    */
   public void writeSampleData(Track track, ByteBuffer byteBuffer, BufferInfo bufferInfo)
       throws IOException {
+    if (Objects.equals(track.format.sampleMimeType, MimeTypes.VIDEO_AV1)
+        && track.format.initializationData.isEmpty()
+        && track.parsedCsd == null) {
+      track.parsedCsd = createAv1CodecConfigurationRecord(byteBuffer.duplicate());
+    }
     track.writeSampleData(byteBuffer, bufferInfo);
     if (sampleBatchingEnabled) {
       doInterleave();
@@ -205,13 +219,13 @@ import java.util.concurrent.atomic.AtomicBoolean;
     finalizeMoovBox();
     // Once final moov is written, update the actual offset.
     metadataCollector.removeMdtaMetadataEntry(placeholderAuxiliaryTrackOffset);
-    metadataCollector.addMetadata(getAuxiliaryTracksOffsetMetadata(outputFileChannel.size()));
-    long fileSizeBefore = outputFileChannel.size();
+    metadataCollector.addMetadata(getAuxiliaryTracksOffsetMetadata(muxerOutput.getSize()));
+    long fileSizeBefore = muxerOutput.getSize();
     finalizeMoovBox();
-    checkState(fileSizeBefore == outputFileChannel.size());
+    checkState(fileSizeBefore == muxerOutput.getSize());
     // After writing primary track data, write the axte box.
-    outputFileChannel.position(outputFileChannel.size());
-    outputFileChannel.write(axteBox);
+    muxerOutput.setPosition(muxerOutput.getSize());
+    muxerOutput.write(axteBox);
   }
 
   private ByteBuffer getAxteBox() {
@@ -269,8 +283,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
     // Write out the new moov box into the gap.
     long newMoovLocation = mdatDataEnd;
-    outputFileChannel.position(mdatDataEnd);
-    outputFileChannel.write(currentMoovData);
+    muxerOutput.setPosition(mdatDataEnd);
+    muxerOutput.write(currentMoovData);
 
     // Add a free box to account for the actual remaining length of the file.
     long remainingLength = lastMoovWritten.upperEndpoint() - (newMoovLocation + moovBytesNeeded);
@@ -282,7 +296,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
     freeHeader.putInt((int) remainingLength);
     freeHeader.put(Util.getUtf8Bytes(FREE_BOX_TYPE));
     freeHeader.flip();
-    outputFileChannel.write(freeHeader);
+    muxerOutput.write(freeHeader);
 
     // The moov box is actually written inside mdat box so the current state is:
     // | ftyp | mdat .. .. .. (new moov) (free header ) (00 00 00) | old moov |
@@ -294,29 +308,28 @@ import java.util.concurrent.atomic.AtomicBoolean;
     lastMoovWritten = Range.closed(newMoovLocation, newMoovLocation + currentMoovData.limit());
 
     // Remove the free box.
-    outputFileChannel.truncate(newMoovLocation + moovBytesNeeded);
+    muxerOutput.truncate(newMoovLocation + moovBytesNeeded);
   }
 
   private void writeHeader() throws IOException {
-    outputFileChannel.position(0L);
-    outputFileChannel.write(Boxes.ftyp());
+    muxerOutput.setPosition(0L);
+    muxerOutput.write(Boxes.ftyp());
 
-    if (canWriteMoovAtStart) {
-      // Reserve some space for moov box by adding a free box.
-      reservedMoovSpaceStart = outputFileChannel.position();
-      outputFileChannel.write(
-          BoxUtils.wrapIntoBox(FREE_BOX_TYPE, ByteBuffer.allocate(DEFAULT_MOOV_BOX_SIZE_BYTES)));
-      reservedMoovSpaceEnd = outputFileChannel.position();
+    if (freeSpaceAfterFtypInBytes > 0) {
+      reservedMoovSpaceStart = muxerOutput.getPosition();
+      muxerOutput.write(
+          BoxUtils.wrapIntoBox(FREE_BOX_TYPE, ByteBuffer.allocate(freeSpaceAfterFtypInBytes)));
+      reservedMoovSpaceEnd = muxerOutput.getPosition();
     }
 
     // Start with an empty mdat box.
-    mdatStart = outputFileChannel.position();
+    mdatStart = muxerOutput.getPosition();
     ByteBuffer header = ByteBuffer.allocate(LARGE_SIZE_BOX_HEADER_SIZE);
     header.putInt(1); // 4 bytes, indicating a 64-bit length field
     header.put(Util.getUtf8Bytes("mdat")); // 4 bytes
     header.putLong(16); // 8 bytes (the actual length)
     header.flip();
-    outputFileChannel.write(header);
+    muxerOutput.write(header);
 
     // The box includes only its type and length.
     mdatDataEnd = mdatStart + 16;
@@ -349,8 +362,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
     checkState(newMoovBoxPosition >= mdatEnd);
 
     // Write a free box to the end of the file, with the new moov box wrapped into it.
-    outputFileChannel.position(newMoovBoxPosition);
-    outputFileChannel.write(BoxUtils.wrapIntoBox(FREE_BOX_TYPE, newMoovBoxData.duplicate()));
+    muxerOutput.setPosition(newMoovBoxPosition);
+    muxerOutput.write(BoxUtils.wrapIntoBox(FREE_BOX_TYPE, newMoovBoxData.duplicate()));
 
     // The current state is:
     // | ftyp | mdat .. .. .. | previous moov | free (new moov)|
@@ -373,22 +386,23 @@ import java.util.concurrent.atomic.AtomicBoolean;
     int moovBoxSize = moovBox.remaining();
     // Keep some space for free box to fill the remaining space.
     if (moovBox.remaining() + BOX_HEADER_SIZE <= reservedMoovSpaceEnd - reservedMoovSpaceStart) {
-      outputFileChannel.position(reservedMoovSpaceStart);
-      outputFileChannel.write(moovBox);
+      muxerOutput.setPosition(reservedMoovSpaceStart);
+      muxerOutput.write(moovBox);
       // Write free box in the remaining space.
-      int freeSpace = (int) (reservedMoovSpaceEnd - outputFileChannel.position() - BOX_HEADER_SIZE);
-      outputFileChannel.write(BoxUtils.wrapIntoBox(FREE_BOX_TYPE, ByteBuffer.allocate(freeSpace)));
+      int freeSpace = (int) (reservedMoovSpaceEnd - muxerOutput.getPosition() - BOX_HEADER_SIZE);
+      muxerOutput.write(BoxUtils.wrapIntoBox(FREE_BOX_TYPE, ByteBuffer.allocate(freeSpace)));
     } else {
       // Write moov at the end (after mdat).
       canWriteMoovAtStart = false;
       mdatEnd = mdatDataEnd;
-      outputFileChannel.position(mdatEnd);
-      outputFileChannel.write(moovBox);
+      muxerOutput.setPosition(mdatEnd);
+      muxerOutput.write(moovBox);
       lastMoovWritten = Range.closed(mdatEnd, mdatEnd + moovBoxSize);
       // Replace previously written moov box (after ftyp box) with a free box.
       int freeSpace = (int) (reservedMoovSpaceEnd - reservedMoovSpaceStart - BOX_HEADER_SIZE);
       ByteBuffer freeBox = BoxUtils.wrapIntoBox(FREE_BOX_TYPE, ByteBuffer.allocate(freeSpace));
-      outputFileChannel.write(freeBox, reservedMoovSpaceStart);
+      muxerOutput.setPosition(reservedMoovSpaceStart);
+      muxerOutput.write(freeBox);
     }
     updateMdatSize(mdatDataEnd - mdatStart);
   }
@@ -460,21 +474,22 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
       // Convert the H.264/H.265 samples from Annex-B format (output by MediaCodec) to
       // Avcc format (required by MP4 container).
-      if (doesSampleContainAnnexBNalUnits(checkNotNull(track.format.sampleMimeType))) {
+      if (doesSampleContainAnnexBNalUnits(track.format)) {
         currentSampleByteBuffer =
             annexBToAvccConverter.process(currentSampleByteBuffer, linearByteBufferAllocator);
-        currentSampleBufferInfo.set(
-            currentSampleByteBuffer.position(),
-            currentSampleByteBuffer.remaining(),
-            currentSampleBufferInfo.presentationTimeUs,
-            currentSampleBufferInfo.flags);
+        currentSampleBufferInfo =
+            new BufferInfo(
+                currentSampleBufferInfo.presentationTimeUs,
+                currentSampleByteBuffer.remaining(),
+                currentSampleBufferInfo.flags);
       }
 
       // If the original sample had 3 bytes NAL start code instead of 4 bytes, then after AnnexB to
       // Avcc conversion it will have 1 additional byte.
       maybeExtendMdatAndRewriteMoov(currentSampleByteBuffer.remaining());
 
-      mdatDataEnd += outputFileChannel.write(currentSampleByteBuffer, mdatDataEnd);
+      muxerOutput.setPosition(mdatDataEnd);
+      mdatDataEnd += muxerOutput.write(currentSampleByteBuffer);
       linearByteBufferAllocator.reset();
       track.writtenSamples.add(currentSampleBufferInfo);
     } while (!track.pendingSamplesBufferInfo.isEmpty());
@@ -498,11 +513,11 @@ import java.util.concurrent.atomic.AtomicBoolean;
   private void updateMdatSize(long mdatSize) throws IOException {
     // The mdat box has a 64-bit length, so skip the box type (4 bytes) and the default box length
     // (4 bytes).
-    outputFileChannel.position(mdatStart + BOX_HEADER_SIZE);
+    muxerOutput.setPosition(mdatStart + BOX_HEADER_SIZE);
     ByteBuffer mdatSizeBuffer = ByteBuffer.allocate(8); // One long
     mdatSizeBuffer.putLong(mdatSize);
     mdatSizeBuffer.flip();
-    outputFileChannel.write(mdatSizeBuffer);
+    muxerOutput.write(mdatSizeBuffer);
   }
 
   private void doInterleave() throws IOException {

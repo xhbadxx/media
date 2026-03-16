@@ -15,6 +15,7 @@
  */
 package androidx.media3.exoplayer.mediacodec;
 
+import static android.os.Build.VERSION.SDK_INT;
 import static java.lang.annotation.ElementType.TYPE_USE;
 
 import android.content.Context;
@@ -71,7 +72,7 @@ public final class DefaultMediaCodecAdapterFactory implements MediaCodecAdapter.
   @Deprecated
   public DefaultMediaCodecAdapterFactory() {
     asynchronousMode = MODE_DEFAULT;
-    asyncCryptoFlagEnabled = false;
+    asyncCryptoFlagEnabled = true;
     context = null;
     callbackThreadSupplier = null;
     queueingThreadSupplier = null;
@@ -100,7 +101,7 @@ public final class DefaultMediaCodecAdapterFactory implements MediaCodecAdapter.
       @Nullable Supplier<HandlerThread> queueingThreadSupplier) {
     this.context = context;
     asynchronousMode = MODE_DEFAULT;
-    asyncCryptoFlagEnabled = false;
+    asyncCryptoFlagEnabled = true;
     this.callbackThreadSupplier = callbackThreadSupplier;
     this.queueingThreadSupplier = queueingThreadSupplier;
   }
@@ -146,9 +147,8 @@ public final class DefaultMediaCodecAdapterFactory implements MediaCodecAdapter.
   @Override
   public MediaCodecAdapter createAdapter(MediaCodecAdapter.Configuration configuration)
       throws IOException {
-    if (Util.SDK_INT >= 23
-        && (asynchronousMode == MODE_ENABLED
-            || (asynchronousMode == MODE_DEFAULT && shouldUseAsynchronousAdapterInDefaultMode()))) {
+    if (asynchronousMode == MODE_ENABLED
+        || (asynchronousMode == MODE_DEFAULT && shouldUseAsynchronousAdapterInDefaultMode())) {
       int trackType = MimeTypes.getTrackType(configuration.format.sampleMimeType);
       Log.i(
           TAG,
@@ -166,14 +166,14 @@ public final class DefaultMediaCodecAdapterFactory implements MediaCodecAdapter.
   }
 
   private boolean shouldUseAsynchronousAdapterInDefaultMode() {
-    if (Util.SDK_INT >= 31) {
+    if (SDK_INT >= 31) {
       // Asynchronous codec interactions started to be reliable for all devices on API 31+.
       return true;
     }
     // Allow additional devices that work reliably with the asynchronous adapter and show
     // performance problems when not using it.
     if (context != null
-        && Util.SDK_INT >= 28
+        && SDK_INT >= 28
         && context.getPackageManager().hasSystemFeature("com.amazon.hardware.tv_screen")) {
       return true;
     }

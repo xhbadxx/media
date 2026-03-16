@@ -15,8 +15,8 @@
  */
 package androidx.media3.exoplayer.drm;
 
-import static androidx.media3.common.util.Assertions.checkState;
-import static androidx.media3.common.util.Assertions.checkStateNotNull;
+import static com.google.common.base.Preconditions.checkNotNull;
+import static com.google.common.base.Preconditions.checkState;
 import static java.lang.Math.min;
 
 import android.annotation.SuppressLint;
@@ -31,7 +31,6 @@ import androidx.annotation.GuardedBy;
 import androidx.annotation.Nullable;
 import androidx.media3.common.C;
 import androidx.media3.common.DrmInitData.SchemeData;
-import androidx.media3.common.util.Assertions;
 import androidx.media3.common.util.Consumer;
 import androidx.media3.common.util.CopyOnWriteMultiset;
 import androidx.media3.common.util.DrmCallbacks;
@@ -139,6 +138,7 @@ import org.checkerframework.checker.nullness.qual.RequiresNonNull;
   private final UUID uuid;
   private final Looper playbackLooper;
   private final ResponseHandler responseHandler;
+  private final Object keyRequestInfoLock;
 
   private @DrmSession.State int state;
   private int referenceCount;
@@ -150,6 +150,11 @@ import org.checkerframework.checker.nullness.qual.RequiresNonNull;
   private byte @MonotonicNonNull [] offlineLicenseKeySetId;
 
   @Nullable private KeyRequest currentKeyRequest;
+
+  @GuardedBy("keyRequestInfoLock")
+  @Nullable
+  private KeyRequestInfo.Builder currentKeyRequestInfo;
+
   @Nullable private ProvisionRequest currentProvisionRequest;
   @Nullable private DrmCallbacks drmCallback;
 
@@ -190,7 +195,7 @@ import org.checkerframework.checker.nullness.qual.RequiresNonNull;
       DrmCallbacks drmCallback) {
     if (mode == DefaultDrmSessionManager.MODE_QUERY
         || mode == DefaultDrmSessionManager.MODE_RELEASE) {
-      Assertions.checkNotNull(offlineLicenseKeySetId);
+      checkNotNull(offlineLicenseKeySetId);
     }
     this.uuid = uuid;
     this.provisioningManager = provisioningManager;
@@ -203,7 +208,7 @@ import org.checkerframework.checker.nullness.qual.RequiresNonNull;
       this.offlineLicenseKeySetId = offlineLicenseKeySetId;
       this.schemeDatas = null;
     } else {
-      this.schemeDatas = Collections.unmodifiableList(Assertions.checkNotNull(schemeDatas));
+      this.schemeDatas = Collections.unmodifiableList(checkNotNull(schemeDatas));
     }
     this.keyRequestParameters = keyRequestParameters;
     this.callback = callback;
@@ -214,6 +219,7 @@ import org.checkerframework.checker.nullness.qual.RequiresNonNull;
     state = STATE_OPENING;
     this.playbackLooper = playbackLooper;
     responseHandler = new ResponseHandler(playbackLooper);
+    keyRequestInfoLock = new Object();
   }
 
   public boolean hasSessionId(byte[] sessionId) {
@@ -236,10 +242,7 @@ import org.checkerframework.checker.nullness.qual.RequiresNonNull;
   /* package */ void provision() {
     currentProvisionRequest = mediaDrm.getProvisionRequest();
     Util.castNonNull(requestHandler)
-        .post(
-            MSG_PROVISION,
-            Assertions.checkNotNull(currentProvisionRequest),
-            /* allowRetry= */ true);
+        .post(MSG_PROVISION, checkNotNull(currentProvisionRequest), /* allowRetry= */ true);
   }
 
   /* package */ void onProvisionCompleted() {
@@ -307,7 +310,7 @@ import org.checkerframework.checker.nullness.qual.RequiresNonNull;
   @Override
   public boolean requiresSecureDecoder(String mimeType) {
     verifyPlaybackThread();
-    return mediaDrm.requiresSecureDecoder(checkStateNotNull(sessionId), mimeType);
+    return mediaDrm.requiresSecureDecoder(checkNotNull(sessionId), mimeType);
   }
 
   @Override
@@ -356,6 +359,9 @@ import org.checkerframework.checker.nullness.qual.RequiresNonNull;
       cryptoConfig = null;
       lastException = null;
       currentKeyRequest = null;
+      synchronized (keyRequestInfoLock) {
+        currentKeyRequestInfo = null;
+      }
       currentProvisionRequest = null;
       if (sessionId != null) {
         mediaDrm.closeSession(sessionId);
@@ -394,7 +400,7 @@ import org.checkerframework.checker.nullness.qual.RequiresNonNull;
       // Capture state into a local so a consistent value is seen by the lambda.
       int localState = state;
       dispatchEvent(eventDispatcher -> eventDispatcher.drmSessionAcquired(localState));
-      Assertions.checkNotNull(sessionId);
+      checkNotNull(sessionId);
       return true;
     } catch (NotProvisionedException e) {
       provisioningManager.provisionRequired(this);
@@ -423,7 +429,7 @@ import org.checkerframework.checker.nullness.qual.RequiresNonNull;
     }
 
     try {
-      mediaDrm.provideProvisionResponse((byte[]) response);
+      mediaDrm.provideProvisionResponse(((MediaDrmCallback.Response) response).data);
     } catch (Exception e) {
       provisioningManager.onProvisionError(e, /* thrownByExoMediaDrm= */ true);
       return;
@@ -437,7 +443,6 @@ import org.checkerframework.checker.nullness.qual.RequiresNonNull;
     if (isPlaceholderSession) {
       return;
     }
-//    Log.d("EventLogger", "doLicense: " + allowRetry + ", " + mode + ", " + offlineLicenseKeySetId + ", " + state);
     byte[] sessionId = Util.castNonNull(this.sessionId);
     switch (mode) {
       case DefaultDrmSessionManager.MODE_PLAYBACK:
@@ -446,7 +451,6 @@ import org.checkerframework.checker.nullness.qual.RequiresNonNull;
           postKeyRequest(sessionId, ExoMediaDrm.KEY_TYPE_STREAMING, allowRetry);
         } else if (state == STATE_OPENED_WITH_KEYS || restoreKeys()) {
           long licenseDurationRemainingSec = getLicenseDurationRemainingSec();
-//          Log.d("EventLogger", "doLicense -> licenseDurationRemainingSec: " + licenseDurationRemainingSec);
           if (mode == DefaultDrmSessionManager.MODE_PLAYBACK
               && licenseDurationRemainingSec <= MAX_LICENSE_DURATION_TO_RENEW_SECONDS) {
             Log.d(
@@ -454,10 +458,8 @@ import org.checkerframework.checker.nullness.qual.RequiresNonNull;
                 "Offline license has expired or will expire soon. "
                     + "Remaining seconds: "
                     + licenseDurationRemainingSec);
-//            Log.d("EventLogger", "doLicense -> licenseDurationRemainingSec 1");
             postKeyRequest(sessionId, ExoMediaDrm.KEY_TYPE_OFFLINE, allowRetry);
           } else if (licenseDurationRemainingSec <= 0) {
-//            Log.d("EventLogger", "doLicense -> licenseDurationRemainingSec 2");
             onError(new KeysExpiredException(), DrmUtil.ERROR_SOURCE_LICENSE_ACQUISITION);
           } else {
             state = STATE_OPENED_WITH_KEYS;
@@ -471,8 +473,8 @@ import org.checkerframework.checker.nullness.qual.RequiresNonNull;
         }
         break;
       case DefaultDrmSessionManager.MODE_RELEASE:
-        Assertions.checkNotNull(offlineLicenseKeySetId);
-        Assertions.checkNotNull(this.sessionId);
+        checkNotNull(offlineLicenseKeySetId);
+        checkNotNull(this.sessionId);
         postKeyRequest(offlineLicenseKeySetId, ExoMediaDrm.KEY_TYPE_RELEASE, allowRetry);
         break;
       default:
@@ -492,43 +494,54 @@ import org.checkerframework.checker.nullness.qual.RequiresNonNull;
   }
 
   private long getLicenseDurationRemainingSec() {
-//    Log.d("EventLogger", "doLicense -> getLicenseDurationRemainingSec: " + (C.WIDEVINE_UUID.equals(uuid)));
     if (!C.WIDEVINE_UUID.equals(uuid)) {
       return Long.MAX_VALUE;
     }
-    Pair<Long, Long> pair =
-        Assertions.checkNotNull(WidevineUtil.getLicenseDurationRemainingSec(this));
-//    Log.d("EventLogger", "doLicense -> getLicenseDurationRemainingSec: " + pair);
+    Pair<Long, Long> pair = checkNotNull(WidevineUtil.getLicenseDurationRemainingSec(this));
     return min(pair.first, pair.second);
   }
 
   private void postKeyRequest(byte[] scope, int type, boolean allowRetry) {
     try {
+      synchronized (keyRequestInfoLock) {
+        currentKeyRequestInfo = new KeyRequestInfo.Builder();
+        if (schemeDatas != null) {
+          currentKeyRequestInfo.setSchemeDatas(schemeDatas);
+        }
+      }
       currentKeyRequest = mediaDrm.getKeyRequest(scope, schemeDatas, type, keyRequestParameters);
-      Util.castNonNull(requestHandler)
-          .post(MSG_KEYS, Assertions.checkNotNull(currentKeyRequest), allowRetry);
+      Util.castNonNull(requestHandler).post(MSG_KEYS, checkNotNull(currentKeyRequest), allowRetry);
     } catch (Exception | NoSuchMethodError e) {
       onKeysError(e, /* thrownByExoMediaDrm= */ true);
     }
   }
 
   private void onKeyResponse(Object request, Object response) {
-//    Log.d("EventLogger", "onKeyResponse: " + (request != currentKeyRequest));
     if (request != currentKeyRequest || !isOpen()) {
       // This event is stale.
       return;
     }
     currentKeyRequest = null;
+    KeyRequestInfo keyRequestInfo;
+    synchronized (keyRequestInfoLock) {
+      // currentKeyRequest and currentKeyRequestInfo are assigned together, and nulled-out together,
+      // so it must be non-null here.
+      keyRequestInfo = checkNotNull(currentKeyRequestInfo).build();
+      currentKeyRequestInfo = null;
+    }
 
     if (response instanceof Exception || response instanceof NoSuchMethodError) {
       onKeysError((Throwable) response, /* thrownByExoMediaDrm= */ false);
       return;
     }
-//    Log.d("EventLogger", "onKeyResponse: " + mode);
+
     try {
-      byte[] responseData = (byte[]) response;
+      byte[] responseData = ((MediaDrmCallback.Response) response).data;
+
       if (mode == DefaultDrmSessionManager.MODE_RELEASE) {
         mediaDrm.provideKeyResponse(Util.castNonNull(offlineLicenseKeySetId), responseData);
+        // TODO: http://github.com/androidx/media/issues/1001 - Plumb the KeyLoadInfo up into
+        //  drmKeysRemoved.
         dispatchEvent(DrmSessionEventListener.EventDispatcher::drmKeysRemoved);
       } else {
         byte[] keySetId = mediaDrm.provideKeyResponse(sessionId, responseData);
@@ -541,7 +554,7 @@ import org.checkerframework.checker.nullness.qual.RequiresNonNull;
           if (drmCallback != null) drmCallback.onKeyLoaded(keySetId);
         }
         state = STATE_OPENED_WITH_KEYS;
-        dispatchEvent(DrmSessionEventListener.EventDispatcher::drmKeysLoaded);
+        dispatchEvent(eventDispatcher -> eventDispatcher.drmKeysLoaded(keyRequestInfo));
       }
     } catch (Exception | NoSuchMethodError e) {
       onKeysError(e, /* thrownByExoMediaDrm= */ true);
@@ -677,7 +690,17 @@ import org.checkerframework.checker.nullness.qual.RequiresNonNull;
                 callback.executeProvisionRequest(uuid, (ProvisionRequest) requestTask.request);
             break;
           case MSG_KEYS:
-            response = callback.executeKeyRequest(uuid, (KeyRequest) requestTask.request);
+            MediaDrmCallback.Response keyResponse =
+                callback.executeKeyRequest(uuid, (KeyRequest) requestTask.request);
+            response = keyResponse;
+            synchronized (keyRequestInfoLock) {
+              if (currentKeyRequestInfo != null && keyResponse.loadEventInfo != null) {
+                currentKeyRequestInfo.addLoadInfo(
+                    keyResponse.loadEventInfo.copyWithTaskIdAndDurationMs(
+                        requestTask.taskId,
+                        SystemClock.elapsedRealtime() - requestTask.startTimeMs));
+              }
+            }
             break;
           default:
             throw new RuntimeException();
@@ -732,6 +755,11 @@ import org.checkerframework.checker.nullness.qual.RequiresNonNull;
       if (retryDelayMs == C.TIME_UNSET) {
         // The error is fatal.
         return false;
+      }
+      synchronized (keyRequestInfoLock) {
+        if (currentKeyRequestInfo != null) {
+          currentKeyRequestInfo.addLoadInfo(loadEventInfo);
+        }
       }
       synchronized (this) {
         if (!isReleased) {

@@ -15,6 +15,10 @@
  */
 package androidx.media3.ui;
 
+import static android.os.Build.VERSION.SDK_INT;
+import static com.google.common.base.Preconditions.checkArgument;
+import static com.google.common.base.Preconditions.checkNotNull;
+
 import android.animation.ValueAnimator;
 import android.content.Context;
 import android.content.res.Resources;
@@ -38,7 +42,6 @@ import androidx.annotation.ColorInt;
 import androidx.annotation.Nullable;
 import androidx.annotation.RequiresApi;
 import androidx.media3.common.C;
-import androidx.media3.common.util.Assertions;
 import androidx.media3.common.util.UnstableApi;
 import androidx.media3.common.util.Util;
 import java.util.Collections;
@@ -304,7 +307,7 @@ public class DefaultTimeBar extends View implements TimeBar {
       try {
         scrubberDrawable = a.getDrawable(R.styleable.DefaultTimeBar_scrubber_drawable);
         if (scrubberDrawable != null) {
-          setDrawableLayoutDirection(scrubberDrawable);
+          scrubberDrawable.setLayoutDirection(getLayoutDirection());
           defaultTouchTargetHeight =
               Math.max(scrubberDrawable.getMinimumHeight(), defaultTouchTargetHeight);
         }
@@ -506,7 +509,7 @@ public class DefaultTimeBar extends View implements TimeBar {
 
   @Override
   public void addListener(OnScrubListener listener) {
-    Assertions.checkNotNull(listener);
+    checkNotNull(listener);
     listeners.add(listener);
   }
 
@@ -517,14 +520,14 @@ public class DefaultTimeBar extends View implements TimeBar {
 
   @Override
   public void setKeyTimeIncrement(long time) {
-    Assertions.checkArgument(time > 0);
+    checkArgument(time > 0);
     keyCountIncrement = C.INDEX_UNSET;
     keyTimeIncrement = time;
   }
 
   @Override
   public void setKeyCountIncrement(int count) {
-    Assertions.checkArgument(count > 0);
+    checkArgument(count > 0);
     keyCountIncrement = count;
     keyTimeIncrement = C.TIME_UNSET;
   }
@@ -571,8 +574,7 @@ public class DefaultTimeBar extends View implements TimeBar {
   @Override
   public void setAdGroupTimesMs(
       @Nullable long[] adGroupTimesMs, @Nullable boolean[] playedAdGroups, int adGroupCount) {
-    Assertions.checkArgument(
-        adGroupCount == 0 || (adGroupTimesMs != null && playedAdGroups != null));
+    checkArgument(adGroupCount == 0 || (adGroupTimesMs != null && playedAdGroups != null));
     this.adGroupCount = adGroupCount;
     this.adGroupTimesMs = adGroupTimesMs;
     this.playedAdGroups = playedAdGroups;
@@ -732,7 +734,7 @@ public class DefaultTimeBar extends View implements TimeBar {
         progressBarY,
         seekBounds.right - scrubberPadding,
         progressBarY + barHeight);
-    if (Util.SDK_INT >= 29) {
+    if (SDK_INT >= 29) {
       setSystemGestureExclusionRectsV29(width, height);
     }
     update();
@@ -740,7 +742,7 @@ public class DefaultTimeBar extends View implements TimeBar {
 
   @Override
   public void onRtlPropertiesChanged(int layoutDirection) {
-    if (scrubberDrawable != null && setDrawableLayoutDirection(scrubberDrawable, layoutDirection)) {
+    if (scrubberDrawable != null && scrubberDrawable.setLayoutDirection(layoutDirection)) {
       invalidate();
     }
   }
@@ -912,8 +914,8 @@ public class DefaultTimeBar extends View implements TimeBar {
     if (adGroupCount == 0) {
       return;
     }
-    long[] adGroupTimesMs = Assertions.checkNotNull(this.adGroupTimesMs);
-    boolean[] playedAdGroups = Assertions.checkNotNull(this.playedAdGroups);
+    long[] adGroupTimesMs = checkNotNull(this.adGroupTimesMs);
+    boolean[] playedAdGroups = checkNotNull(this.playedAdGroups);
     int adMarkerOffset = adMarkerWidth / 2;
     for (int i = 0; i < adGroupCount; i++) {
       long adGroupTimeMs = Util.constrainValue(adGroupTimesMs[i], 0, duration);
@@ -980,14 +982,6 @@ public class DefaultTimeBar extends View implements TimeBar {
     return keyTimeIncrement == C.TIME_UNSET
         ? (duration == C.TIME_UNSET ? 0 : (duration / keyCountIncrement))
         : keyTimeIncrement;
-  }
-
-  private boolean setDrawableLayoutDirection(Drawable drawable) {
-    return Util.SDK_INT >= 23 && setDrawableLayoutDirection(drawable, getLayoutDirection());
-  }
-
-  private static boolean setDrawableLayoutDirection(Drawable drawable, int layoutDirection) {
-    return Util.SDK_INT >= 23 && drawable.setLayoutDirection(layoutDirection);
   }
 
   private static int dpToPx(float density, int dps) {

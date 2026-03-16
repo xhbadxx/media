@@ -15,14 +15,15 @@
  */
 package androidx.media3.session;
 
+import static android.os.Build.VERSION.SDK_INT;
 import static androidx.media3.test.session.common.TestUtils.TIMEOUT_MS;
-import static androidx.media3.test.session.common.TestUtils.getEventsAsList;
+import static androidx.media3.test.utils.TestUtil.getEventsAsList;
 import static com.google.common.truth.Truth.assertThat;
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
-import static org.junit.Assume.assumeTrue;
 
 import android.content.Context;
 import android.media.AudioManager;
+import android.net.Uri;
 import android.os.Bundle;
 import android.os.RemoteException;
 import android.support.v4.media.session.MediaControllerCompat;
@@ -37,9 +38,7 @@ import androidx.media3.common.MediaMetadata;
 import androidx.media3.common.PlaybackException;
 import androidx.media3.common.Player;
 import androidx.media3.common.util.ConditionVariable;
-import androidx.media3.common.util.Util;
 import androidx.media3.session.legacy.MediaMetadataCompat;
-import androidx.media3.test.session.R;
 import androidx.media3.test.session.common.CommonConstants;
 import androidx.media3.test.session.common.HandlerThreadTestRule;
 import androidx.media3.test.session.common.MainLooperTestRule;
@@ -69,6 +68,7 @@ import org.junit.runner.RunWith;
 /** Tests for {@link MediaController.Listener} with {@link MediaSessionCompat}. */
 @RunWith(AndroidJUnit4.class)
 @LargeTest
+@SuppressWarnings("deprecation") // Using legacy API for testing against legacy session.
 public class MediaControllerListenerWithMediaSessionCompatTest {
 
   @ClassRule public static MainLooperTestRule mainLooperTestRule = new MainLooperTestRule();
@@ -346,11 +346,6 @@ public class MediaControllerListenerWithMediaSessionCompatTest {
 
   @Test
   public void onAudioAttributesChanged() throws Exception {
-    // We need to trigger MediaControllerCompat.Callback.onAudioInfoChanged in order to raise the
-    // onAudioAttributesChanged() callback. In API 21 and 22, onAudioInfoChanged is not called when
-    // playback is changed to local.
-    assumeTrue(Util.SDK_INT > 22);
-
     session.setPlaybackToRemote(
         /* volumeControl= */ VolumeProviderCompat.VOLUME_CONTROL_ABSOLUTE,
         /* maxVolume= */ 100,
@@ -414,7 +409,7 @@ public class MediaControllerListenerWithMediaSessionCompatTest {
           }
         };
     threadTestRule.getHandler().postAndSync(() -> controller.addListener(listener));
-    String testRoutingSessionId = Util.SDK_INT >= 30 ? "route" : null;
+    String testRoutingSessionId = SDK_INT >= 30 ? "route" : null;
 
     session.setPlaybackToRemote(
         /* volumeControl= */ VolumeProviderCompat.VOLUME_CONTROL_ABSOLUTE,
@@ -574,6 +569,7 @@ public class MediaControllerListenerWithMediaSessionCompatTest {
             .setSessionCommand(new SessionCommand("command2", Bundle.EMPTY))
             .setEnabled(true)
             .setSlots(CommandButton.SLOT_FORWARD, CommandButton.SLOT_OVERFLOW)
+            .setIconUri(Uri.parse("content://my_icon"))
             .build();
     ConditionVariable onMediaButtonPreferencesChangedCalled = new ConditionVariable();
     List<List<CommandButton>> onMediaButtonPreferencesChangedArguments = new ArrayList<>();
@@ -600,6 +596,8 @@ public class MediaControllerListenerWithMediaSessionCompatTest {
     extras2.putString("key", "value-2");
     extras2.putInt(
         MediaConstants.EXTRAS_KEY_COMMAND_BUTTON_ICON_COMPAT, CommandButton.ICON_FAST_FORWARD);
+    extras2.putString(
+        MediaConstants.EXTRAS_KEY_COMMAND_BUTTON_ICON_URI_COMPAT, "content://my_icon");
     PlaybackStateCompat.CustomAction customAction2 =
         new PlaybackStateCompat.CustomAction.Builder(
                 "command2", "button2", /* icon= */ R.drawable.media3_icon_fast_forward)
@@ -801,6 +799,48 @@ public class MediaControllerListenerWithMediaSessionCompatTest {
   }
 
   @Test
+  public void getMediaButtonPreferences_containsExtrasFromCustomAction() throws Exception {
+    ConditionVariable onMediaButtonPreferencesChangedCalled = new ConditionVariable();
+    MediaController controller =
+        controllerTestRule.createController(
+            session.getSessionToken(),
+            new MediaController.Listener() {
+              @Override
+              public void onMediaButtonPreferencesChanged(
+                  MediaController controller, List<CommandButton> mediaButtonPreferences) {
+                onMediaButtonPreferencesChangedCalled.open();
+              }
+            });
+    Bundle extras = new Bundle();
+    extras.putString("key", "value");
+    PlaybackStateCompat.CustomAction customAction =
+        new PlaybackStateCompat.CustomAction.Builder(
+                "command", "button1", /* icon= */ R.drawable.media3_notification_small_icon)
+            .setExtras(extras)
+            .build();
+    PlaybackStateCompat playbackState =
+        new PlaybackStateCompat.Builder().addCustomAction(customAction).build();
+
+    session.setPlaybackState(playbackState);
+    assertThat(onMediaButtonPreferencesChangedCalled.block(TIMEOUT_MS)).isTrue();
+    ImmutableList<CommandButton> mediaButtonPreferences =
+        threadTestRule.getHandler().postAndSync(controller::getMediaButtonPreferences);
+    SessionCommands availableSessionCommands =
+        threadTestRule.getHandler().postAndSync(controller::getAvailableSessionCommands);
+    SessionCommand customCommand =
+        availableSessionCommands.commands.stream()
+            .filter(command -> command.commandCode == SessionCommand.COMMAND_CODE_CUSTOM)
+            .findFirst()
+            .get();
+
+    assertThat(mediaButtonPreferences).hasSize(1);
+    assertThat(mediaButtonPreferences.get(0).sessionCommand.customExtras.getString("key"))
+        .isEqualTo("value");
+    assertThat(mediaButtonPreferences.get(0).extras.getString("key")).isEqualTo("value");
+    assertThat(customCommand.customExtras.getString("key")).isEqualTo("value");
+  }
+
+  @Test
   public void getCurrentPosition_unknownPlaybackPosition_convertedToZero() throws Exception {
     session.setPlaybackState(
         new PlaybackStateCompat.Builder()
@@ -865,5 +905,113 @@ public class MediaControllerListenerWithMediaSessionCompatTest {
     assertThat(mediaMetadataChanged.block(TIMEOUT_MS)).isTrue();
     assertThat(reportedPlaybackStates).containsExactly(3);
     assertThat(reportedMediaMetadata.stream().map((m) -> m.artist)).containsExactly("artist-0");
+  }
+
+  @Test
+  public void getAvailableCommands_sessionHasPlayActionOnlyWhenPaused_hasCommandPlayPause()
+      throws Exception {
+    session.setPlaybackState(
+        new PlaybackStateCompat.Builder()
+            .setActions(PlaybackStateCompat.ACTION_PLAY)
+            .setState(
+                PlaybackStateCompat.STATE_PAUSED, /* position= */ 10_000L, /* playbackSpeed= */ 0.f)
+            .build());
+    MediaController controller = controllerTestRule.createController(session.getSessionToken());
+
+    Player.Commands commands =
+        threadTestRule.getHandler().postAndSync(() -> controller.getAvailableCommands());
+
+    assertThat(commands.contains(Player.COMMAND_PLAY_PAUSE)).isTrue();
+  }
+
+  @Test
+  public void getAvailableCommands_sessionHasPlayActionOnlyWhenPlaying_doesNotHaveCommandPlayPause()
+      throws Exception {
+    session.setPlaybackState(
+        new PlaybackStateCompat.Builder()
+            .setActions(PlaybackStateCompat.ACTION_PLAY)
+            .setState(
+                PlaybackStateCompat.STATE_PLAYING,
+                /* position= */ 10_000L,
+                /* playbackSpeed= */ 1.0f)
+            .build());
+    MediaController controller = controllerTestRule.createController(session.getSessionToken());
+
+    Player.Commands commands =
+        threadTestRule.getHandler().postAndSync(() -> controller.getAvailableCommands());
+
+    assertThat(commands.contains(Player.COMMAND_PLAY_PAUSE)).isFalse();
+  }
+
+  @Test
+  public void getAvailableCommands_sessionHasPauseActionOnlyWhenPlaying_hasCommandPlayPause()
+      throws Exception {
+    session.setPlaybackState(
+        new PlaybackStateCompat.Builder()
+            .setActions(PlaybackStateCompat.ACTION_PAUSE)
+            .setState(
+                PlaybackStateCompat.STATE_PLAYING,
+                /* position= */ 10_000L,
+                /* playbackSpeed= */ 1.0f)
+            .build());
+    MediaController controller = controllerTestRule.createController(session.getSessionToken());
+
+    Player.Commands commands =
+        threadTestRule.getHandler().postAndSync(() -> controller.getAvailableCommands());
+
+    assertThat(commands.contains(Player.COMMAND_PLAY_PAUSE)).isTrue();
+  }
+
+  @Test
+  public void getAvailableCommands_sessionHasPauseActionOnlyWhenPused_doesNotHaveCommandPlayPause()
+      throws Exception {
+    session.setPlaybackState(
+        new PlaybackStateCompat.Builder()
+            .setActions(PlaybackStateCompat.ACTION_PAUSE)
+            .setState(
+                PlaybackStateCompat.STATE_PAUSED, /* position= */ 10_000L, /* playbackSpeed= */ 0.f)
+            .build());
+    MediaController controller = controllerTestRule.createController(session.getSessionToken());
+
+    Player.Commands commands =
+        threadTestRule.getHandler().postAndSync(() -> controller.getAvailableCommands());
+
+    assertThat(commands.contains(Player.COMMAND_PLAY_PAUSE)).isFalse();
+  }
+
+  @Test
+  public void getAvailableCommands_sessionHasPlayPauseActionWhenPlaying_hasCommandPlayPause()
+      throws Exception {
+    session.setPlaybackState(
+        new PlaybackStateCompat.Builder()
+            .setActions(PlaybackStateCompat.ACTION_PLAY_PAUSE)
+            .setState(
+                PlaybackStateCompat.STATE_PLAYING,
+                /* position= */ 10_000L,
+                /* playbackSpeed= */ 1.0f)
+            .build());
+    MediaController controller = controllerTestRule.createController(session.getSessionToken());
+
+    Player.Commands commands =
+        threadTestRule.getHandler().postAndSync(() -> controller.getAvailableCommands());
+
+    assertThat(commands.contains(Player.COMMAND_PLAY_PAUSE)).isTrue();
+  }
+
+  @Test
+  public void getAvailableCommands_sessionHasPlayPauseActionWhenPaused_hasCommandPlayPause()
+      throws Exception {
+    session.setPlaybackState(
+        new PlaybackStateCompat.Builder()
+            .setActions(PlaybackStateCompat.ACTION_PLAY_PAUSE)
+            .setState(
+                PlaybackStateCompat.STATE_PAUSED, /* position= */ 10_000L, /* playbackSpeed= */ 0.f)
+            .build());
+    MediaController controller = controllerTestRule.createController(session.getSessionToken());
+
+    Player.Commands commands =
+        threadTestRule.getHandler().postAndSync(() -> controller.getAvailableCommands());
+
+    assertThat(commands.contains(Player.COMMAND_PLAY_PAUSE)).isTrue();
   }
 }

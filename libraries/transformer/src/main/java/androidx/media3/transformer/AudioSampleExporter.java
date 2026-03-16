@@ -16,11 +16,12 @@
 
 package androidx.media3.transformer;
 
-import static androidx.media3.common.util.Assertions.checkNotNull;
-import static androidx.media3.common.util.Assertions.checkState;
 import static androidx.media3.decoder.DecoderInputBuffer.BUFFER_REPLACEMENT_MODE_DISABLED;
+import static com.google.common.base.Preconditions.checkNotNull;
+import static com.google.common.base.Preconditions.checkState;
 import static java.lang.Math.min;
 
+import android.media.metrics.LogSessionId;
 import androidx.annotation.Nullable;
 import androidx.media3.common.C;
 import androidx.media3.common.Format;
@@ -39,7 +40,7 @@ import org.checkerframework.dataflow.qual.Pure;
 
   private final Codec encoder;
   private final AudioFormat encoderInputAudioFormat;
-  private final DecoderInputBuffer encoderInputBuffer;
+  private final DecoderInputBuffer nextEncoderInputBuffer;
   private final DecoderInputBuffer encoderOutputBuffer;
   private final AudioGraph audioGraph;
 
@@ -48,6 +49,7 @@ import org.checkerframework.dataflow.qual.Pure;
 
   private boolean returnedFirstInput;
   private long encoderTotalInputBytes;
+  @Nullable private DecoderInputBuffer partiallyFilledEncoderInputBuffer;
 
   public AudioSampleExporter(
       Format firstAssetLoaderTrackFormat,
@@ -58,7 +60,8 @@ import org.checkerframework.dataflow.qual.Pure;
       AudioMixer.Factory mixerFactory,
       Codec.EncoderFactory encoderFactory,
       MuxerWrapper muxerWrapper,
-      FallbackListener fallbackListener)
+      FallbackListener fallbackListener,
+      @Nullable LogSessionId logSessionId)
       throws ExportException {
     super(firstAssetLoaderTrackFormat, muxerWrapper);
     SonicAudioProcessor outputResampler = new SonicAudioProcessor();
@@ -96,7 +99,8 @@ import org.checkerframework.dataflow.qual.Pure;
                     findSupportedMimeTypeForEncoderAndMuxer(
                         requestedEncoderFormat,
                         muxerWrapper.getSupportedSampleMimeTypes(C.TRACK_TYPE_AUDIO)))
-                .build());
+                .build(),
+            logSessionId);
 
     AudioFormat actualEncoderAudioFormat = new AudioFormat(encoder.getInputFormat());
     // This occurs when the encoder does not support the requested format. In this case, the audio
@@ -111,7 +115,7 @@ import org.checkerframework.dataflow.qual.Pure;
     this.firstInput = currentFirstInput;
     this.encoderInputAudioFormat = currentEncoderInputAudioFormat;
 
-    encoderInputBuffer = new DecoderInputBuffer(BUFFER_REPLACEMENT_MODE_DISABLED);
+    nextEncoderInputBuffer = new DecoderInputBuffer(BUFFER_REPLACEMENT_MODE_DISABLED);
     encoderOutputBuffer = new DecoderInputBuffer(BUFFER_REPLACEMENT_MODE_DISABLED);
 
     fallbackListener.onTransformationRequestFinalized(
@@ -141,14 +145,17 @@ import org.checkerframework.dataflow.qual.Pure;
 
   @Override
   protected boolean processDataUpToMuxer() throws ExportException {
-
-    ByteBuffer audioGraphBuffer = audioGraph.getOutput();
-
-    if (!encoder.maybeDequeueInputBuffer(encoderInputBuffer)) {
-      return false;
+    // Check if encoder is ready.
+    if (partiallyFilledEncoderInputBuffer == null) {
+      if (!encoder.maybeDequeueInputBuffer(nextEncoderInputBuffer)) {
+        return false;
+      }
     }
-
     if (audioGraph.isEnded()) {
+      // Feed any remaining data from partiallyFilledEncoderInputBuffer.
+      if (partiallyFilledEncoderInputBuffer != null) {
+        maybeFeedEncoder();
+      }
       DebugTraceUtil.logEvent(
           DebugTraceUtil.COMPONENT_AUDIO_GRAPH,
           DebugTraceUtil.EVENT_OUTPUT_ENDED,
@@ -157,12 +164,7 @@ import org.checkerframework.dataflow.qual.Pure;
       return false;
     }
 
-    if (!audioGraphBuffer.hasRemaining()) {
-      return false;
-    }
-
-    feedEncoder(audioGraphBuffer);
-    return true;
+    return maybeFeedEncoder();
   }
 
   @Override
@@ -193,30 +195,50 @@ import org.checkerframework.dataflow.qual.Pure;
     return encoder.isEnded();
   }
 
-  /**
-   * Feeds as much data as possible between the current position and limit of the specified {@link
-   * ByteBuffer} to the encoder, and advances its position by the number of bytes fed.
-   */
-  private void feedEncoder(ByteBuffer inputBuffer) throws ExportException {
+  /** Tries to feed the encoder, if there is enough data available. */
+  private boolean maybeFeedEncoder() throws ExportException {
+    DecoderInputBuffer encoderInputBuffer =
+        partiallyFilledEncoderInputBuffer == null
+            ? nextEncoderInputBuffer
+            : partiallyFilledEncoderInputBuffer;
     ByteBuffer encoderInputBufferData = checkNotNull(encoderInputBuffer.data);
-    int bufferLimit = inputBuffer.limit();
-    inputBuffer.limit(min(bufferLimit, inputBuffer.position() + encoderInputBufferData.capacity()));
-    encoderInputBufferData.put(inputBuffer);
-    encoderInputBuffer.timeUs = getOutputAudioDurationUs();
-    encoderTotalInputBytes += encoderInputBufferData.position();
-    encoderInputBuffer.setFlags(0);
-    encoderInputBuffer.flip();
-    inputBuffer.limit(bufferLimit);
-    encoder.queueInputBuffer(encoderInputBuffer);
+    // Keep retrieving as much data from the AudioGraph but do not block if data is not yet
+    // available.
+    while (!audioGraph.isEnded()
+        && audioGraph.getOutput().hasRemaining()
+        && encoderInputBufferData.remaining() > 0) {
+      ByteBuffer audioGraphBuffer = audioGraph.getOutput();
+      int audioDataSize = audioGraphBuffer.remaining();
+      int bytesToRead = min(audioDataSize, encoderInputBufferData.remaining());
+      int audioGraphBufferLimit = audioGraphBuffer.limit();
+      audioGraphBuffer.limit(audioGraphBuffer.position() + bytesToRead);
+      encoderInputBufferData.put(audioGraphBuffer);
+      audioGraphBuffer.limit(audioGraphBufferLimit);
+    }
+    // Queue input buffer only when input buffer is full or there is no more data.
+    if (encoderInputBufferData.remaining() == 0 || audioGraph.isEnded()) {
+      encoderInputBuffer.timeUs = getOutputAudioDurationUs();
+      encoderTotalInputBytes += encoderInputBufferData.position();
+      encoderInputBuffer.setFlags(0);
+      encoderInputBuffer.flip();
+      encoder.queueInputBuffer(encoderInputBuffer);
+      partiallyFilledEncoderInputBuffer = null;
+      return true;
+    } else {
+      partiallyFilledEncoderInputBuffer = encoderInputBuffer;
+      return false;
+    }
   }
 
   private void queueEndOfStreamToEncoder() throws ExportException {
-    checkState(checkNotNull(encoderInputBuffer.data).position() == 0);
-    encoderInputBuffer.timeUs = getOutputAudioDurationUs();
-    encoderInputBuffer.addFlag(C.BUFFER_FLAG_END_OF_STREAM);
-    encoderInputBuffer.flip();
+    checkState(
+        partiallyFilledEncoderInputBuffer == null
+            && checkNotNull(nextEncoderInputBuffer.data).position() == 0);
+    nextEncoderInputBuffer.timeUs = getOutputAudioDurationUs();
+    nextEncoderInputBuffer.addFlag(C.BUFFER_FLAG_END_OF_STREAM);
+    nextEncoderInputBuffer.flip();
     // Queuing EOS should only occur with an empty buffer.
-    encoder.queueInputBuffer(encoderInputBuffer);
+    encoder.queueInputBuffer(nextEncoderInputBuffer);
   }
 
   @Pure

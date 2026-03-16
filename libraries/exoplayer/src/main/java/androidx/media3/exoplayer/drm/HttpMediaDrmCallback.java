@@ -17,21 +17,25 @@ package androidx.media3.exoplayer.drm;
 
 
 import static androidx.media3.exoplayer.drm.DrmUtil.executePost;
+import static com.google.common.base.Preconditions.checkArgument;
+import static com.google.common.base.Preconditions.checkNotNull;
+import static java.nio.charset.StandardCharsets.UTF_8;
 
 import android.net.Uri;
 import android.text.TextUtils;
 import android.util.Base64;
 import androidx.annotation.Nullable;
 import androidx.media3.common.C;
-import androidx.media3.common.util.Assertions;
 import androidx.media3.common.util.UnstableApi;
-import androidx.media3.common.util.Util;
 import androidx.media3.datasource.DataSource;
 import androidx.media3.datasource.DataSpec;
 import androidx.media3.exoplayer.drm.ExoMediaDrm.KeyRequest;
 import androidx.media3.exoplayer.drm.ExoMediaDrm.ProvisionRequest;
 import androidx.media3.exoplayer.util.Utils;
 import com.google.common.collect.ImmutableMap;
+import com.google.common.net.HttpHeaders;
+import com.google.common.net.MediaType;
+import com.google.common.primitives.Bytes;
 import com.sigma.packer.RequestInfo;
 import com.sigma.packer.SigmaDrmPacker;
 import java.util.Collections;
@@ -79,7 +83,7 @@ public final class HttpMediaDrmCallback implements MediaDrmCallback {
       @Nullable String defaultLicenseUrl,
       boolean forceDefaultLicenseUrl,
       DataSource.Factory dataSourceFactory) {
-    Assertions.checkArgument(!(forceDefaultLicenseUrl && TextUtils.isEmpty(defaultLicenseUrl)));
+    checkArgument(!(forceDefaultLicenseUrl && TextUtils.isEmpty(defaultLicenseUrl)));
     this.dataSourceFactory = dataSourceFactory;
     this.defaultLicenseUrl = defaultLicenseUrl;
     this.forceDefaultLicenseUrl = forceDefaultLicenseUrl;
@@ -93,8 +97,8 @@ public final class HttpMediaDrmCallback implements MediaDrmCallback {
    * @param value The value of the field.
    */
   public void setKeyRequestProperty(String name, String value) {
-    Assertions.checkNotNull(name);
-    Assertions.checkNotNull(value);
+    checkNotNull(name);
+    checkNotNull(value);
     synchronized (keyRequestProperties) {
       keyRequestProperties.put(name, value);
     }
@@ -106,7 +110,7 @@ public final class HttpMediaDrmCallback implements MediaDrmCallback {
    * @param name The name of the header field.
    */
   public void clearKeyRequestProperty(String name) {
-    Assertions.checkNotNull(name);
+    checkNotNull(name);
     synchronized (keyRequestProperties) {
       keyRequestProperties.remove(name);
     }
@@ -119,20 +123,29 @@ public final class HttpMediaDrmCallback implements MediaDrmCallback {
     }
   }
 
+  // Wrapping into a RuntimeException is recommended by the JSONException docs:
+  // https://developer.android.com/reference/org/json/JSONException
+  @SuppressWarnings("ThrowSpecificExceptions")
   @Override
-  public byte[] executeProvisionRequest(UUID uuid, ProvisionRequest request)
+  public Response executeProvisionRequest(UUID uuid, ProvisionRequest request)
       throws MediaDrmCallbackException {
-    String url =
-        request.getDefaultUrl() + "&signedRequest=" + Util.fromUtf8Bytes(request.getData());
+    byte[] httpBody =
+        Bytes.concat(
+            "{\"signedRequest\":\"".getBytes(UTF_8), request.getData(), "\"}".getBytes(UTF_8));
     return executePost(
         dataSourceFactory.createDataSource(),
-        url,
-        /* httpBody= */ null,
-        /* requestProperties= */ Collections.emptyMap());
+        request.getDefaultUrl(),
+        httpBody,
+        ImmutableMap.of(
+            HttpHeaders.CONTENT_TYPE,
+            MediaType.JSON_UTF_8.toString(),
+            HttpHeaders.CONTENT_LENGTH,
+            String.valueOf(httpBody.length)));
   }
 
   @Override
-  public byte[] executeKeyRequest(UUID uuid, KeyRequest request) throws MediaDrmCallbackException {
+  public Response executeKeyRequest(UUID uuid, KeyRequest request)
+      throws MediaDrmCallbackException {
     String url = request.getLicenseServerUrl();
     if (forceDefaultLicenseUrl || TextUtils.isEmpty(url)) {
       url = defaultLicenseUrl;
@@ -181,21 +194,31 @@ public final class HttpMediaDrmCallback implements MediaDrmCallback {
       // Adding the KeyRequestProperties to RequestProperties.
       requestProperties.putAll(keyRequestProperties);
     }
+
     //
-    byte[] bytesToSend =  executePost(dataSourceFactory.createDataSource(), url, request.getData(), requestProperties);
+    Response response = executePost(dataSourceFactory.createDataSource(), url, request.getData(), requestProperties);
     if (Utils.IS_SIGMA_DRM) {
       try {
-        JSONObject jsonObject = new JSONObject(new String(bytesToSend));
+        JSONObject jsonObject = new JSONObject(new String(response.data));
         // If you don't use feature license encrypt, please comment 3 lines below
         String licenseEncrypted = jsonObject.getString("license");
-        return Base64.decode(licenseEncrypted, Base64.DEFAULT);
+        byte[] licenseBytes = Base64.decode(licenseEncrypted, Base64.DEFAULT);
+        return withNewData(response, licenseBytes);
         // If you don't use feature license encrypt, please uncomment line below
         // return Base64.decode(jsonObject.getString("license"), Base64.DEFAULT);
       } catch (JSONException e) {
         throw new RuntimeException("Error while parsing response", e);
       }
     }else{
-      return bytesToSend;
+      return response;
     }
+  }
+
+  private Response withNewData(Response original, byte[] newData) {
+    Response.Builder builder = new Response.Builder(newData);
+    if (original.loadEventInfo != null) {
+      builder.setLoadEventInfo(original.loadEventInfo);
+    }
+    return builder.build();
   }
 }

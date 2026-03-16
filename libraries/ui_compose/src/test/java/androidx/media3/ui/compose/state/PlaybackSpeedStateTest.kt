@@ -16,11 +16,14 @@
 
 package androidx.media3.ui.compose.state
 
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.media3.common.Player
-import androidx.media3.ui.compose.utils.TestPlayer
+import androidx.media3.test.utils.FakePlayer
+import androidx.media3.ui.compose.testutils.createReadyPlayerWithTwoItems
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.google.common.truth.Truth.assertThat
+import org.junit.Assert.assertThrows
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -33,11 +36,8 @@ class PlaybackSpeedStateTest {
 
   @Test
   fun addSetSpeedAndPitchCommandToPlayer_stateTogglesFromDisabledToEnabled() {
-    val player = TestPlayer()
-    player.playbackState = Player.STATE_READY
-    player.playWhenReady = true
+    val player = FakePlayer()
     player.removeCommands(Player.COMMAND_SET_SPEED_AND_PITCH)
-
     lateinit var state: PlaybackSpeedState
     composeTestRule.setContent { state = rememberPlaybackSpeedState(player = player) }
 
@@ -51,10 +51,7 @@ class PlaybackSpeedStateTest {
 
   @Test
   fun removeSetSpeedAndPitchCommandToPlayer_stateTogglesFromEnabledToDisabled() {
-    val player = TestPlayer()
-    player.playbackState = Player.STATE_READY
-    player.playWhenReady = true
-
+    val player = FakePlayer()
     lateinit var state: PlaybackSpeedState
     composeTestRule.setContent { state = rememberPlaybackSpeedState(player = player) }
 
@@ -67,8 +64,46 @@ class PlaybackSpeedStateTest {
   }
 
   @Test
+  fun updatePlaybackSpeed_whenCommandNotAvailable_throwsException() {
+    val player = FakePlayer()
+    player.removeCommands(Player.COMMAND_SET_SPEED_AND_PITCH)
+    val state = PlaybackSpeedState(player)
+
+    assertThat(state.isEnabled).isFalse()
+    assertThrows(IllegalStateException::class.java) { state.updatePlaybackSpeed(1.5f) }
+  }
+
+  @Test
+  fun updatePlaybackSpeed_stateBecomesDisabled_throwsException() {
+    val player = createReadyPlayerWithTwoItems()
+    player.setPlaybackSpeed(2f)
+    lateinit var state: PlaybackSpeedState
+    composeTestRule.setContent { state = rememberPlaybackSpeedState(player) }
+
+    player.removeCommands(Player.COMMAND_SET_SPEED_AND_PITCH)
+    composeTestRule.waitForIdle()
+
+    assertThrows(IllegalStateException::class.java) { state.updatePlaybackSpeed(1.5f) }
+  }
+
+  @Test
+  fun updatePlaybackSpeed_justAfterCommandRemovedWhileStillEnabled_isNoOp() {
+    val player = createReadyPlayerWithTwoItems()
+    player.setPlaybackSpeed(2f)
+    lateinit var state: PlaybackSpeedState
+    composeTestRule.setContent { state = rememberPlaybackSpeedState(player) }
+
+    // Simulate command becoming disabled without yet receiving the event callback
+    player.removeCommands(Player.COMMAND_SET_SPEED_AND_PITCH)
+    check(state.isEnabled)
+    state.updatePlaybackSpeed(1.5f)
+
+    assertThat(player.playbackParameters.speed).isEqualTo(2f)
+  }
+
+  @Test
   fun playerPlaybackSpeedChanged_statePlaybackSpeedChanged() {
-    val player = TestPlayer()
+    val player = FakePlayer()
 
     lateinit var state: PlaybackSpeedState
     composeTestRule.setContent { state = rememberPlaybackSpeedState(player = player) }
@@ -83,12 +118,29 @@ class PlaybackSpeedStateTest {
 
   @Test
   fun stateUpdatePlaybackSpeed_playerPlaybackSpeedChanged() {
-    val player = TestPlayer()
+    val player = FakePlayer()
     val state = PlaybackSpeedState(player)
     assertThat(state.playbackSpeed).isEqualTo(1f)
 
     state.updatePlaybackSpeed(2.7f)
 
     assertThat(player.playbackParameters.speed).isEqualTo(2.7f)
+  }
+
+  @Test
+  fun playerIncreasesPlaybackSpeedBeforeEventListenerRegisters_observeGetsTheLatestValues_uiIconInSync() {
+    val player = FakePlayer()
+
+    lateinit var state: PlaybackSpeedState
+    composeTestRule.setContent {
+      // Schedule LaunchedEffect to update player state before PlaybackSpeedState is created.
+      // This update could end up being executed *before* PlaybackSpeedState schedules the start of
+      // event listening and we don't want to lose it.
+      LaunchedEffect(player) { player.setPlaybackSpeed(player.playbackParameters.speed + 1f) }
+      state = rememberPlaybackSpeedState(player = player)
+    }
+
+    // UI syncs up with the fact that we increased playback speed
+    assertThat(state.playbackSpeed).isEqualTo(2f)
   }
 }

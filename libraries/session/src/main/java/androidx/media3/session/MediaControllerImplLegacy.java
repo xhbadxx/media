@@ -15,11 +15,10 @@
  */
 package androidx.media3.session;
 
-import static androidx.media3.common.util.Assertions.checkArgument;
-import static androidx.media3.common.util.Assertions.checkNotNull;
-import static androidx.media3.common.util.Assertions.checkState;
-import static androidx.media3.common.util.Assertions.checkStateNotNull;
 import static androidx.media3.session.MediaUtils.calculateBufferedPercentage;
+import static com.google.common.base.Preconditions.checkArgument;
+import static com.google.common.base.Preconditions.checkNotNull;
+import static com.google.common.base.Preconditions.checkState;
 import static java.lang.Math.max;
 import static java.lang.Math.min;
 import static java.lang.String.format;
@@ -31,8 +30,8 @@ import android.media.AudioManager;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
-import android.os.ResultReceiver;
 import android.os.SystemClock;
+import android.text.TextUtils;
 import android.util.Pair;
 import android.view.Surface;
 import android.view.SurfaceHolder;
@@ -78,11 +77,10 @@ import androidx.media3.session.legacy.VolumeProviderCompat;
 import com.google.common.collect.ImmutableList;
 import com.google.common.util.concurrent.Futures;
 import com.google.common.util.concurrent.ListenableFuture;
-import com.google.common.util.concurrent.SettableFuture;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
-import java.util.Objects;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Future;
@@ -92,6 +90,8 @@ import org.checkerframework.checker.initialization.qual.UnderInitialization;
 /* package */ class MediaControllerImplLegacy implements MediaController.MediaControllerImpl {
 
   private static final String TAG = "MCImplLegacy";
+
+  private static final long WAIT_TIME_MS_FOR_COMPAT_EXTRA_BINDER = 500;
 
   /* package */ final Context context;
   private final MediaController instance;
@@ -154,7 +154,7 @@ import org.checkerframework.checker.initialization.qual.UnderInitialization;
   @Override
   public void connect(@UnderInitialization MediaControllerImplLegacy this) {
     if (this.token.getType() == SessionToken.TYPE_SESSION) {
-      connectToSession((MediaSessionCompat.Token) checkStateNotNull(this.token.getBinder()));
+      connectToSession((MediaSessionCompat.Token) checkNotNull(this.token.getBinder()));
     } else {
       connectToService();
     }
@@ -184,7 +184,7 @@ import org.checkerframework.checker.initialization.qual.UnderInitialization;
         controllerInfo.playerInfo.copyWithSessionPositionInfo(
             createSessionPositionInfo(
                 controllerInfo.playerInfo.sessionPositionInfo.positionInfo,
-                /* isPlayingAd= */ false,
+                controllerInfo.playerInfo.sessionPositionInfo.isPlayingAd,
                 controllerInfo.playerInfo.sessionPositionInfo.durationMs,
                 /* bufferedPositionMs= */ controllerInfo
                     .playerInfo
@@ -535,6 +535,11 @@ import org.checkerframework.checker.initialization.qual.UnderInitialization;
   }
 
   @Override
+  public int getAudioSessionId() {
+    return controllerInfo.playerInfo.audioSessionId;
+  }
+
+  @Override
   public ListenableFuture<SessionResult> setRating(String mediaId, Rating rating) {
     @Nullable
     String currentMediaItemMediaId =
@@ -599,22 +604,30 @@ import org.checkerframework.checker.initialization.qual.UnderInitialization;
 
   @Override
   public ListenableFuture<SessionResult> sendCustomCommand(SessionCommand command, Bundle args) {
-    if (controllerInfo.availableSessionCommands.contains(command)) {
-      controllerCompat.getTransportControls().sendCustomAction(command.customAction, args);
+    if (controllerCompat != null) {
+      Bundle extras;
+      if (args.isEmpty()) {
+        extras = command.customExtras;
+      } else if (command.customExtras.isEmpty()) {
+        extras = args;
+      } else {
+        extras = new Bundle(command.customExtras);
+        extras.putAll(args);
+      }
+      controllerCompat.getTransportControls().sendCustomAction(command.customAction, extras);
       return Futures.immediateFuture(new SessionResult(SessionResult.RESULT_SUCCESS));
+    } else {
+      return Futures.immediateFuture(
+          new SessionResult(SessionResult.RESULT_ERROR_SESSION_DISCONNECTED));
     }
-    SettableFuture<SessionResult> result = SettableFuture.create();
-    ResultReceiver cb =
-        new ResultReceiver(getInstance().applicationHandler) {
-          @Override
-          protected void onReceiveResult(int resultCode, Bundle resultData) {
-            result.set(
-                new SessionResult(
-                    resultCode, /* extras= */ resultData == null ? Bundle.EMPTY : resultData));
-          }
-        };
-    controllerCompat.sendCommand(command.customAction, args, cb);
-    return result;
+  }
+
+  @Override
+  public ListenableFuture<SessionResult> sendCustomCommand(
+      SessionCommand command,
+      Bundle args,
+      @Nullable MediaController.ProgressListener progressListener) {
+    return sendCustomCommand(command, args);
   }
 
   @Override
@@ -1097,6 +1110,16 @@ import org.checkerframework.checker.initialization.qual.UnderInitialization;
   }
 
   @Override
+  public void mute() {
+    Log.w(TAG, "Session doesn't support muting the player");
+  }
+
+  @Override
+  public void unmute() {
+    Log.w(TAG, "Session doesn't support unmuting the player");
+  }
+
+  @Override
   public DeviceInfo getDeviceInfo() {
     return controllerInfo.playerInfo.deviceInfo;
   }
@@ -1232,11 +1255,6 @@ import org.checkerframework.checker.initialization.qual.UnderInitialization;
 
   @Override
   public void setDeviceMuted(boolean muted, @C.VolumeFlags int flags) {
-    if (Util.SDK_INT < 23) {
-      Log.w(TAG, "Session doesn't support setting mute state at API level less than 23");
-      return;
-    }
-
     boolean isMuted = isDeviceMuted();
     if (muted != isMuted) {
       int volume = getDeviceVolume();
@@ -1404,18 +1422,19 @@ import org.checkerframework.checker.initialization.qual.UnderInitialization;
               controllerCompat.registerCallback(
                   controllerCompatCallback, getInstance().applicationHandler);
             });
-    // Post a runnable to prevent callbacks from being called by onConnected()
-    // before the constructor returns (b/196941334).
+    // Post a delayed runnable to mark session as connected if we are working with a framework
+    // session.
     getInstance()
         .applicationHandler
-        .post(
+        .postDelayed(
             () -> {
-              if (!controllerCompat.isSessionReady()) {
-                // If the session not ready here, then call onConnected() immediately. The session
-                // may be a framework MediaSession and we cannot know whether it can be ready later.
+              if (!released && !controllerCompat.isSessionReady()) {
+                // If the session not ready here, then call onConnected() and assume that the
+                // session is a framework MediaSession.
                 onConnected();
               }
-            });
+            },
+            WAIT_TIME_MS_FOR_COMPAT_EXTRA_BINDER);
   }
 
   private void connectToService() {
@@ -1582,7 +1601,6 @@ import org.checkerframework.checker.initialization.qual.UnderInitialization;
             controllerCompat.isSessionReady(),
             controllerCompat.getRatingType(),
             getInstance().getTimeDiffMs(),
-            getRoutingControllerId(controllerCompat),
             hasPendingExtrasChange,
             context);
     Pair<@NullableType Integer, @NullableType Integer> reasons =
@@ -1674,7 +1692,8 @@ import org.checkerframework.checker.initialization.qual.UnderInitialization;
                   newControllerInfo.playerInfo.timeline,
                   newControllerInfo.playerInfo.timelineChangeReason));
     }
-    if (!Objects.equals(oldLegacyPlayerInfo.queueTitle, newLegacyPlayerInfo.queueTitle)) {
+
+    if (!TextUtils.equals(oldLegacyPlayerInfo.queueTitle, newLegacyPlayerInfo.queueTitle)) {
       listeners.queueEvent(
           Player.EVENT_PLAYLIST_METADATA_CHANGED,
           (listener) ->
@@ -1699,7 +1718,8 @@ import org.checkerframework.checker.initialization.qual.UnderInitialization;
     if (!MediaUtils.areEqualError(
         oldLegacyPlayerInfo.playbackStateCompat, newLegacyPlayerInfo.playbackStateCompat)) {
       PlaybackException error =
-          LegacyConversions.convertToPlaybackException(newLegacyPlayerInfo.playbackStateCompat);
+          LegacyConversions.convertToPlaybackException(
+              newLegacyPlayerInfo.playbackStateCompat, context);
       listeners.queueEvent(
           Player.EVENT_PLAYER_ERROR, (listener) -> listener.onPlayerErrorChanged(error));
       if (error != null) {
@@ -1759,6 +1779,13 @@ import org.checkerframework.checker.initialization.qual.UnderInitialization;
           (listener) ->
               listener.onAudioAttributesChanged(newControllerInfo.playerInfo.audioAttributes));
     }
+    if (oldControllerInfo.playerInfo.audioSessionId
+        != newControllerInfo.playerInfo.audioSessionId) {
+      listeners.queueEvent(
+          Player.EVENT_AUDIO_SESSION_ID,
+          (listener) ->
+              listener.onAudioSessionIdChanged(newControllerInfo.playerInfo.audioSessionId));
+    }
     if (!oldControllerInfo.playerInfo.deviceInfo.equals(newControllerInfo.playerInfo.deviceInfo)) {
       listeners.queueEvent(
           Player.EVENT_DEVICE_INFO_CHANGED,
@@ -1808,22 +1835,6 @@ import org.checkerframework.checker.initialization.qual.UnderInitialization;
               listener -> listener.onError(getInstance(), newControllerInfo.sessionError));
     }
     listeners.flushEvents();
-  }
-
-  @Nullable
-  private static String getRoutingControllerId(MediaControllerCompat controllerCompat) {
-    if (Util.SDK_INT < 30) {
-      return null;
-    }
-    android.media.session.MediaController fwkController =
-        (android.media.session.MediaController) controllerCompat.getMediaController();
-    @Nullable
-    android.media.session.MediaController.PlaybackInfo playbackInfo =
-        fwkController.getPlaybackInfo();
-    if (playbackInfo == null) {
-      return null;
-    }
-    return playbackInfo.getVolumeControlId();
   }
 
   private static <T> void ignoreFuture(Future<T> unused) {
@@ -1904,14 +1915,13 @@ import org.checkerframework.checker.initialization.qual.UnderInitialization;
       if (event == null) {
         return;
       }
+      Bundle nonNullExtras = extras == null ? Bundle.EMPTY : extras;
       getInstance()
           .notifyControllerListener(
               listener ->
                   ignoreFuture(
                       listener.onCustomCommand(
-                          getInstance(),
-                          new SessionCommand(event, /* extras= */ Bundle.EMPTY),
-                          extras == null ? Bundle.EMPTY : extras)));
+                          getInstance(), new SessionCommand(event, nonNullExtras), nonNullExtras)));
     }
 
     @Override
@@ -2007,7 +2017,6 @@ import org.checkerframework.checker.initialization.qual.UnderInitialization;
       boolean isSessionReady,
       @RatingCompat.Style int ratingType,
       long timeDiffMs,
-      @Nullable String routingControllerId,
       boolean hasPendingExtrasChange,
       Context context) {
     QueueTimeline currentTimeline;
@@ -2019,6 +2028,8 @@ import org.checkerframework.checker.initialization.qual.UnderInitialization;
     SessionCommands availableSessionCommands;
     Commands availablePlayerCommands;
     ImmutableList<CommandButton> mediaButtonPreferences;
+
+    preserveExistingBitmapData(oldLegacyPlayerInfo, newLegacyPlayerInfo);
 
     boolean isQueueChanged = oldLegacyPlayerInfo.queue != newLegacyPlayerInfo.queue;
     currentTimeline =
@@ -2130,7 +2141,8 @@ import org.checkerframework.checker.initialization.qual.UnderInitialization;
     }
 
     PlaybackException playerError =
-        LegacyConversions.convertToPlaybackException(newLegacyPlayerInfo.playbackStateCompat);
+        LegacyConversions.convertToPlaybackException(
+            newLegacyPlayerInfo.playbackStateCompat, context);
     SessionError sessionError =
         LegacyConversions.convertToSessionError(newLegacyPlayerInfo.playbackStateCompat, context);
 
@@ -2159,7 +2171,9 @@ import org.checkerframework.checker.initialization.qual.UnderInitialization;
     PlaybackParameters playbackParameters =
         LegacyConversions.convertToPlaybackParameters(newLegacyPlayerInfo.playbackStateCompat);
     AudioAttributes audioAttributes =
-        LegacyConversions.convertToAudioAttributes(newLegacyPlayerInfo.playbackInfoCompat);
+        newLegacyPlayerInfo.playbackInfoCompat == null
+            ? AudioAttributes.DEFAULT
+            : newLegacyPlayerInfo.playbackInfoCompat.getAudioAttributes();
     boolean playWhenReady =
         LegacyConversions.convertToPlayWhenReady(newLegacyPlayerInfo.playbackStateCompat);
     @Player.State int playbackState;
@@ -2180,8 +2194,7 @@ import org.checkerframework.checker.initialization.qual.UnderInitialization;
     boolean isPlaying =
         LegacyConversions.convertToIsPlaying(newLegacyPlayerInfo.playbackStateCompat);
     DeviceInfo deviceInfo =
-        LegacyConversions.convertToDeviceInfo(
-            newLegacyPlayerInfo.playbackInfoCompat, routingControllerId);
+        LegacyConversions.convertToDeviceInfo(newLegacyPlayerInfo.playbackInfoCompat);
     int deviceVolume =
         LegacyConversions.convertToDeviceVolume(newLegacyPlayerInfo.playbackInfoCompat);
     boolean deviceMuted =
@@ -2253,7 +2266,7 @@ import org.checkerframework.checker.initialization.qual.UnderInitialization;
       mediaItemTransitionReason = Player.MEDIA_ITEM_TRANSITION_REASON_PLAYLIST_CHANGED;
     } else {
       MediaItem oldCurrentMediaItem =
-          checkStateNotNull(oldControllerInfo.playerInfo.getCurrentMediaItem());
+          checkNotNull(oldControllerInfo.playerInfo.getCurrentMediaItem());
       boolean oldCurrentMediaItemExistsInNewTimeline =
           ((QueueTimeline) newControllerInfo.playerInfo.timeline).contains(oldCurrentMediaItem);
       if (!oldCurrentMediaItemExistsInNewTimeline) {
@@ -2424,7 +2437,9 @@ import org.checkerframework.checker.initialization.qual.UnderInitialization;
             /* timelineChangeReason= */ PlayerInfo.TIMELINE_CHANGE_REASON_DEFAULT,
             /* playlistMetadata= */ playlistMetadata,
             /* volume= */ 1.0f,
+            /* unmuteVolume= */ 1.0f,
             /* audioAttributes= */ audioAttributes,
+            /* audioSessionId= */ C.AUDIO_SESSION_ID_UNSET,
             /* cueGroup= */ CueGroup.EMPTY_TIME_ZERO,
             /* deviceInfo= */ deviceInfo,
             /* deviceVolume= */ deviceVolume,
@@ -2488,7 +2503,31 @@ import org.checkerframework.checker.initialization.qual.UnderInitialization;
         /* contentBufferedPositionMs= */ bufferedPositionMs);
   }
 
-  // Media 1.0 variables
+  private static void preserveExistingBitmapData(
+      LegacyPlayerInfo oldInfo, LegacyPlayerInfo newInfo) {
+    if (oldInfo.mediaMetadataCompat != null && newInfo.mediaMetadataCompat != null) {
+      newInfo.mediaMetadataCompat.preserveArtworkBitmapData(oldInfo.mediaMetadataCompat);
+    }
+    if (oldInfo.queue != newInfo.queue) {
+      HashMap<Long, QueueItem> oldQueueItems = new HashMap<>();
+      for (int i = 0; i < oldInfo.queue.size(); i++) {
+        QueueItem oldItem = oldInfo.queue.get(i);
+        if (oldItem.getDescription().getIconBitmap() != null) {
+          oldQueueItems.put(oldItem.getQueueId(), oldItem);
+        }
+      }
+      for (int i = 0; i < newInfo.queue.size(); i++) {
+        QueueItem newItem = newInfo.queue.get(i);
+        if (newItem.getDescription().getIconBitmap() != null) {
+          @Nullable QueueItem oldItem = oldQueueItems.get(newItem.getQueueId());
+          if (oldItem != null) {
+            newItem.getDescription().preserveIconBitmapData(oldItem.getDescription());
+          }
+        }
+      }
+    }
+  }
+
   private static final class LegacyPlayerInfo {
 
     @Nullable public final MediaControllerCompat.PlaybackInfo playbackInfoCompat;

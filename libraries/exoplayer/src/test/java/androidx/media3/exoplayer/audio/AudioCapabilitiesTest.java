@@ -16,9 +16,10 @@
 package androidx.media3.exoplayer.audio;
 
 import static android.media.AudioFormat.CHANNEL_OUT_5POINT1;
-import static androidx.media3.common.util.Assertions.checkNotNull;
+import static android.os.Build.VERSION.SDK_INT;
 import static androidx.media3.exoplayer.audio.AudioCapabilities.ALL_SURROUND_ENCODINGS_AND_MAX_CHANNELS;
 import static androidx.media3.exoplayer.audio.AudioCapabilities.getCapabilities;
+import static com.google.common.base.Preconditions.checkNotNull;
 import static com.google.common.truth.Truth.assertThat;
 import static org.robolectric.Shadows.shadowOf;
 
@@ -37,7 +38,6 @@ import androidx.media3.common.AudioAttributes;
 import androidx.media3.common.C;
 import androidx.media3.common.Format;
 import androidx.media3.common.MimeTypes;
-import androidx.media3.common.util.Util;
 import androidx.test.core.app.ApplicationProvider;
 import androidx.test.ext.junit.runners.AndroidJUnit4;
 import com.google.common.collect.ImmutableList;
@@ -80,7 +80,7 @@ public class AudioCapabilitiesTest {
             (UiModeManager)
                 ApplicationProvider.getApplicationContext()
                     .getSystemService(Context.UI_MODE_SERVICE));
-    shadowUiModeManager.currentModeType = Configuration.UI_MODE_TYPE_TELEVISION;
+    shadowUiModeManager.setCurrentModeType(Configuration.UI_MODE_TYPE_TELEVISION);
     int[] channelMasks =
         new int[] {
           AudioFormat.CHANNEL_OUT_MONO,
@@ -139,10 +139,9 @@ public class AudioCapabilitiesTest {
         .isFalse();
   }
 
-  /** {@link AudioDeviceInfo#TYPE_BLUETOOTH_A2DP} is only supported from API 23. */
   @Test
-  @Config(minSdk = 23)
-  public void getCapabilities_withBluetoothA2dpAndHdmiConnectedApi23_returnsDefaultCapabilities() {
+  @Config(minSdk = Config.OLDEST_SDK)
+  public void getCapabilities_withBluetoothA2dpAndHdmiConnected_returnsDefaultCapabilities() {
     setOutputDevices(AudioDeviceInfo.TYPE_BLUETOOTH_A2DP, AudioDeviceInfo.TYPE_HDMI);
     configureHdmiConnection(/* maxChannelCount= */ 6, /* encodings...= */ AudioFormat.ENCODING_AC3);
 
@@ -255,7 +254,7 @@ public class AudioCapabilitiesTest {
   }
 
   // Fallback test for APIs before 33, TYPE_HDMI is only supported from API 23
-  @Config(minSdk = 23, maxSdk = 32)
+  @Config(minSdk = Config.OLDEST_SDK, maxSdk = 32)
   @Test
   public void
       getCapabilities_noBluetoothButGlobalSurroundSettingForced_returnsExternalSurroundCapabilitiesAndIgnoresHdmi() {
@@ -292,9 +291,9 @@ public class AudioCapabilitiesTest {
   }
 
   @Test
-  @Config(minSdk = 23) // TYPE_BLUETOOTH_A2DP detection is supported from API 23.
+  @Config(minSdk = Config.OLDEST_SDK)
   public void
-      getCapabilities_withBluetoothA2dpConnectedAndHdmiAsRoutedDeviceHintApi23_returnsHdmiCapabilities() {
+      getCapabilities_withBluetoothA2dpConnectedAndHdmiAsRoutedDeviceHint_returnsHdmiCapabilities() {
     setOutputDevices(AudioDeviceInfo.TYPE_BLUETOOTH_A2DP, AudioDeviceInfo.TYPE_HDMI);
     configureHdmiConnection(
         /* maxChannelCount= */ 10,
@@ -379,7 +378,7 @@ public class AudioCapabilitiesTest {
   public void
       getEncodingAndChannelConfigForPassthrough_forEAc3JocAndSingleSupportedConfig_returnsCorrectEncodingAndChannelConfig() {
     // Set UI mode to TV.
-    shadowOf(uiModeManager).currentModeType = Configuration.UI_MODE_TYPE_TELEVISION;
+    shadowOf(uiModeManager).setCurrentModeType(Configuration.UI_MODE_TYPE_TELEVISION);
     Format format =
         new Format.Builder()
             .setSampleMimeType(MimeTypes.AUDIO_E_AC3_JOC)
@@ -414,7 +413,7 @@ public class AudioCapabilitiesTest {
   public void
       getEncodingAndChannelConfigForPassthrough_forDifferentAudioAttributes_returnsUnsupported() {
     // Set UI mode to TV.
-    shadowOf(uiModeManager).currentModeType = Configuration.UI_MODE_TYPE_TELEVISION;
+    shadowOf(uiModeManager).setCurrentModeType(Configuration.UI_MODE_TYPE_TELEVISION);
     Format format =
         new Format.Builder()
             .setSampleMimeType(MimeTypes.AUDIO_E_AC3_JOC)
@@ -461,12 +460,10 @@ public class AudioCapabilitiesTest {
   private void setDefaultRoutedDevice(AudioAttributes audioAttributes, int type) {
     shadowOf(audioManager)
         .setAudioDevicesForAttributes(
-            audioAttributes.getAudioAttributesV21().audioAttributes,
+            audioAttributes.getPlatformAudioAttributes(),
             ImmutableList.of(AudioDeviceInfoBuilder.newBuilder().setType(type).build()));
   }
 
-  @SuppressWarnings("UseSdkSuppress") // https://issuetracker.google.com/382253664
-  @RequiresApi(23)
   private void addDirectPlaybackSupport(
       int encoding, int channelMask, AudioAttributes audioAttributes) {
     ShadowAudioTrack.addAllowedNonPcmEncoding(AudioFormat.ENCODING_E_AC3_JOC);
@@ -479,17 +476,17 @@ public class AudioCapabilitiesTest {
             .setSampleRate(48_000)
             .setChannelMask(AudioFormat.CHANNEL_OUT_STEREO)
             .build(),
-        audioAttributes.getAudioAttributesV21().audioAttributes);
+        audioAttributes.getPlatformAudioAttributes());
     ShadowAudioTrack.addDirectPlaybackSupport(
         new AudioFormat.Builder()
             .setEncoding(encoding)
             .setSampleRate(48_000)
             .setChannelMask(channelMask)
             .build(),
-        audioAttributes.getAudioAttributesV21().audioAttributes);
+        audioAttributes.getPlatformAudioAttributes());
     AudioDeviceInfoBuilder deviceInfoBuilder =
         AudioDeviceInfoBuilder.newBuilder().setType(AudioDeviceInfo.TYPE_HDMI);
-    if (Util.SDK_INT >= 33) {
+    if (SDK_INT >= 33) {
       ImmutableList<AudioProfile> expectedProfiles =
           ImmutableList.of(
               AudioProfileBuilder.newBuilder()
@@ -517,8 +514,6 @@ public class AudioCapabilitiesTest {
     ApplicationProvider.getApplicationContext().sendStickyBroadcast(intent);
   }
 
-  @SuppressWarnings("UseSdkSuppress") // https://issuetracker.google.com/382253664
-  @RequiresApi(23)
   private List<Integer> getDeviceTypes(AudioDeviceInfo[] audioDeviceInfos) {
     List<Integer> deviceTypes = new ArrayList<>();
     for (AudioDeviceInfo audioDeviceInfo : audioDeviceInfos) {

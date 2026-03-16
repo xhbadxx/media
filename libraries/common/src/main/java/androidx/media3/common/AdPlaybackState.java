@@ -15,9 +15,9 @@
  */
 package androidx.media3.common;
 
-import static androidx.media3.common.util.Assertions.checkArgument;
-import static androidx.media3.common.util.Assertions.checkNotNull;
-import static androidx.media3.common.util.Assertions.checkState;
+import static com.google.common.base.Preconditions.checkArgument;
+import static com.google.common.base.Preconditions.checkNotNull;
+import static com.google.common.base.Preconditions.checkState;
 import static java.lang.Math.max;
 import static java.lang.annotation.ElementType.FIELD;
 import static java.lang.annotation.ElementType.LOCAL_VARIABLE;
@@ -42,6 +42,7 @@ import java.lang.annotation.RetentionPolicy;
 import java.lang.annotation.Target;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.List;
 import java.util.Objects;
 
 /**
@@ -95,6 +96,9 @@ public final class AdPlaybackState {
     /** The optional IDs of the ads. */
     public final @NullableType String[] ids;
 
+    /** The skip information for each ad in the ad group. */
+    public final @NullableType SkipInfo[] skipInfos;
+
     /**
      * The offset in microseconds which should be added to the content stream when resuming playback
      * after the ad group.
@@ -124,6 +128,7 @@ public final class AdPlaybackState {
           /* contentResumeOffsetUs= */ 0,
           /* isServerSideInserted= */ false,
           /* ids= */ new String[0],
+          /* skipInfos= */ new SkipInfo[0],
           /* isPlaceholder= */ false);
     }
 
@@ -138,8 +143,10 @@ public final class AdPlaybackState {
         long contentResumeOffsetUs,
         boolean isServerSideInserted,
         @NullableType String[] ids,
+        @NullableType SkipInfo[] skipInfos,
         boolean isPlaceholder) {
       checkArgument(states.length == mediaItems.length);
+      checkArgument(states.length == skipInfos.length);
       this.timeUs = timeUs;
       this.count = count;
       this.originalCount = originalCount;
@@ -153,6 +160,7 @@ public final class AdPlaybackState {
         uris[i] = mediaItems[i] == null ? null : checkNotNull(mediaItems[i].localConfiguration).uri;
       }
       this.ids = ids;
+      this.skipInfos = skipInfos;
       this.isPlaceholder = isPlaceholder;
     }
 
@@ -243,6 +251,7 @@ public final class AdPlaybackState {
           && contentResumeOffsetUs == adGroup.contentResumeOffsetUs
           && isServerSideInserted == adGroup.isServerSideInserted
           && Arrays.equals(ids, adGroup.ids)
+          && Arrays.equals(skipInfos, adGroup.skipInfos)
           && isPlaceholder == adGroup.isPlaceholder;
     }
 
@@ -257,6 +266,7 @@ public final class AdPlaybackState {
       result = 31 * result + (int) (contentResumeOffsetUs ^ (contentResumeOffsetUs >>> 32));
       result = 31 * result + (isServerSideInserted ? 1 : 0);
       result = 31 * result + Arrays.hashCode(ids);
+      result = 31 * result + Arrays.hashCode(skipInfos);
       result = 31 * result + (isPlaceholder ? 1 : 0);
       return result;
     }
@@ -274,6 +284,7 @@ public final class AdPlaybackState {
           contentResumeOffsetUs,
           isServerSideInserted,
           ids,
+          skipInfos,
           isPlaceholder);
     }
 
@@ -284,6 +295,7 @@ public final class AdPlaybackState {
       long[] durationsUs = copyDurationsUsWithSpaceForAdCount(this.durationsUs, count);
       @NullableType MediaItem[] mediaItems = Arrays.copyOf(this.mediaItems, count);
       @NullableType String[] ids = Arrays.copyOf(this.ids, count);
+      @NullableType SkipInfo[] skipInfos = copySkipInfosWithSpaceForAdCount(this.skipInfos, count);
       return new AdGroup(
           timeUs,
           count,
@@ -294,6 +306,7 @@ public final class AdPlaybackState {
           contentResumeOffsetUs,
           isServerSideInserted,
           ids,
+          skipInfos,
           isPlaceholder);
     }
 
@@ -323,6 +336,11 @@ public final class AdPlaybackState {
       @NullableType
       String[] ids =
           this.ids.length == states.length ? this.ids : Arrays.copyOf(this.ids, states.length);
+      @NullableType
+      SkipInfo[] skipInfos =
+          this.skipInfos.length == states.length
+              ? this.skipInfos
+              : copySkipInfosWithSpaceForAdCount(this.skipInfos, states.length);
       return new AdGroup(
           timeUs,
           count,
@@ -333,6 +351,7 @@ public final class AdPlaybackState {
           contentResumeOffsetUs,
           isServerSideInserted,
           ids,
+          skipInfos,
           isPlaceholder);
     }
 
@@ -365,6 +384,11 @@ public final class AdPlaybackState {
       String[] ids =
           this.ids.length == states.length ? this.ids : Arrays.copyOf(this.ids, states.length);
       states[index] = state;
+      @NullableType
+      SkipInfo[] skipInfos =
+          this.skipInfos.length == states.length
+              ? this.skipInfos
+              : copySkipInfosWithSpaceForAdCount(this.skipInfos, states.length);
       return new AdGroup(
           timeUs,
           count,
@@ -375,6 +399,7 @@ public final class AdPlaybackState {
           contentResumeOffsetUs,
           isServerSideInserted,
           ids,
+          skipInfos,
           isPlaceholder);
     }
 
@@ -396,6 +421,7 @@ public final class AdPlaybackState {
           contentResumeOffsetUs,
           isServerSideInserted,
           ids,
+          skipInfos,
           isPlaceholder);
     }
 
@@ -412,9 +438,7 @@ public final class AdPlaybackState {
           this.mediaItems.length == states.length
               ? this.mediaItems
               : Arrays.copyOf(this.mediaItems, states.length);
-      @NullableType
-      String[] ids =
-          this.ids.length == states.length ? this.ids : Arrays.copyOf(this.ids, states.length);
+      @NullableType String[] ids = Arrays.copyOf(this.ids, states.length);
       ids[index] = adId;
       return new AdGroup(
           timeUs,
@@ -426,6 +450,40 @@ public final class AdPlaybackState {
           contentResumeOffsetUs,
           isServerSideInserted,
           ids,
+          skipInfos,
+          isPlaceholder);
+    }
+
+    /** Returns a new instance with the specified {@link SkipInfo} for the given ad index. */
+    @CheckResult
+    public AdGroup withAdSkipInfo(SkipInfo skipInfo, @IntRange(from = 0) int index) {
+      @AdState int[] states = copyStatesWithSpaceForAdCount(this.states, index + 1);
+      long[] durationsUs =
+          this.durationsUs.length == states.length
+              ? this.durationsUs
+              : copyDurationsUsWithSpaceForAdCount(this.durationsUs, states.length);
+      @NullableType
+      MediaItem[] mediaItems =
+          this.mediaItems.length == states.length
+              ? this.mediaItems
+              : Arrays.copyOf(this.mediaItems, states.length);
+      @NullableType
+      String[] ids =
+          this.ids.length == states.length ? this.ids : Arrays.copyOf(this.ids, states.length);
+      @NullableType
+      SkipInfo[] skipInfos = copySkipInfosWithSpaceForAdCount(this.skipInfos, states.length);
+      skipInfos[index] = skipInfo;
+      return new AdGroup(
+          timeUs,
+          count,
+          originalCount,
+          states,
+          mediaItems,
+          durationsUs,
+          contentResumeOffsetUs,
+          isServerSideInserted,
+          ids,
+          skipInfos,
           isPlaceholder);
     }
 
@@ -442,6 +500,7 @@ public final class AdPlaybackState {
           contentResumeOffsetUs,
           isServerSideInserted,
           ids,
+          skipInfos,
           isPlaceholder);
     }
 
@@ -458,6 +517,7 @@ public final class AdPlaybackState {
           contentResumeOffsetUs,
           isServerSideInserted,
           ids,
+          skipInfos,
           isPlaceholder);
     }
 
@@ -473,6 +533,7 @@ public final class AdPlaybackState {
           contentResumeOffsetUs,
           isServerSideInserted,
           ids,
+          skipInfos,
           isPlaceholder);
     }
 
@@ -486,6 +547,7 @@ public final class AdPlaybackState {
         newDurationsUs = Arrays.copyOf(durationsUs, newCount);
       }
       @NullableType String[] newIds = Arrays.copyOf(ids, newCount);
+      @NullableType SkipInfo[] newSkipInfos = Arrays.copyOf(skipInfos, newCount);
       return new AdGroup(
           timeUs,
           newCount,
@@ -496,6 +558,7 @@ public final class AdPlaybackState {
           /* contentResumeOffsetUs= */ Util.sum(newDurationsUs),
           isServerSideInserted,
           newIds,
+          newSkipInfos,
           isPlaceholder);
     }
 
@@ -516,6 +579,7 @@ public final class AdPlaybackState {
             contentResumeOffsetUs,
             isServerSideInserted,
             ids,
+            skipInfos,
             isPlaceholder);
       }
       int count = this.states.length;
@@ -535,6 +599,7 @@ public final class AdPlaybackState {
           contentResumeOffsetUs,
           isServerSideInserted,
           ids,
+          skipInfos,
           isPlaceholder);
     }
 
@@ -566,6 +631,7 @@ public final class AdPlaybackState {
           contentResumeOffsetUs,
           isServerSideInserted,
           ids,
+          skipInfos,
           isPlaceholder);
     }
 
@@ -580,6 +646,7 @@ public final class AdPlaybackState {
           contentResumeOffsetUs,
           isServerSideInserted,
           ids,
+          skipInfos,
           isPlaceholder);
     }
 
@@ -594,6 +661,22 @@ public final class AdPlaybackState {
         }
       }
       return C.INDEX_UNSET;
+    }
+
+    /** Returns a safe copy with all array fields copied into the new instance as new arrays. */
+    public AdGroup copy() {
+      return new AdGroup(
+          timeUs,
+          count,
+          originalCount,
+          Arrays.copyOf(states, states.length),
+          Arrays.copyOf(mediaItems, mediaItems.length),
+          Arrays.copyOf(durationsUs, durationsUs.length),
+          contentResumeOffsetUs,
+          isServerSideInserted,
+          Arrays.copyOf(ids, ids.length),
+          Arrays.copyOf(skipInfos, skipInfos.length),
+          isPlaceholder);
     }
 
     @CheckResult
@@ -614,6 +697,15 @@ public final class AdPlaybackState {
       return durationsUs;
     }
 
+    @CheckResult
+    private static @NullableType SkipInfo[] copySkipInfosWithSpaceForAdCount(
+        @NullableType SkipInfo[] skipInfos, int count) {
+      int oldSkipInfoCount = skipInfos.length;
+      int newSkipInfoCount = max(count, oldSkipInfoCount);
+      skipInfos = Arrays.copyOf(skipInfos, newSkipInfoCount);
+      return skipInfos;
+    }
+
     private static final String FIELD_TIME_US = Util.intToStringMaxRadix(0);
     private static final String FIELD_COUNT = Util.intToStringMaxRadix(1);
     private static final String FIELD_URIS = Util.intToStringMaxRadix(2);
@@ -625,6 +717,7 @@ public final class AdPlaybackState {
     @VisibleForTesting static final String FIELD_MEDIA_ITEMS = Util.intToStringMaxRadix(8);
     static final String FIELD_IDS = Util.intToStringMaxRadix(9);
     static final String FIELD_IS_PLACEHOLDER = Util.intToStringMaxRadix(10);
+    private static final String FIELD_SKIP_INFOS = Util.intToStringMaxRadix(11);
 
     // Intentionally assigning deprecated field.
     // putParcelableArrayList actually supports null elements.
@@ -642,6 +735,7 @@ public final class AdPlaybackState {
       bundle.putLong(FIELD_CONTENT_RESUME_OFFSET_US, contentResumeOffsetUs);
       bundle.putBoolean(FIELD_IS_SERVER_SIDE_INSERTED, isServerSideInserted);
       bundle.putStringArrayList(FIELD_IDS, new ArrayList<>(Arrays.asList(ids)));
+      bundle.putParcelableArrayList(FIELD_SKIP_INFOS, getSkipInfoArrayBundles());
       bundle.putBoolean(FIELD_IS_PLACEHOLDER, isPlaceholder);
       return bundle;
     }
@@ -664,6 +758,9 @@ public final class AdPlaybackState {
       long contentResumeOffsetUs = bundle.getLong(FIELD_CONTENT_RESUME_OFFSET_US);
       boolean isServerSideInserted = bundle.getBoolean(FIELD_IS_SERVER_SIDE_INSERTED);
       @Nullable ArrayList<String> ids = bundle.getStringArrayList(FIELD_IDS);
+      @Nullable
+      ArrayList<@NullableType Bundle> skipInfoBundleList =
+          bundle.getParcelableArrayList(FIELD_SKIP_INFOS);
       boolean isPlaceholder = bundle.getBoolean(FIELD_IS_PLACEHOLDER);
       return new AdGroup(
           timeUs,
@@ -675,7 +772,18 @@ public final class AdPlaybackState {
           contentResumeOffsetUs,
           isServerSideInserted,
           ids == null ? new String[0] : ids.toArray(new String[0]),
+          skipInfoBundleList == null
+              ? new SkipInfo[0]
+              : getSkipInfosFromBundleArrays(skipInfoBundleList),
           isPlaceholder);
+    }
+
+    private ArrayList<@NullableType Bundle> getSkipInfoArrayBundles() {
+      ArrayList<@NullableType Bundle> bundles = new ArrayList<>();
+      for (@Nullable SkipInfo skipInfo : skipInfos) {
+        bundles.add(skipInfo == null ? null : skipInfo.toBundle());
+      }
+      return bundles;
     }
 
     private ArrayList<@NullableType Bundle> getMediaItemsArrayBundles() {
@@ -706,6 +814,16 @@ public final class AdPlaybackState {
       } else {
         return new MediaItem[0];
       }
+    }
+
+    private static @NullableType SkipInfo[] getSkipInfosFromBundleArrays(
+        List<@NullableType Bundle> skipInfoBundleList) {
+      @NullableType SkipInfo[] skipInfos = new SkipInfo[skipInfoBundleList.size()];
+      for (int i = 0; i < skipInfoBundleList.size(); i++) {
+        @Nullable Bundle skipInfoBundle = skipInfoBundleList.get(i);
+        skipInfos[i] = skipInfoBundle == null ? null : SkipInfo.fromBundle(skipInfoBundle);
+      }
+      return skipInfos;
     }
   }
 
@@ -753,6 +871,71 @@ public final class AdPlaybackState {
           /* removedAdGroupCount= */ 0);
 
   private static final AdGroup REMOVED_AD_GROUP = new AdGroup(/* timeUs= */ 0).withAdCount(0);
+
+  /** Information about skipping an ad. */
+  public static final class SkipInfo {
+
+    /** The time after which the ad is skippable, in microseconds. */
+    public final long skipOffsetUs;
+
+    /**
+     * The duration for which the skip control should be shown, in microseconds, or {@link
+     * C#TIME_UNSET} if it should be shown until the ad ends.
+     */
+    public final long skipDurationUs;
+
+    /** The identifier for the label to be displayed in the UI, or null if unset. */
+    @Nullable public final String labelId;
+
+    /** Creates an instance. */
+    public SkipInfo(long skipOffsetUs, long skipDurationUs, @Nullable String labelId) {
+      checkArgument(
+          skipOffsetUs != C.TIME_UNSET || skipDurationUs != C.TIME_UNSET || labelId != null);
+      this.skipOffsetUs = skipOffsetUs != C.TIME_UNSET ? skipOffsetUs : 0;
+      this.skipDurationUs = skipDurationUs;
+      this.labelId = labelId;
+    }
+
+    @Override
+    public boolean equals(@Nullable Object o) {
+      if (this == o) {
+        return true;
+      }
+      if (o == null || getClass() != o.getClass()) {
+        return false;
+      }
+      SkipInfo skipInfo = (SkipInfo) o;
+      return skipOffsetUs == skipInfo.skipOffsetUs
+          && skipDurationUs == skipInfo.skipDurationUs
+          && Objects.equals(labelId, skipInfo.labelId);
+    }
+
+    @Override
+    public int hashCode() {
+      return Objects.hash(skipOffsetUs, skipDurationUs, labelId);
+    }
+
+    private static final String FIELD_SKIP_OFFSET_US = Util.intToStringMaxRadix(0);
+    private static final String FIELD_SKIP_DURATION_US = Util.intToStringMaxRadix(1);
+    private static final String FIELD_LABEL_ID = Util.intToStringMaxRadix(2);
+
+    /** Returns a {@link Bundle} representing the information stored in this object. */
+    public Bundle toBundle() {
+      Bundle bundle = new Bundle();
+      bundle.putLong(FIELD_SKIP_OFFSET_US, skipOffsetUs);
+      bundle.putLong(FIELD_SKIP_DURATION_US, skipDurationUs);
+      bundle.putString(FIELD_LABEL_ID, labelId);
+      return bundle;
+    }
+
+    /** Restores a {@code SkipInfo} from a {@link Bundle}. */
+    public static SkipInfo fromBundle(Bundle bundle) {
+      return new SkipInfo(
+          bundle.getLong(FIELD_SKIP_OFFSET_US),
+          bundle.getLong(FIELD_SKIP_DURATION_US),
+          bundle.getString(FIELD_LABEL_ID));
+    }
+  }
 
   /**
    * The opaque identifier for ads with which this instance is associated, or {@code null} if unset.
@@ -865,7 +1048,10 @@ public final class AdPlaybackState {
             || !getAdGroup(index).shouldPlayAdGroup())) {
       index++;
     }
-    return index < adGroupCount ? index : C.INDEX_UNSET;
+    return index < adGroupCount
+            && (periodDurationUs == C.TIME_UNSET || getAdGroup(index).timeUs <= periodDurationUs)
+        ? index
+        : C.INDEX_UNSET;
   }
 
   /** Returns whether the specified ad has been marked as in {@link #AD_STATE_ERROR}. */
@@ -937,6 +1123,20 @@ public final class AdPlaybackState {
     }
     AdGroup[] adGroups = Util.nullSafeArrayCopy(this.adGroups, this.adGroups.length);
     adGroups[adjustedIndex] = this.adGroups[adjustedIndex].withAdCount(adCount);
+    return new AdPlaybackState(
+        adsId, adGroups, adResumePositionUs, contentDurationUs, removedAdGroupCount);
+  }
+
+  /**
+   * Returns an new instance that is a safe deep copy of this instance in case an immutable object
+   * is used for {@link #adsId}.
+   */
+  @CheckResult
+  public AdPlaybackState copy() {
+    AdGroup[] adGroups = new AdGroup[this.adGroups.length];
+    for (int i = 0; i < adGroups.length; i++) {
+      adGroups[i] = this.adGroups[i].copy();
+    }
     return new AdPlaybackState(
         adsId, adGroups, adResumePositionUs, contentDurationUs, removedAdGroupCount);
   }
@@ -1056,6 +1256,19 @@ public final class AdPlaybackState {
         adsId, adGroups, adResumePositionUs, contentDurationUs, removedAdGroupCount);
   }
 
+  /** Returns an instance with the specified {@link SkipInfo} for the given ad. */
+  @CheckResult
+  public AdPlaybackState withAdSkipInfo(
+      @IntRange(from = 0) int adGroupIndex,
+      @IntRange(from = 0) int adIndexInAdGroup,
+      SkipInfo skipInfo) {
+    int adjustedIndex = adGroupIndex - removedAdGroupCount;
+    AdGroup[] adGroups = Util.nullSafeArrayCopy(this.adGroups, this.adGroups.length);
+    adGroups[adjustedIndex] = adGroups[adjustedIndex].withAdSkipInfo(skipInfo, adIndexInAdGroup);
+    return new AdPlaybackState(
+        adsId, adGroups, adResumePositionUs, contentDurationUs, removedAdGroupCount);
+  }
+
   /**
    * Returns an instance with all ads in the specified ad group skipped (except for those already
    * marked as played or in the error state).
@@ -1156,6 +1369,27 @@ public final class AdPlaybackState {
       return new AdPlaybackState(
           adsId, adGroups, adResumePositionUs, contentDurationUs, removedAdGroupCount);
     }
+  }
+
+  /**
+   * Returns an instance with ad groups removed until and excluding the first post roll ad group or
+   * the first ad group with {@link AdGroup#timeUs} larger than the given time, in microseconds.
+   *
+   * <p>Any ad group with {@link AdGroup#timeUs} set to {@link C#TIME_END_OF_SOURCE} is considered a
+   * post roll ad group.
+   */
+  @CheckResult
+  public AdPlaybackState withRemovedAdGroupCountBefore(long timeUs) {
+    int newRemovedAdGroupCount;
+    for (newRemovedAdGroupCount = removedAdGroupCount;
+        newRemovedAdGroupCount < adGroupCount;
+        newRemovedAdGroupCount++) {
+      AdGroup adGroup = getAdGroup(newRemovedAdGroupCount);
+      if (timeUs <= adGroup.timeUs || adGroup.timeUs == C.TIME_END_OF_SOURCE) {
+        break;
+      }
+    }
+    return withRemovedAdGroupCount(newRemovedAdGroupCount);
   }
 
   /**
@@ -1355,6 +1589,7 @@ public final class AdPlaybackState {
               adGroup.contentResumeOffsetUs,
               adGroup.isServerSideInserted,
               adGroup.ids,
+              adGroup.skipInfos,
               adGroup.isPlaceholder);
     }
     return new AdPlaybackState(

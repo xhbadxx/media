@@ -17,10 +17,6 @@
 package androidx.media3.transformer;
 
 import static androidx.annotation.VisibleForTesting.PRIVATE;
-import static androidx.media3.common.util.Assertions.checkArgument;
-import static androidx.media3.common.util.Assertions.checkNotNull;
-import static androidx.media3.common.util.Assertions.checkState;
-import static androidx.media3.common.util.Assertions.checkStateNotNull;
 import static androidx.media3.common.util.Util.contains;
 import static androidx.media3.common.util.Util.usToMs;
 import static androidx.media3.effect.DebugTraceUtil.COMPONENT_MUXER;
@@ -28,11 +24,13 @@ import static androidx.media3.effect.DebugTraceUtil.EVENT_ACCEPTED_INPUT;
 import static androidx.media3.effect.DebugTraceUtil.EVENT_CAN_WRITE_SAMPLE;
 import static androidx.media3.effect.DebugTraceUtil.EVENT_INPUT_ENDED;
 import static androidx.media3.effect.DebugTraceUtil.EVENT_OUTPUT_ENDED;
+import static com.google.common.base.Preconditions.checkArgument;
+import static com.google.common.base.Preconditions.checkNotNull;
+import static com.google.common.base.Preconditions.checkState;
 import static java.lang.Math.max;
 import static java.lang.Math.min;
 import static java.lang.annotation.ElementType.TYPE_USE;
 
-import android.media.MediaCodec.BufferInfo;
 import android.util.SparseArray;
 import androidx.annotation.IntDef;
 import androidx.annotation.IntRange;
@@ -46,6 +44,8 @@ import androidx.media3.common.util.Log;
 import androidx.media3.common.util.Util;
 import androidx.media3.container.NalUnitUtil;
 import androidx.media3.effect.DebugTraceUtil;
+import androidx.media3.muxer.BufferInfo;
+import androidx.media3.muxer.Muxer;
 import androidx.media3.muxer.MuxerException;
 import com.google.common.collect.ImmutableList;
 import java.io.File;
@@ -53,6 +53,7 @@ import java.lang.annotation.Documented;
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 import java.lang.annotation.Target;
+import java.math.RoundingMode;
 import java.nio.ByteBuffer;
 import java.util.Arrays;
 import java.util.List;
@@ -130,7 +131,7 @@ import org.checkerframework.checker.nullness.qual.MonotonicNonNull;
 
     void onSampleWrittenOrDropped();
 
-    void onEnded(long durationMs, long fileSizeBytes);
+    void onEnded(long approximateDurationMs, long fileSizeBytes);
 
     void onError(ExportException exportException);
   }
@@ -149,7 +150,6 @@ import org.checkerframework.checker.nullness.qual.MonotonicNonNull;
   private final boolean dropSamplesBeforeFirstVideoSample;
   private final SparseArray<TrackInfo> trackTypeToInfo;
   @Nullable private final Format appendVideoFormat;
-  private final BufferInfo bufferInfo;
 
   private boolean isReady;
   private boolean isEnded;
@@ -162,6 +162,7 @@ import org.checkerframework.checker.nullness.qual.MonotonicNonNull;
   private boolean muxedPartialVideo;
   private boolean muxedPartialAudio;
   private long firstVideoPresentationTimeUs;
+  private long encoderDelayTimestampOffsetUs;
 
   private volatile int additionalRotationDegrees;
   private volatile int trackCount;
@@ -204,7 +205,6 @@ import org.checkerframework.checker.nullness.qual.MonotonicNonNull;
     previousTrackType = C.TRACK_TYPE_NONE;
     firstVideoPresentationTimeUs = C.TIME_UNSET;
     minEndedTrackTimeUs = Long.MAX_VALUE;
-    bufferInfo = new BufferInfo();
   }
 
   /**
@@ -371,7 +371,8 @@ import org.checkerframework.checker.nullness.qual.MonotonicNonNull;
     @C.TrackType int trackType = MimeTypes.getTrackType(sampleMimeType);
     checkArgument(
         trackType == C.TRACK_TYPE_AUDIO || trackType == C.TRACK_TYPE_VIDEO,
-        "Unsupported track format: " + sampleMimeType);
+        "Unsupported track format: %s",
+        sampleMimeType);
     if (trackType == C.TRACK_TYPE_VIDEO) {
       format =
           format
@@ -464,10 +465,13 @@ import org.checkerframework.checker.nullness.qual.MonotonicNonNull;
     checkState(trackCount > 0, "The track count should be set before the formats are added.");
     checkState(trackTypeToInfo.size() < trackCount, "All track formats have already been added.");
     checkState(
-        !contains(trackTypeToInfo, trackType), "There is already a track of type " + trackType);
+        !contains(trackTypeToInfo, trackType), "There is already a track of type %s", trackType);
 
     ensureMuxerInitialized();
     TrackInfo trackInfo = new TrackInfo(format, muxer.addTrack(format));
+    if (trackType == C.TRACK_TYPE_AUDIO) {
+      maybeCalculateEncoderDelayTimestampOffset(format);
+    }
     trackTypeToInfo.put(trackType, trackInfo);
     DebugTraceUtil.logEvent(
         COMPONENT_MUXER,
@@ -544,39 +548,37 @@ import org.checkerframework.checker.nullness.qual.MonotonicNonNull;
         listener.onSampleWrittenOrDropped();
         return true;
       }
+      presentationTimeUs = presentationTimeUs - encoderDelayTimestampOffsetUs;
     }
     if (!canWriteSample) {
       return false;
     }
 
+    // Set the presentation timestamp of the first video frame to zero so that an edit list is not
+    // added and the first video frame
+    // is presented when playback starts cross-platform.
+    // Only apply this when there is audio track added, i.e. when not recording screen.
     if (trackInfo.sampleCount == 0) {
       if (trackType == C.TRACK_TYPE_VIDEO
           && contains(trackTypeToInfo, C.TRACK_TYPE_AUDIO)
-          && !dropSamplesBeforeFirstVideoSample) {
+          && !dropSamplesBeforeFirstVideoSample
+          && presentationTimeUs > 0) {
         checkState(firstVideoPresentationTimeUs != C.TIME_UNSET);
-        // Set the presentation timestamp of the first video to zero so that the first video frame
-        // is presented when playback starts cross-platform. Moreover, MediaMuxer shifts all video
-        // sample times to zero under API30 and it breaks A/V sync.
-        // Only apply this when there is audio track added, i.e. when not recording screen.
-        // TODO: b/376217254 - Consider removing after switching to InAppMuxer.
-        // TODO: b/376217254 - Remove audio dropping logic, use video frame shifting instead.
-        Log.w(
-            TAG,
-            "Applying workarounds for edit list: shifting only the first video timestamp to zero.");
+        Log.w(TAG, "Shifting first video timestamp from " + presentationTimeUs + " to zero.");
         presentationTimeUs = 0;
       }
       trackInfo.startTimeUs = presentationTimeUs;
     }
     trackInfo.sampleCount++;
     trackInfo.bytesWritten += data.remaining();
-    trackInfo.timeUs = max(trackInfo.timeUs, presentationTimeUs);
+    trackInfo.endTimeUs = max(trackInfo.endTimeUs, presentationTimeUs);
     listener.onSampleWrittenOrDropped();
-    checkStateNotNull(muxer);
-    bufferInfo.set(
-        data.position(),
-        data.remaining(),
-        presentationTimeUs,
-        TransformerUtil.getMediaCodecFlags(isKeyFrame ? C.BUFFER_FLAG_KEY_FRAME : 0));
+    checkNotNull(muxer);
+    BufferInfo bufferInfo =
+        new BufferInfo(
+            presentationTimeUs,
+            /* size= */ data.remaining(),
+            /* flags= */ isKeyFrame ? C.BUFFER_FLAG_KEY_FRAME : 0);
     muxer.writeSampleData(trackInfo.trackId, data, bufferInfo);
 
     DebugTraceUtil.logEvent(
@@ -602,13 +604,13 @@ import org.checkerframework.checker.nullness.qual.MonotonicNonNull;
 
     TrackInfo trackInfo = trackTypeToInfo.get(trackType);
     minEndedTrackTimeUs = max(0, min(minEndedTrackTimeUs, trackInfo.startTimeUs));
-    maxEndedTrackTimeUs = max(maxEndedTrackTimeUs, trackInfo.timeUs);
+    maxEndedTrackTimeUs = max(maxEndedTrackTimeUs, trackInfo.endTimeUs);
     listener.onTrackEnded(
         trackType, trackInfo.format, trackInfo.getAverageBitrate(), trackInfo.sampleCount);
     DebugTraceUtil.logEvent(
         COMPONENT_MUXER,
         EVENT_INPUT_ENDED,
-        trackInfo.timeUs,
+        trackInfo.endTimeUs,
         /* extraFormat= */ "%s",
         /* extraArgs...= */ Util.getTrackTypeString(trackType));
 
@@ -626,16 +628,16 @@ import org.checkerframework.checker.nullness.qual.MonotonicNonNull;
       }
     }
 
-    long durationMs = usToMs(maxEndedTrackTimeUs - minEndedTrackTimeUs);
+    long approximateDurationMs = usToMs(maxEndedTrackTimeUs - minEndedTrackTimeUs);
     if (muxerMode == MUXER_MODE_MUX_PARTIAL
         && muxedPartialVideo
         && (muxedPartialAudio || trackCount == 1)) {
-      listener.onEnded(durationMs, getCurrentOutputSizeBytes());
+      listener.onEnded(approximateDurationMs, getCurrentOutputSizeBytes());
       return;
     }
 
     if (isEnded) {
-      listener.onEnded(durationMs, getCurrentOutputSizeBytes());
+      listener.onEnded(approximateDurationMs, getCurrentOutputSizeBytes());
     }
   }
 
@@ -687,6 +689,17 @@ import org.checkerframework.checker.nullness.qual.MonotonicNonNull;
     }
   }
 
+  private void maybeCalculateEncoderDelayTimestampOffset(Format audioFormat) {
+    if (audioFormat.encoderDelay > 0) {
+      encoderDelayTimestampOffsetUs =
+          Util.scaleLargeValue(
+              audioFormat.encoderDelay,
+              C.MICROS_PER_SECOND,
+              audioFormat.sampleRate,
+              RoundingMode.FLOOR);
+    }
+  }
+
   private boolean canWriteSample(@C.TrackType int trackType, long presentationTimeUs) {
     if (dropSamplesBeforeFirstVideoSample
         && trackType != C.TRACK_TYPE_VIDEO
@@ -701,7 +714,7 @@ import org.checkerframework.checker.nullness.qual.MonotonicNonNull;
     if (trackTypeToInfo.size() == 1) {
       return true;
     }
-    if (presentationTimeUs - trackTypeToInfo.get(trackType).timeUs > MAX_TRACK_WRITE_AHEAD_US) {
+    if (presentationTimeUs - trackTypeToInfo.get(trackType).endTimeUs > MAX_TRACK_WRITE_AHEAD_US) {
       TrackInfo trackInfoWithMinTimeUs = checkNotNull(getTrackInfoWithMinTimeUs(trackTypeToInfo));
       if (MimeTypes.getTrackType(trackInfoWithMinTimeUs.format.sampleMimeType) == trackType) {
         // Unstuck the muxer if consecutive timestamps from the same track are more than
@@ -710,7 +723,7 @@ import org.checkerframework.checker.nullness.qual.MonotonicNonNull;
       }
     }
     if (trackType != previousTrackType) {
-      minTrackTimeUs = checkNotNull(getTrackInfoWithMinTimeUs(trackTypeToInfo)).timeUs;
+      minTrackTimeUs = checkNotNull(getTrackInfoWithMinTimeUs(trackTypeToInfo)).endTimeUs;
     }
     return presentationTimeUs - minTrackTimeUs <= MAX_TRACK_WRITE_AHEAD_US;
   }
@@ -737,7 +750,7 @@ import org.checkerframework.checker.nullness.qual.MonotonicNonNull;
     TrackInfo trackInfoWithMinTimeUs = trackTypeToInfo.valueAt(0);
     for (int i = 1; i < trackTypeToInfo.size(); i++) {
       TrackInfo trackInfo = trackTypeToInfo.valueAt(i);
-      if (trackInfo.timeUs < trackInfoWithMinTimeUs.timeUs) {
+      if (trackInfo.endTimeUs < trackInfoWithMinTimeUs.endTimeUs) {
         trackInfoWithMinTimeUs = trackInfo;
       }
     }
@@ -751,7 +764,7 @@ import org.checkerframework.checker.nullness.qual.MonotonicNonNull;
     public long startTimeUs;
     public long bytesWritten;
     public int sampleCount;
-    public long timeUs;
+    public long endTimeUs;
 
     public TrackInfo(Format format, int trackId) {
       this.format = format;
@@ -763,7 +776,7 @@ import org.checkerframework.checker.nullness.qual.MonotonicNonNull;
      * there is no track data.
      */
     public int getAverageBitrate() {
-      if (timeUs <= 0 || bytesWritten <= 0 || timeUs == startTimeUs) {
+      if (endTimeUs <= 0 || bytesWritten <= 0 || endTimeUs == startTimeUs) {
         return C.RATE_UNSET_INT;
       }
 
@@ -773,7 +786,7 @@ import org.checkerframework.checker.nullness.qual.MonotonicNonNull;
           Util.scaleLargeTimestamp(
               /* timestamp= */ bytesWritten,
               /* multiplier= */ C.BITS_PER_BYTE * C.MICROS_PER_SECOND,
-              /* divisor= */ timeUs - startTimeUs);
+              /* divisor= */ endTimeUs - startTimeUs);
     }
   }
 }

@@ -15,6 +15,9 @@
  */
 package androidx.media3.transformer;
 
+import static androidx.media3.common.C.TRACK_TYPE_AUDIO;
+import static androidx.media3.common.C.TRACK_TYPE_VIDEO;
+import static androidx.media3.test.utils.robolectric.ShadowMediaCodecConfig.CODEC_INFO_RAW;
 import static androidx.media3.transformer.TestUtil.ASSET_URI_PREFIX;
 import static androidx.media3.transformer.TestUtil.FILE_AUDIO_ONLY;
 import static androidx.media3.transformer.TestUtil.FILE_AUDIO_RAW;
@@ -23,24 +26,26 @@ import static androidx.media3.transformer.TestUtil.FILE_AUDIO_RAW_VIDEO;
 import static androidx.media3.transformer.TestUtil.FILE_AUDIO_VIDEO;
 import static androidx.media3.transformer.TestUtil.FILE_AUDIO_VIDEO_INCREASING_TIMESTAMPS_15S;
 import static androidx.media3.transformer.TestUtil.FILE_VIDEO_ONLY;
-import static androidx.media3.transformer.TestUtil.addAudioDecoders;
-import static androidx.media3.transformer.TestUtil.addAudioEncoders;
 import static androidx.media3.transformer.TestUtil.createAudioEffects;
 import static androidx.media3.transformer.TestUtil.createVolumeScalingAudioProcessor;
 import static androidx.media3.transformer.TestUtil.getCompositionDumpFilePath;
 import static androidx.media3.transformer.TestUtil.getDumpFileName;
-import static androidx.media3.transformer.TestUtil.removeEncodersAndDecoders;
 import static com.google.common.truth.Truth.assertThat;
+import static org.junit.Assert.assertThrows;
 
 import android.content.Context;
+import androidx.media3.common.C;
 import androidx.media3.common.MediaItem;
-import androidx.media3.common.MimeTypes;
 import androidx.media3.common.audio.SonicAudioProcessor;
+import androidx.media3.common.audio.SpeedChangingAudioProcessor;
+import androidx.media3.common.audio.SpeedProvider;
 import androidx.media3.test.utils.DumpFileAsserts;
+import androidx.media3.test.utils.TestTransformerBuilder;
+import androidx.media3.test.utils.robolectric.ShadowMediaCodecConfig;
 import androidx.test.core.app.ApplicationProvider;
 import androidx.test.ext.junit.runners.AndroidJUnit4;
-import org.junit.After;
-import org.junit.Before;
+import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableSet;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
@@ -56,16 +61,11 @@ public class CompositionExportTest {
 
   private final Context context = ApplicationProvider.getApplicationContext();
 
-  @Before
-  public void setUp() {
-    addAudioDecoders(MimeTypes.AUDIO_RAW);
-    addAudioEncoders(MimeTypes.AUDIO_AAC);
-  }
-
-  @After
-  public void tearDown() {
-    removeEncodersAndDecoders();
-  }
+  @Rule
+  public ShadowMediaCodecConfig shadowMediaCodecConfig =
+      ShadowMediaCodecConfig.withCodecs(
+          /* decoders= */ ImmutableList.of(CODEC_INFO_RAW),
+          /* encoders= */ ImmutableList.of(CODEC_INFO_RAW));
 
   @Test
   public void start_audioVideoTransmuxedFromDifferentSequences_matchesSingleSequenceResult()
@@ -81,8 +81,8 @@ public class CompositionExportTest {
         new EditedMediaItem.Builder(mediaItem).setRemoveAudio(true).build();
     Composition composition =
         new Composition.Builder(
-                new EditedMediaItemSequence.Builder(audioEditedMediaItem).build(),
-                new EditedMediaItemSequence.Builder(videoEditedMediaItem).build())
+                EditedMediaItemSequence.withAudioFrom(ImmutableList.of(audioEditedMediaItem)),
+                EditedMediaItemSequence.withVideoFrom(ImmutableList.of(videoEditedMediaItem)))
             .setTransmuxAudio(true)
             .setTransmuxVideo(true)
             .build();
@@ -101,13 +101,15 @@ public class CompositionExportTest {
     EditedMediaItem audioEditedMediaItem =
         new EditedMediaItem.Builder(MediaItem.fromUri(ASSET_URI_PREFIX + FILE_AUDIO_ONLY)).build();
     EditedMediaItemSequence loopingAudioSequence =
-        new EditedMediaItemSequence.Builder(audioEditedMediaItem).setIsLooping(true).build();
+        new EditedMediaItemSequence.Builder(ImmutableSet.of(TRACK_TYPE_AUDIO))
+            .addItem(audioEditedMediaItem)
+            .setIsLooping(true)
+            .build();
     EditedMediaItem videoEditedMediaItem =
         new EditedMediaItem.Builder(MediaItem.fromUri(ASSET_URI_PREFIX + FILE_VIDEO_ONLY)).build();
     EditedMediaItemSequence videoSequence =
-        new EditedMediaItemSequence.Builder(
-                videoEditedMediaItem, videoEditedMediaItem, videoEditedMediaItem)
-            .build();
+        EditedMediaItemSequence.withVideoFrom(
+            ImmutableList.of(videoEditedMediaItem, videoEditedMediaItem, videoEditedMediaItem));
     Composition composition =
         new Composition.Builder(loopingAudioSequence, videoSequence)
             .setTransmuxAudio(true)
@@ -136,13 +138,15 @@ public class CompositionExportTest {
     EditedMediaItem audioEditedMediaItem =
         new EditedMediaItem.Builder(MediaItem.fromUri(ASSET_URI_PREFIX + FILE_AUDIO_ONLY)).build();
     EditedMediaItemSequence audioSequence =
-        new EditedMediaItemSequence.Builder(
-                audioEditedMediaItem, audioEditedMediaItem, audioEditedMediaItem)
-            .build();
+        EditedMediaItemSequence.withAudioFrom(
+            ImmutableList.of(audioEditedMediaItem, audioEditedMediaItem, audioEditedMediaItem));
     EditedMediaItem videoEditedMediaItem =
         new EditedMediaItem.Builder(MediaItem.fromUri(ASSET_URI_PREFIX + FILE_VIDEO_ONLY)).build();
     EditedMediaItemSequence loopingVideoSequence =
-        new EditedMediaItemSequence.Builder(videoEditedMediaItem).setIsLooping(true).build();
+        new EditedMediaItemSequence.Builder(ImmutableSet.of(TRACK_TYPE_VIDEO))
+            .addItem(videoEditedMediaItem)
+            .setIsLooping(true)
+            .build();
     Composition composition =
         new Composition.Builder(audioSequence, loopingVideoSequence)
             .setTransmuxAudio(true)
@@ -169,7 +173,8 @@ public class CompositionExportTest {
     Transformer transformer =
         new TestTransformerBuilder(context).setMuxerFactory(muxerFactory).build();
     EditedMediaItemSequence loopingAudioSequence =
-        new EditedMediaItemSequence.Builder(
+        new EditedMediaItemSequence.Builder(ImmutableSet.of(TRACK_TYPE_AUDIO))
+            .addItem(
                 new EditedMediaItem.Builder(MediaItem.fromUri(ASSET_URI_PREFIX + FILE_AUDIO_RAW))
                     .build())
             .setIsLooping(true)
@@ -180,18 +185,48 @@ public class CompositionExportTest {
             .setRemoveAudio(true)
             .build();
     EditedMediaItemSequence videoSequence =
-        new EditedMediaItemSequence.Builder(videoEditedMediaItem, videoEditedMediaItem).build();
+        EditedMediaItemSequence.withVideoFrom(
+            ImmutableList.of(videoEditedMediaItem, videoEditedMediaItem));
     Composition composition =
         new Composition.Builder(loopingAudioSequence, videoSequence).setTransmuxVideo(true).build();
 
     transformer.start(composition, outputDir.newFile().getPath());
     ExportResult exportResult = TransformerTestRunner.runLooper(transformer);
 
-    assertThat(exportResult.durationMs).isEqualTo(31_053);
+    // TODO: b/443998866 - Use MetadataRetriever to get exact duration.
+    assertThat(exportResult.approximateDurationMs).isEqualTo(31_065);
     // FILE_AUDIO_RAW duration is 1000ms. Input 32 times to cover the 31_053ms duration.
     assertThat(exportResult.processedInputs).hasSize(34);
     assertThat(exportResult.channelCount).isEqualTo(1);
-    assertThat(exportResult.fileSizeBytes).isEqualTo(5292662);
+    assertThat(exportResult.fileSizeBytes).isEqualTo(5_692_714);
+  }
+
+  @Test
+  public void start_longerLoopingSequence_hasNonLoopingSequenceDuration() throws Exception {
+    Transformer transformer = new TestTransformerBuilder(context).build();
+    EditedMediaItem audioEditedMediaItem =
+        new EditedMediaItem.Builder(MediaItem.fromUri(ASSET_URI_PREFIX + FILE_AUDIO_ONLY)).build();
+    EditedMediaItemSequence loopingAudioSequence =
+        new EditedMediaItemSequence.Builder(ImmutableSet.of(TRACK_TYPE_AUDIO))
+            .addItems(audioEditedMediaItem, audioEditedMediaItem)
+            .setIsLooping(true)
+            .build();
+    EditedMediaItem videoEditedMediaItem =
+        new EditedMediaItem.Builder(MediaItem.fromUri(ASSET_URI_PREFIX + FILE_VIDEO_ONLY)).build();
+    EditedMediaItemSequence videoSequence =
+        EditedMediaItemSequence.withVideoFrom(ImmutableList.of(videoEditedMediaItem));
+    Composition composition =
+        new Composition.Builder(loopingAudioSequence, videoSequence)
+            .setTransmuxAudio(true)
+            .setTransmuxVideo(true)
+            .build();
+
+    transformer.start(composition, outputDir.newFile().getPath());
+    ExportResult exportResult = TransformerTestRunner.runLooper(transformer);
+
+    // TODO: b/443998866 - Use MetadataRetriever to get exact duration.
+    // Video file duration is 1001 ms and audio file duration is 1044 ms.
+    assertThat(exportResult.approximateDurationMs).isLessThan(1_001);
   }
 
   @Test
@@ -203,8 +238,8 @@ public class CompositionExportTest {
         new EditedMediaItem.Builder(MediaItem.fromUri(ASSET_URI_PREFIX + FILE_AUDIO_RAW)).build();
     Composition composition =
         new Composition.Builder(
-                new EditedMediaItemSequence.Builder(rawAudioEditedMediaItem).build(),
-                new EditedMediaItemSequence.Builder(rawAudioEditedMediaItem).build())
+                EditedMediaItemSequence.withAudioFrom(ImmutableList.of(rawAudioEditedMediaItem)),
+                EditedMediaItemSequence.withAudioFrom(ImmutableList.of(rawAudioEditedMediaItem)))
             .build();
 
     transformer.start(composition, outputDir.newFile().getPath());
@@ -233,8 +268,9 @@ public class CompositionExportTest {
             .build();
     Composition composition =
         new Composition.Builder(
-                new EditedMediaItemSequence.Builder(audioVideoEditedMediaItem).build(),
-                new EditedMediaItemSequence.Builder(audioEditedMediaItem).build())
+                EditedMediaItemSequence.withAudioAndVideoFrom(
+                    ImmutableList.of(audioVideoEditedMediaItem)),
+                EditedMediaItemSequence.withAudioFrom(ImmutableList.of(audioEditedMediaItem)))
             .setTransmuxVideo(true)
             .build();
 
@@ -265,15 +301,18 @@ public class CompositionExportTest {
             .setRemoveVideo(true)
             .build();
     EditedMediaItemSequence loopingMutedAudioSequence =
-        new EditedMediaItemSequence.Builder(mutedAudioEditedMediaItem).setIsLooping(true).build();
+        new EditedMediaItemSequence.Builder(ImmutableSet.of(TRACK_TYPE_AUDIO))
+            .addItem(mutedAudioEditedMediaItem)
+            .setIsLooping(true)
+            .build();
 
     transformer.start(
         new Composition.Builder(
-                new EditedMediaItemSequence.Builder(
+                EditedMediaItemSequence.withAudioAndVideoFrom(
+                    ImmutableList.of(
                         audioVideoEditedMediaItem,
                         audioVideoEditedMediaItem,
-                        audioVideoEditedMediaItem)
-                    .build(),
+                        audioVideoEditedMediaItem)),
                 loopingMutedAudioSequence)
             .setTransmuxVideo(true)
             .build(),
@@ -296,15 +335,18 @@ public class CompositionExportTest {
         new EditedMediaItem.Builder(MediaItem.fromUri(ASSET_URI_PREFIX + FILE_AUDIO_RAW_VIDEO))
             .build();
     EditedMediaItemSequence audioVideoSequence =
-        new EditedMediaItemSequence.Builder(
-                audioVideoEditedMediaItem, audioVideoEditedMediaItem, audioVideoEditedMediaItem)
-            .build();
+        EditedMediaItemSequence.withAudioAndVideoFrom(
+            ImmutableList.of(
+                audioVideoEditedMediaItem, audioVideoEditedMediaItem, audioVideoEditedMediaItem));
     EditedMediaItem audioEditedMediaItem =
         new EditedMediaItem.Builder(MediaItem.fromUri(ASSET_URI_PREFIX + FILE_AUDIO_RAW_VIDEO))
             .setRemoveVideo(true)
             .build();
     EditedMediaItemSequence loopingAudioSequence =
-        new EditedMediaItemSequence.Builder(audioEditedMediaItem).setIsLooping(true).build();
+        new EditedMediaItemSequence.Builder(ImmutableSet.of(TRACK_TYPE_AUDIO))
+            .addItem(audioEditedMediaItem)
+            .setIsLooping(true)
+            .build();
     Composition composition =
         new Composition.Builder(audioVideoSequence, loopingAudioSequence)
             .setTransmuxVideo(true)
@@ -335,7 +377,8 @@ public class CompositionExportTest {
     MediaItem mediaItem = MediaItem.fromUri(ASSET_URI_PREFIX + FILE_AUDIO_RAW);
     EditedMediaItem editedMediaItem = new EditedMediaItem.Builder(mediaItem).build();
     Composition composition =
-        new Composition.Builder(new EditedMediaItemSequence.Builder(editedMediaItem).build())
+        new Composition.Builder(
+                EditedMediaItemSequence.withAudioFrom(ImmutableList.of(editedMediaItem)))
             .setEffects(createAudioEffects(sonicAudioProcessor))
             .build();
 
@@ -359,8 +402,8 @@ public class CompositionExportTest {
         new EditedMediaItem.Builder(MediaItem.fromUri(ASSET_URI_PREFIX + FILE_AUDIO_RAW)).build();
     Composition composition =
         new Composition.Builder(
-                new EditedMediaItemSequence.Builder(rawAudioEditedMediaItem).build(),
-                new EditedMediaItemSequence.Builder(rawAudioEditedMediaItem).build())
+                EditedMediaItemSequence.withAudioFrom(ImmutableList.of(rawAudioEditedMediaItem)),
+                EditedMediaItemSequence.withAudioFrom(ImmutableList.of(rawAudioEditedMediaItem)))
             .setEffects(createAudioEffects(sonicAudioProcessor))
             .build();
 
@@ -399,8 +442,8 @@ public class CompositionExportTest {
         new EditedMediaItem.Builder(MediaItem.fromUri(ASSET_URI_PREFIX + FILE_AUDIO_RAW)).build();
     Composition composition =
         new Composition.Builder(
-                new EditedMediaItemSequence.Builder(audioItem300ms).build(),
-                new EditedMediaItemSequence.Builder(audioItem1000ms).build())
+                EditedMediaItemSequence.withAudioFrom(ImmutableList.of(audioItem300ms)),
+                EditedMediaItemSequence.withAudioFrom(ImmutableList.of(audioItem1000ms)))
             .build();
 
     transformer.start(composition, outputDir.newFile().getPath());
@@ -432,8 +475,8 @@ public class CompositionExportTest {
             .build();
     Composition composition =
         new Composition.Builder(
-                new EditedMediaItemSequence.Builder(audioItem1000ms).build(),
-                new EditedMediaItemSequence.Builder(audioItem300ms).build())
+                EditedMediaItemSequence.withAudioFrom(ImmutableList.of(audioItem1000ms)),
+                EditedMediaItemSequence.withAudioFrom(ImmutableList.of(audioItem300ms)))
             .build();
 
     transformer.start(composition, outputDir.newFile().getPath());
@@ -454,8 +497,10 @@ public class CompositionExportTest {
         new EditedMediaItem.Builder(MediaItem.fromUri(ASSET_URI_PREFIX + FILE_AUDIO_RAW)).build();
     Composition composition =
         new Composition.Builder(
-                new EditedMediaItemSequence.Builder().addGap(1_000_000).build(),
-                new EditedMediaItemSequence.Builder(audioItem1000ms).build())
+                new EditedMediaItemSequence.Builder(ImmutableSet.of(TRACK_TYPE_AUDIO))
+                    .addGap(1_000_000)
+                    .build(),
+                EditedMediaItemSequence.withAudioFrom(ImmutableList.of(audioItem1000ms)))
             .build();
 
     transformer.start(composition, outputDir.newFile().getPath());
@@ -482,11 +527,11 @@ public class CompositionExportTest {
         new EditedMediaItem.Builder(MediaItem.fromUri(ASSET_URI_PREFIX + FILE_AUDIO_RAW)).build();
     Composition composition =
         new Composition.Builder(
-                new EditedMediaItemSequence.Builder()
+                new EditedMediaItemSequence.Builder(ImmutableSet.of(TRACK_TYPE_AUDIO))
                     .addGap(100_000)
                     .addItem(audioEditedMediaItem)
                     .build(),
-                new EditedMediaItemSequence.Builder(otherAudioEditedMediaItem).build())
+                EditedMediaItemSequence.withAudioFrom(ImmutableList.of(otherAudioEditedMediaItem)))
             .build();
 
     transformer.start(composition, outputDir.newFile().getPath());
@@ -524,11 +569,11 @@ public class CompositionExportTest {
         new EditedMediaItem.Builder(MediaItem.fromUri(ASSET_URI_PREFIX + FILE_AUDIO_RAW)).build();
     Composition composition =
         new Composition.Builder(
-                new EditedMediaItemSequence.Builder()
+                new EditedMediaItemSequence.Builder(ImmutableSet.of(TRACK_TYPE_AUDIO))
                     .addItem(audioItem300ms)
                     .addGap(700_000)
                     .build(),
-                new EditedMediaItemSequence.Builder(audioItem1000ms).build())
+                EditedMediaItemSequence.withAudioFrom(ImmutableList.of(audioItem1000ms)))
             .build();
 
     transformer.start(composition, outputDir.newFile().getPath());
@@ -560,8 +605,9 @@ public class CompositionExportTest {
             .build();
     Composition composition =
         new Composition.Builder(
-                new EditedMediaItemSequence.Builder(audioVideoEditedMediaItem).build(),
-                new EditedMediaItemSequence.Builder()
+                EditedMediaItemSequence.withAudioAndVideoFrom(
+                    ImmutableList.of(audioVideoEditedMediaItem)),
+                new EditedMediaItemSequence.Builder(ImmutableSet.of(TRACK_TYPE_AUDIO))
                     .addGap(200_000)
                     .addItem(audioEditedMediaItem)
                     .build())
@@ -614,8 +660,9 @@ public class CompositionExportTest {
             .build();
     Composition composition =
         new Composition.Builder(
-                new EditedMediaItemSequence.Builder(audioVideoEditedMediaItem).build(),
-                new EditedMediaItemSequence.Builder()
+                EditedMediaItemSequence.withAudioAndVideoFrom(
+                    ImmutableList.of(audioVideoEditedMediaItem)),
+                new EditedMediaItemSequence.Builder(ImmutableSet.of(TRACK_TYPE_AUDIO))
                     .addItem(audio300msEditedMediaItem)
                     .addGap(200_000)
                     .addItem(audio500msEditedMediaItem)
@@ -656,8 +703,9 @@ public class CompositionExportTest {
             .build();
     Composition composition =
         new Composition.Builder(
-                new EditedMediaItemSequence.Builder(audioVideoEditedMediaItem).build(),
-                new EditedMediaItemSequence.Builder()
+                EditedMediaItemSequence.withAudioAndVideoFrom(
+                    ImmutableList.of(audioVideoEditedMediaItem)),
+                new EditedMediaItemSequence.Builder(ImmutableSet.of(TRACK_TYPE_AUDIO))
                     .addItem(audioEditedMediaItem)
                     .addGap(100_000)
                     .build())
@@ -688,15 +736,18 @@ public class CompositionExportTest {
         new EditedMediaItem.Builder(MediaItem.fromUri(ASSET_URI_PREFIX + FILE_AUDIO_RAW)).build();
     Composition composition =
         new Composition.Builder(
-                new EditedMediaItemSequence.Builder(audioItem1000ms).build(),
-                new EditedMediaItemSequence.Builder().addGap(1_000_000).build())
+                EditedMediaItemSequence.withAudioFrom(ImmutableList.of(audioItem1000ms)),
+                new EditedMediaItemSequence.Builder(ImmutableSet.of(TRACK_TYPE_AUDIO))
+                    .addGap(1_000_000)
+                    .build())
             .build();
 
     transformer.start(composition, outputDir.newFile().getPath());
     TransformerTestRunner.runLooper(transformer);
-
     DumpFileAsserts.assertOutput(
-        context, muxerFactory.getCreatedMuxer(), getDumpFileName(FILE_AUDIO_RAW));
+        context,
+        muxerFactory.getCreatedMuxer(),
+        getCompositionDumpFilePath("seq-" + getFileName(FILE_AUDIO_RAW) + "+seq-gap_1000ms"));
   }
 
   @Test
@@ -706,8 +757,12 @@ public class CompositionExportTest {
         new TestTransformerBuilder(context).setMuxerFactory(muxerFactory).build();
     Composition composition =
         new Composition.Builder(
-                new EditedMediaItemSequence.Builder().addGap(500_000).build(),
-                new EditedMediaItemSequence.Builder().addGap(500_000).build())
+                new EditedMediaItemSequence.Builder(ImmutableSet.of(TRACK_TYPE_AUDIO))
+                    .addGap(500_000)
+                    .build(),
+                new EditedMediaItemSequence.Builder(ImmutableSet.of(TRACK_TYPE_AUDIO))
+                    .addGap(500_000)
+                    .build())
             .build();
 
     transformer.start(composition, outputDir.newFile().getPath());
@@ -715,6 +770,59 @@ public class CompositionExportTest {
 
     DumpFileAsserts.assertOutput(
         context, muxerFactory.getCreatedMuxer(), getDumpFileName("gap", "500ms"));
+  }
+
+  @Test
+  public void resume_withSpeedChangingEffects_throws() {
+    SpeedProvider provider =
+        new SpeedProvider() {
+          @Override
+          public float getSpeed(long timeUs) {
+            return 2f;
+          }
+
+          @Override
+          public long getNextSpeedChangeTimeUs(long timeUs) {
+            return C.TIME_UNSET;
+          }
+        };
+    Effects speedChangingEffects =
+        new Effects(
+            ImmutableList.of(new SpeedChangingAudioProcessor(provider)), ImmutableList.of());
+    EditedMediaItem item = new EditedMediaItem.Builder(MediaItem.EMPTY).build();
+    EditedMediaItem itemWithSpeedProvider = item.buildUpon().setSpeed(provider).build();
+    Transformer transformer = new Transformer.Builder(context).build();
+    EditedMediaItem itemWithEffects = item.buildUpon().setEffects(speedChangingEffects).build();
+
+    assertThrows(
+        IllegalArgumentException.class,
+        () ->
+            transformer.resume(
+                new Composition.Builder(
+                        new EditedMediaItemSequence.Builder(itemWithSpeedProvider).build())
+                    .build(),
+                /* outputFilePath= */ "fakePath",
+                /* oldFilePath= */ "fakePath"));
+
+    assertThrows(
+        IllegalArgumentException.class,
+        () ->
+            transformer.resume(
+                new Composition.Builder(
+                        new EditedMediaItemSequence.Builder(itemWithEffects).build())
+                    .build(),
+                /* outputFilePath= */ "fakePath",
+                /* oldFilePath= */ "fakePath"));
+
+    assertThrows(
+        IllegalArgumentException.class,
+        () ->
+            transformer.resume(
+                new Composition.Builder(new EditedMediaItemSequence.Builder(item).build())
+                    .setEffects(speedChangingEffects)
+                    .build(),
+                /* outputFilePath= */ "fakePath",
+                /* oldFilePath= */ "fakePath"));
   }
 
   private static String getFileName(String filePath) {

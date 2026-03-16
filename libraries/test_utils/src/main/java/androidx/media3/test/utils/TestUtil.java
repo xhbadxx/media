@@ -15,8 +15,10 @@
  */
 package androidx.media3.test.utils;
 
-import static androidx.media3.common.util.Assertions.checkNotNull;
-import static androidx.media3.common.util.Assertions.checkState;
+import static android.os.Build.VERSION.SDK_INT;
+import static androidx.media3.common.util.Util.putInt24;
+import static com.google.common.base.Preconditions.checkNotNull;
+import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.truth.Truth.assertThat;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
@@ -29,15 +31,19 @@ import android.graphics.Color;
 import android.media.MediaCodec;
 import android.net.Uri;
 import android.os.Bundle;
+import android.os.Looper;
 import android.os.Parcel;
+import android.view.SurfaceView;
 import androidx.annotation.Nullable;
 import androidx.media3.common.C;
 import androidx.media3.common.Format;
 import androidx.media3.common.MediaItem;
 import androidx.media3.common.MediaMetadata;
+import androidx.media3.common.Player;
 import androidx.media3.common.StreamKey;
 import androidx.media3.common.Timeline;
 import androidx.media3.common.TrackGroup;
+import androidx.media3.common.audio.AudioProcessor;
 import androidx.media3.common.util.NullableType;
 import androidx.media3.common.util.UnstableApi;
 import androidx.media3.common.util.Util;
@@ -46,7 +52,7 @@ import androidx.media3.database.DefaultDatabaseProvider;
 import androidx.media3.datasource.DataSource;
 import androidx.media3.datasource.DataSourceUtil;
 import androidx.media3.datasource.DataSpec;
-import androidx.media3.exoplayer.MetadataRetriever;
+import androidx.media3.exoplayer.audio.TeeAudioProcessor;
 import androidx.media3.exoplayer.source.TrackGroupArray;
 import androidx.media3.extractor.DefaultExtractorInput;
 import androidx.media3.extractor.Extractor;
@@ -54,6 +60,8 @@ import androidx.media3.extractor.ExtractorInput;
 import androidx.media3.extractor.PositionHolder;
 import androidx.media3.extractor.SeekMap;
 import androidx.media3.extractor.metadata.MetadataInputBuffer;
+import androidx.media3.inspector.MetadataRetriever;
+import androidx.test.platform.app.InstrumentationRegistry;
 import com.google.common.base.Function;
 import com.google.common.collect.BoundType;
 import com.google.common.collect.ImmutableList;
@@ -78,6 +86,7 @@ import java.lang.reflect.Modifier;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.FloatBuffer;
+import java.nio.IntBuffer;
 import java.nio.ShortBuffer;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -90,7 +99,10 @@ import java.util.Random;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import org.checkerframework.checker.nullness.qual.NonNull;
+import org.junit.function.ThrowingRunnable;
 import org.mockito.Mockito;
 
 /** Utility methods for tests. */
@@ -139,6 +151,15 @@ public class TestUtil {
     return source;
   }
 
+  /** Returns an array of random floats between {@code [-1; 1]} with the specified length. */
+  public static float[] buildFloatTestSamples(int length, Random random) {
+    float[] source = new float[length];
+    for (int i = 0; i < length; i++) {
+      source[i] = (random.nextFloat() * 2f) - 1f;
+    }
+    return source;
+  }
+
   /**
    * Generates a random string with the specified length.
    *
@@ -168,11 +189,37 @@ public class TestUtil {
     return array;
   }
 
+  /** Gets the underlying data of the {@link ByteBuffer} as a {@code byte[]}. */
+  public static byte[] createByteArray(ByteBuffer byteBuffer) {
+    byte[] content = new byte[byteBuffer.remaining()];
+    byteBuffer.get(content);
+    return content;
+  }
+
   /** Gets the underlying data of the {@link ByteBuffer} as a {@code float[]}. */
   public static float[] createFloatArray(ByteBuffer byteBuffer) {
     FloatBuffer buffer = byteBuffer.asFloatBuffer();
     float[] content = new float[buffer.remaining()];
     buffer.get(content);
+    return content;
+  }
+
+  /** Gets the underlying data of the {@link ByteBuffer} as a {@code int[]}. */
+  public static int[] createIntArray(ByteBuffer byteBuffer) {
+    IntBuffer buffer = byteBuffer.asIntBuffer();
+    int[] content = new int[buffer.remaining()];
+    buffer.get(content);
+    return content;
+  }
+
+  /**
+   * Gets the underlying data of the {@link ByteBuffer} as 24-bit integer values in {@code int[]}.
+   */
+  public static int[] createInt24Array(ByteBuffer byteBuffer) {
+    int[] content = new int[byteBuffer.remaining() / 3];
+    for (int i = 0; i < content.length; i++) {
+      content[i] = Util.getInt24(byteBuffer, byteBuffer.position() + i * 3);
+    }
     return content;
   }
 
@@ -193,9 +240,34 @@ public class TestUtil {
   }
 
   /** Creates a {@link ByteBuffer} containing the {@code data}. */
+  public static ByteBuffer createByteBuffer(int[] data) {
+    ByteBuffer buffer = ByteBuffer.allocateDirect(data.length * 4).order(ByteOrder.nativeOrder());
+    buffer.asIntBuffer().put(data);
+    return buffer;
+  }
+
+  /** Creates a {@link ByteBuffer} containing the {@code data}. */
   public static ByteBuffer createByteBuffer(short[] data) {
     ByteBuffer buffer = ByteBuffer.allocateDirect(data.length * 2).order(ByteOrder.nativeOrder());
     buffer.asShortBuffer().put(data);
+    return buffer;
+  }
+
+  /** Creates a {@link ByteBuffer} containing the {@code data}. */
+  public static ByteBuffer createByteBuffer(byte[] data) {
+    ByteBuffer buffer = ByteBuffer.allocateDirect(data.length).order(ByteOrder.nativeOrder());
+    buffer.put(data);
+    buffer.rewind();
+    return buffer;
+  }
+
+  /** Creates a {@link ByteBuffer} with the contents of {@code data} as 24-bit integers. */
+  public static ByteBuffer createInt24ByteBuffer(int[] data) {
+    ByteBuffer buffer = ByteBuffer.allocateDirect(data.length * 3).order(ByteOrder.nativeOrder());
+    for (int i : data) {
+      putInt24(buffer, i);
+    }
+    buffer.rewind();
     return buffer;
   }
 
@@ -406,13 +478,16 @@ public class TestUtil {
       Context context, String fileUri, @C.TrackType int trackType)
       throws ExecutionException, InterruptedException {
     checkState(new File(fileUri).length() > 0);
-    TrackGroupArray trackGroupArray;
-    trackGroupArray = MetadataRetriever.retrieveMetadata(context, MediaItem.fromUri(fileUri)).get();
-    for (int i = 0; i < trackGroupArray.length; i++) {
-      TrackGroup trackGroup = trackGroupArray.get(i);
-      if (trackGroup.type == trackType) {
-        checkState(trackGroup.length == 1);
-        return trackGroup.getFormat(0);
+
+    try (MetadataRetriever retriever =
+        new MetadataRetriever.Builder(context, MediaItem.fromUri(fileUri)).build()) {
+      TrackGroupArray trackGroups = retriever.retrieveTrackGroups().get();
+      for (int i = 0; i < trackGroups.length; i++) {
+        TrackGroup trackGroup = trackGroups.get(i);
+        if (trackGroup.type == trackType) {
+          checkState(trackGroup.length == 1);
+          return trackGroup.getFormat(0);
+        }
       }
     }
     throw new IllegalStateException("Couldn't find track");
@@ -937,6 +1012,117 @@ public class TestUtil {
     }
     buffer.rewind();
     return buffer;
+  }
+
+  /** Returns an {@link AudioProcessor} that counts the number of bytes input to it. */
+  public static AudioProcessor createByteCountingAudioProcessor(AtomicInteger byteCount) {
+    return new TeeAudioProcessor(
+        new TeeAudioProcessor.AudioBufferSink() {
+          @Override
+          public void flush(int sampleRateHz, int channelCount, @C.PcmEncoding int encoding) {}
+
+          @Override
+          public void handleBuffer(ByteBuffer buffer) {
+            byteCount.addAndGet(buffer.remaining());
+          }
+        });
+  }
+
+  /**
+   * Creates a {@link SurfaceView} for tests where the creation is moved to the main thread if run
+   * on a non-Looper thread. This is needed on API &lt; 26 where {@link SurfaceView} cannot be
+   * created on a non-Looper thread.
+   */
+  public static SurfaceView createSurfaceView(Context context) {
+    if (SDK_INT >= 26 || Looper.myLooper() != null) {
+      return new SurfaceView(context);
+    }
+    AtomicReference<SurfaceView> surfaceView = new AtomicReference<>();
+    InstrumentationRegistry.getInstrumentation()
+        .runOnMainSync(() -> surfaceView.set(new SurfaceView(context)));
+    return surfaceView.get();
+  }
+
+  /**
+   * Repeats the potentially flaky test multiple times if needed.
+   *
+   * <p>Only use this method for tests with inherent randomness or systems-under-test that are not
+   * fully controllable, and where the reason for the the flakiness can be explained. Don't use this
+   * method if the test should always pass reliably.
+   *
+   * @param maxRepetitions The maximum number of repetitions before failing the test.
+   * @param testImpl The test implementation.
+   */
+  public static void repeatFlakyTest(int maxRepetitions, ThrowingRunnable testImpl) {
+    for (int i = 0; i < maxRepetitions; i++) {
+      try {
+        testImpl.run();
+        break;
+      } catch (Throwable e) {
+        if (i == maxRepetitions - 1) {
+          Util.sneakyThrow(e);
+        }
+      }
+    }
+  }
+
+  /**
+   * Returns an {@link ImmutableList} with the {@linkplain Player.Event Events} contained in {@code
+   * events}. The contents of the list are in matching order with the {@linkplain Player.Event
+   * Events} returned by {@link Player.Events#get(int)}.
+   */
+  public static ImmutableList<@Player.Event Integer> getEventsAsList(Player.Events events) {
+    ImmutableList.Builder<@Player.Event Integer> list = new ImmutableList.Builder<>();
+    for (int i = 0; i < events.size(); i++) {
+      list.add(events.get(i));
+    }
+    return list.build();
+  }
+
+  /**
+   * Returns an {@link ImmutableList} with the {@linkplain Player.Command Commands} contained in
+   * {@code commands}. The contents of the list are in matching order with the {@linkplain
+   * Player.Command Commands} returned by {@link Player.Commands#get(int)}.
+   */
+  public static ImmutableList<@Player.Command Integer> getCommandsAsList(Player.Commands commands) {
+    ImmutableList.Builder<@Player.Command Integer> list = new ImmutableList.Builder<>();
+    for (int i = 0; i < commands.size(); i++) {
+      list.add(commands.get(i));
+    }
+    return list.build();
+  }
+
+  /**
+   * Creates a {@link File} of the {@code fileName} in the application cache directory.
+   *
+   * <p>If a file of that name already exists, it is overwritten.
+   *
+   * @param context The {@link Context}.
+   * @param fileName The filename to save to the cache.
+   */
+  public static File createExternalCacheFile(Context context, String fileName) throws IOException {
+    return createExternalCacheFile(context, /* directoryName= */ "", fileName);
+  }
+
+  /**
+   * Creates a {@link File} of the {@code fileName} in a directory {@code directoryName} within the
+   * application cache directory.
+   *
+   * <p>If a file of that name already exists, it is overwritten.
+   *
+   * @param context The {@link Context}.
+   * @param directoryName The directory name within the external cache to save the file in.
+   * @param fileName The filename to save to the cache.
+   */
+  public static File createExternalCacheFile(Context context, String directoryName, String fileName)
+      throws IOException {
+    File fileDirectory = new File(context.getExternalCacheDir(), directoryName);
+    fileDirectory.mkdirs();
+    File file = new File(fileDirectory, fileName);
+    checkState(
+        !file.exists() || file.delete(), "Could not delete file: %s", file.getAbsolutePath());
+    checkState(file.createNewFile(), "Could not create file: %s", file.getAbsolutePath());
+    return file;
   }
 
   private static final class NoUidOrShufflingTimeline extends Timeline {

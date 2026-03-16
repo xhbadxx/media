@@ -15,10 +15,10 @@
  */
 package androidx.media3.exoplayer.drm;
 
-import static androidx.media3.common.util.Assertions.checkArgument;
-import static androidx.media3.common.util.Assertions.checkNotNull;
-import static androidx.media3.common.util.Assertions.checkState;
-import static androidx.media3.common.util.Assertions.checkStateNotNull;
+import static android.os.Build.VERSION.SDK_INT;
+import static com.google.common.base.Preconditions.checkArgument;
+import static com.google.common.base.Preconditions.checkNotNull;
+import static com.google.common.base.Preconditions.checkState;
 import static java.lang.annotation.ElementType.TYPE_USE;
 
 import android.annotation.SuppressLint;
@@ -444,7 +444,7 @@ public class DefaultDrmSessionManager implements DrmSessionManager {
       @Nullable DrmSessionEventListener.EventDispatcher eventDispatcher, Format format) {
     // Don't verify the playback thread, preacquireSession can be called from any thread.
     checkState(prepareCallsCount > 0);
-    checkStateNotNull(playbackLooper);
+    checkNotNull(playbackLooper);
     PreacquiredSessionReference preacquiredSessionReference =
         new PreacquiredSessionReference(eventDispatcher);
     preacquiredSessionReference.acquire(format);
@@ -457,7 +457,7 @@ public class DefaultDrmSessionManager implements DrmSessionManager {
       @Nullable DrmSessionEventListener.EventDispatcher eventDispatcher, Format format) {
     verifyPlaybackThread(/* allowBeforeSetPlayer= */ false);
     checkState(prepareCallsCount > 0);
-    checkStateNotNull(playbackLooper);
+    checkNotNull(playbackLooper);
     return acquireSession(
         playbackLooper,
         eventDispatcher,
@@ -595,7 +595,7 @@ public class DefaultDrmSessionManager implements DrmSessionManager {
     } else if (C.CENC_TYPE_cbcs.equals(schemeType)) {
       // Support for cbcs (AES-CBC with pattern encryption) was added in API 24. However, the
       // implementation was not stable until API 25.
-      return Util.SDK_INT >= 25;
+      return SDK_INT >= 25;
     } else if (C.CENC_TYPE_cbc1.equals(schemeType) || C.CENC_TYPE_cens.equals(schemeType)) {
       // Support for cbc1 (AES-CTR with pattern encryption) and cens (AES-CBC without pattern
       // encryption) was also added in API 24 and made stable from API 25, however support was

@@ -15,6 +15,8 @@
  */
 package androidx.media3.common;
 
+import static com.google.common.base.Preconditions.checkArgument;
+import static java.lang.Math.max;
 import static java.lang.annotation.ElementType.FIELD;
 import static java.lang.annotation.ElementType.LOCAL_VARIABLE;
 import static java.lang.annotation.ElementType.METHOD;
@@ -60,7 +62,17 @@ import java.util.Objects;
  *       same thread.
  *   <li>The available functionality can be limited. Player instances provide a set of {@link
  *       #getAvailableCommands() available commands} to signal feature support and users of the
- *       interface must only call methods if the corresponding {@link Command} is available.
+ *       interface must only call methods if the corresponding {@link Command} is available. An
+ *       implementation has some flexibility in how to handle a call to a method when the
+ *       corresponding command is not available. Options include (non-exhaustive):
+ *       <ul>
+ *         <li>Do nothing (for a void method), or return an 'unset' or 'default' value.
+ *         <li>Throw an exception.
+ *         <li>Perform the requested operation anyway.
+ *         <li>Perform some 'default' version of the requested operation (e.g. {@link #seekTo(long)}
+ *             may trigger {@link #seekToDefaultPosition()} if called when {@link
+ *             #COMMAND_SEEK_IN_CURRENT_MEDIA_ITEM} is not available).
+ *       </ul>
  *   <li>Users can register {@link Player.Listener} callbacks that get informed about state changes.
  *   <li>Player instances need to update the visible state immediately after each method call, even
  *       if the actual changes are handled on background threads or even other devices. This
@@ -204,6 +216,16 @@ public interface Player {
       return flags.containsAny(events);
     }
 
+    /**
+     * Returns whether any of the given {@link Player.Events} occurred.
+     *
+     * @param events The {@link Player.Events}.
+     * @return Whether any of the {@link Player.Events} occurred.
+     */
+    public boolean containsAny(Player.Events events) {
+      return flags.containsAny(events.flags);
+    }
+
     /** Returns the number of events in the set. */
     public int size() {
       return flags.size();
@@ -330,6 +352,8 @@ public interface Player {
         long contentPositionMs,
         int adGroupIndex,
         int adIndexInAdGroup) {
+      checkArgument(mediaItemIndex >= 0);
+      checkArgument(periodIndex >= 0);
       this.windowUid = windowUid;
       this.windowIndex = mediaItemIndex;
       this.mediaItemIndex = mediaItemIndex;
@@ -368,6 +392,22 @@ public interface Player {
           contentPositionMs,
           adGroupIndex,
           adIndexInAdGroup);
+    }
+
+    @Override
+    public String toString() {
+      String positionInfoString =
+          "mediaItem=" + mediaItemIndex + ", period=" + periodIndex + ", pos=" + positionMs;
+      if (adGroupIndex == C.INDEX_UNSET) {
+        return positionInfoString;
+      }
+      return positionInfoString
+          + ", contentPos="
+          + contentPositionMs
+          + ", adGroup="
+          + adGroupIndex
+          + ", ad="
+          + adIndexInAdGroup;
     }
 
     /**
@@ -472,11 +512,11 @@ public interface Player {
     /** Restores a {@code PositionInfo} from a {@link Bundle}. */
     @UnstableApi
     public static PositionInfo fromBundle(Bundle bundle) {
-      int mediaItemIndex = bundle.getInt(FIELD_MEDIA_ITEM_INDEX, /* defaultValue= */ 0);
+      int mediaItemIndex = max(0, bundle.getInt(FIELD_MEDIA_ITEM_INDEX, /* defaultValue= */ 0));
       @Nullable Bundle mediaItemBundle = bundle.getBundle(FIELD_MEDIA_ITEM);
       @Nullable
       MediaItem mediaItem = mediaItemBundle == null ? null : MediaItem.fromBundle(mediaItemBundle);
-      int periodIndex = bundle.getInt(FIELD_PERIOD_INDEX, /* defaultValue= */ 0);
+      int periodIndex = max(0, bundle.getInt(FIELD_PERIOD_INDEX, /* defaultValue= */ 0));
       long positionMs = bundle.getLong(FIELD_POSITION_MS, /* defaultValue= */ 0);
       long contentPositionMs = bundle.getLong(FIELD_CONTENT_POSITION_MS, /* defaultValue= */ 0);
       int adGroupIndex = bundle.getInt(FIELD_AD_GROUP_INDEX, /* defaultValue= */ C.INDEX_UNSET);
@@ -1284,11 +1324,17 @@ public interface Player {
   int PLAY_WHEN_READY_CHANGE_REASON_SUPPRESSED_TOO_LONG = 6;
 
   /**
-   * Reason why playback is suppressed even though {@link #getPlayWhenReady()} is {@code true}. One
-   * of {@link #PLAYBACK_SUPPRESSION_REASON_NONE}, {@link
-   * #PLAYBACK_SUPPRESSION_REASON_TRANSIENT_AUDIO_FOCUS_LOSS}, {@link
-   * #PLAYBACK_SUPPRESSION_REASON_UNSUITABLE_AUDIO_ROUTE} or {@link
-   * #PLAYBACK_SUPPRESSION_REASON_UNSUITABLE_AUDIO_OUTPUT}.
+   * Reason why playback is suppressed even though {@link #getPlayWhenReady()} is {@code true}.
+   *
+   * <p>One of:
+   *
+   * <ul>
+   *   <li>{@link #PLAYBACK_SUPPRESSION_REASON_NONE}
+   *   <li>{@link #PLAYBACK_SUPPRESSION_REASON_TRANSIENT_AUDIO_FOCUS_LOSS}
+   *   <li>{@link #PLAYBACK_SUPPRESSION_REASON_UNSUITABLE_AUDIO_ROUTE}
+   *   <li>{@link #PLAYBACK_SUPPRESSION_REASON_UNSUITABLE_AUDIO_OUTPUT}
+   *   <li>{@link #PLAYBACK_SUPPRESSION_REASON_SCRUBBING}
+   * </ul>
    */
   // @Target list includes both 'default' targets and TYPE_USE, to ensure backwards compatibility
   // with Kotlin usages from before TYPE_USE was added.
@@ -1300,7 +1346,8 @@ public interface Player {
     PLAYBACK_SUPPRESSION_REASON_NONE,
     PLAYBACK_SUPPRESSION_REASON_TRANSIENT_AUDIO_FOCUS_LOSS,
     PLAYBACK_SUPPRESSION_REASON_UNSUITABLE_AUDIO_ROUTE,
-    PLAYBACK_SUPPRESSION_REASON_UNSUITABLE_AUDIO_OUTPUT
+    PLAYBACK_SUPPRESSION_REASON_UNSUITABLE_AUDIO_OUTPUT,
+    PLAYBACK_SUPPRESSION_REASON_SCRUBBING
   })
   @interface PlaybackSuppressionReason {}
 
@@ -1320,6 +1367,9 @@ public interface Player {
    * play on built-in speaker on a Wear OS device).
    */
   int PLAYBACK_SUPPRESSION_REASON_UNSUITABLE_AUDIO_OUTPUT = 3;
+
+  /** Playback is suppressed because the player is currently scrubbing. */
+  int PLAYBACK_SUPPRESSION_REASON_SCRUBBING = 4;
 
   /**
    * Repeat modes for playback. One of {@link #REPEAT_MODE_OFF}, {@link #REPEAT_MODE_ONE} or {@link
@@ -2080,6 +2130,8 @@ public interface Player {
    *   <li>{@link #clearVideoSurfaceHolder(SurfaceHolder)}
    *   <li>{@link #setVideoSurfaceView(SurfaceView)}
    *   <li>{@link #clearVideoSurfaceView(SurfaceView)}
+   *   <li>{@link #setVideoTextureView(TextureView)}
+   *   <li>{@link #clearVideoTextureView(TextureView)}
    * </ul>
    */
   int COMMAND_SET_VIDEO_SURFACE = 27;
@@ -2649,13 +2701,6 @@ public interface Player {
   boolean hasPreviousMediaItem();
 
   /**
-   * @deprecated Use {@link #seekToPreviousMediaItem()} instead.
-   */
-  @UnstableApi
-  @Deprecated
-  void seekToPreviousWindow();
-
-  /**
    * Seeks to the default position of the previous {@link MediaItem}, which may depend on the
    * current repeat mode and whether shuffle mode is enabled. Does nothing if {@link
    * #hasPreviousMediaItem()} is {@code false}.
@@ -2704,20 +2749,6 @@ public interface Player {
   void seekToPrevious();
 
   /**
-   * @deprecated Use {@link #hasNextMediaItem()} instead.
-   */
-  @UnstableApi
-  @Deprecated
-  boolean hasNext();
-
-  /**
-   * @deprecated Use {@link #hasNextMediaItem()} instead.
-   */
-  @UnstableApi
-  @Deprecated
-  boolean hasNextWindow();
-
-  /**
    * Returns whether a next {@link MediaItem} exists, which may depend on the current repeat mode
    * and whether shuffle mode is enabled.
    *
@@ -2729,20 +2760,6 @@ public interface Player {
    * #getAvailableCommands() available}.
    */
   boolean hasNextMediaItem();
-
-  /**
-   * @deprecated Use {@link #seekToNextMediaItem()} instead.
-   */
-  @UnstableApi
-  @Deprecated
-  void next();
-
-  /**
-   * @deprecated Use {@link #seekToNextMediaItem()} instead.
-   */
-  @UnstableApi
-  @Deprecated
-  void seekToNextWindow();
 
   /**
    * Seeks to the default position of the next {@link MediaItem}, which may depend on the current
@@ -3206,6 +3223,16 @@ public interface Player {
   AudioAttributes getAudioAttributes();
 
   /**
+   * Returns the audio session identifier, or {@link C#AUDIO_SESSION_ID_UNSET} if not set.
+   *
+   * @see Listener#onAudioSessionIdChanged(int)
+   */
+  @UnstableApi
+  default int getAudioSessionId() {
+    return C.AUDIO_SESSION_ID_UNSET;
+  }
+
+  /**
    * Sets the audio volume, valid values are between 0 (silence) and 1 (unity gain, signal
    * unchanged), inclusive.
    *
@@ -3227,6 +3254,25 @@ public interface Player {
    */
   @FloatRange(from = 0, to = 1.0)
   float getVolume();
+
+  /**
+   * Sets the audio volume to 0.
+   *
+   * <p>This method must only be called if {@link #COMMAND_SET_VOLUME} is {@linkplain
+   * #getAvailableCommands() available}.
+   */
+  @UnstableApi
+  void mute();
+
+  /**
+   * If the audio volume is 0, sets the audio volume to a non-zero value decided by the Player to be
+   * the most appropriate.
+   *
+   * <p>This method must only be called if {@link #COMMAND_SET_VOLUME} is {@linkplain
+   * #getAvailableCommands() available}.
+   */
+  @UnstableApi
+  void unmute();
 
   /**
    * Clears any {@link Surface}, {@link SurfaceHolder}, {@link SurfaceView} or {@link TextureView}

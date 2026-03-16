@@ -15,18 +15,18 @@
  */
 package androidx.media3.common;
 
-import static androidx.media3.common.util.Assertions.checkArgument;
-import static androidx.media3.common.util.Assertions.checkNotNull;
-import static androidx.media3.common.util.Assertions.checkState;
+import static androidx.media3.common.util.Util.convertToNullIfInvalid;
 import static androidx.media3.common.util.Util.msToUs;
 import static androidx.media3.common.util.Util.usToMs;
+import static com.google.common.base.Preconditions.checkArgument;
+import static com.google.common.base.Preconditions.checkNotNull;
+import static com.google.common.base.Preconditions.checkState;
 
 import android.net.Uri;
 import android.os.Bundle;
 import androidx.annotation.IntRange;
 import androidx.annotation.Nullable;
 import androidx.annotation.VisibleForTesting;
-import androidx.media3.common.util.Assertions;
 import androidx.media3.common.util.BundleCollectionUtil;
 import androidx.media3.common.util.DrmCallbacks;
 import androidx.media3.common.util.UnstableApi;
@@ -1882,6 +1882,7 @@ public final class MediaItem {
       private boolean relativeToLiveWindow;
       private boolean relativeToDefaultPosition;
       private boolean startsAtKeyFrame;
+      private boolean allowUnseekableMedia;
 
       /** Creates a new instance with default values. */
       public Builder() {
@@ -1894,6 +1895,7 @@ public final class MediaItem {
         relativeToLiveWindow = clippingConfiguration.relativeToLiveWindow;
         relativeToDefaultPosition = clippingConfiguration.relativeToDefaultPosition;
         startsAtKeyFrame = clippingConfiguration.startsAtKeyFrame;
+        allowUnseekableMedia = clippingConfiguration.allowUnseekableMedia;
       }
 
       /**
@@ -1912,7 +1914,7 @@ public final class MediaItem {
       @UnstableApi
       @CanIgnoreReturnValue
       public Builder setStartPositionUs(@IntRange(from = 0) long startPositionUs) {
-        Assertions.checkArgument(startPositionUs >= 0);
+        checkArgument(startPositionUs >= 0);
         this.startPositionUs = startPositionUs;
         return this;
       }
@@ -1935,7 +1937,7 @@ public final class MediaItem {
       @UnstableApi
       @CanIgnoreReturnValue
       public Builder setEndPositionUs(long endPositionUs) {
-        Assertions.checkArgument(endPositionUs == C.TIME_END_OF_SOURCE || endPositionUs >= 0);
+        checkArgument(endPositionUs == C.TIME_END_OF_SOURCE || endPositionUs >= 0);
         this.endPositionUs = endPositionUs;
         return this;
       }
@@ -1968,6 +1970,21 @@ public final class MediaItem {
       @CanIgnoreReturnValue
       public Builder setStartsAtKeyFrame(boolean startsAtKeyFrame) {
         this.startsAtKeyFrame = startsAtKeyFrame;
+        return this;
+      }
+
+      /**
+       * Sets whether clipping to a non-zero start position in unseekable media is allowed (Default:
+       * {@code false}).
+       *
+       * <p>Note that this could be inefficient because a player needs to read and decode all
+       * samples from the beginning of the file and it should only be used if the clip start
+       * position is small and the entire data before the start position fits into memory.
+       */
+      @UnstableApi
+      @CanIgnoreReturnValue
+      public Builder setAllowUnseekableMedia(boolean allowUnseekableMedia) {
+        this.allowUnseekableMedia = allowUnseekableMedia;
         return this;
       }
 
@@ -2023,8 +2040,11 @@ public final class MediaItem {
      */
     public final boolean relativeToDefaultPosition;
 
-    /** Sets whether the start point is guaranteed to be a key frame. */
+    /** Whether the start point is guaranteed to be a key frame. */
     public final boolean startsAtKeyFrame;
+
+    /** Whether clipping to a non-zero start position in unseekable media is allowed. */
+    @UnstableApi public final boolean allowUnseekableMedia;
 
     private ClippingConfiguration(Builder builder) {
       this.startPositionMs = usToMs(builder.startPositionUs);
@@ -2034,6 +2054,7 @@ public final class MediaItem {
       this.relativeToLiveWindow = builder.relativeToLiveWindow;
       this.relativeToDefaultPosition = builder.relativeToDefaultPosition;
       this.startsAtKeyFrame = builder.startsAtKeyFrame;
+      this.allowUnseekableMedia = builder.allowUnseekableMedia;
     }
 
     /** Returns a {@link Builder} initialized with the values of this instance. */
@@ -2056,7 +2077,8 @@ public final class MediaItem {
           && endPositionUs == other.endPositionUs
           && relativeToLiveWindow == other.relativeToLiveWindow
           && relativeToDefaultPosition == other.relativeToDefaultPosition
-          && startsAtKeyFrame == other.startsAtKeyFrame;
+          && startsAtKeyFrame == other.startsAtKeyFrame
+          && allowUnseekableMedia == other.allowUnseekableMedia;
     }
 
     @Override
@@ -2066,6 +2088,7 @@ public final class MediaItem {
       result = 31 * result + (relativeToLiveWindow ? 1 : 0);
       result = 31 * result + (relativeToDefaultPosition ? 1 : 0);
       result = 31 * result + (startsAtKeyFrame ? 1 : 0);
+      result = 31 * result + (allowUnseekableMedia ? 1 : 0);
       return result;
     }
 
@@ -2074,8 +2097,9 @@ public final class MediaItem {
     private static final String FIELD_RELATIVE_TO_LIVE_WINDOW = Util.intToStringMaxRadix(2);
     private static final String FIELD_RELATIVE_TO_DEFAULT_POSITION = Util.intToStringMaxRadix(3);
     private static final String FIELD_STARTS_AT_KEY_FRAME = Util.intToStringMaxRadix(4);
-    static final String FIELD_START_POSITION_US = Util.intToStringMaxRadix(5);
-    static final String FIELD_END_POSITION_US = Util.intToStringMaxRadix(6);
+    @VisibleForTesting static final String FIELD_START_POSITION_US = Util.intToStringMaxRadix(5);
+    @VisibleForTesting static final String FIELD_END_POSITION_US = Util.intToStringMaxRadix(6);
+    private static final String FIELD_ALLOW_UNSEEKABLE_MEDIA = Util.intToStringMaxRadix(7);
 
     @UnstableApi
     public Bundle toBundle() {
@@ -2101,6 +2125,9 @@ public final class MediaItem {
       if (startsAtKeyFrame != UNSET.startsAtKeyFrame) {
         bundle.putBoolean(FIELD_STARTS_AT_KEY_FRAME, startsAtKeyFrame);
       }
+      if (allowUnseekableMedia != UNSET.allowUnseekableMedia) {
+        bundle.putBoolean(FIELD_ALLOW_UNSEEKABLE_MEDIA, allowUnseekableMedia);
+      }
       return bundle;
     }
 
@@ -2125,7 +2152,11 @@ public final class MediaItem {
                       /* defaultValue= */ UNSET.relativeToDefaultPosition))
               .setStartsAtKeyFrame(
                   bundle.getBoolean(
-                      FIELD_STARTS_AT_KEY_FRAME, /* defaultValue= */ UNSET.startsAtKeyFrame));
+                      FIELD_STARTS_AT_KEY_FRAME, /* defaultValue= */ UNSET.startsAtKeyFrame))
+              .setAllowUnseekableMedia(
+                  bundle.getBoolean(
+                      FIELD_ALLOW_UNSEEKABLE_MEDIA,
+                      /* defaultValue= */ UNSET.allowUnseekableMedia));
       long startPositionUs =
           bundle.getLong(FIELD_START_POSITION_US, /* defaultValue= */ UNSET.startPositionUs);
       if (startPositionUs != UNSET.startPositionUs) {
@@ -2284,7 +2315,7 @@ public final class MediaItem {
       return new RequestMetadata.Builder()
           .setMediaUri(bundle.getParcelable(FIELD_MEDIA_URI))
           .setSearchQuery(bundle.getString(FIELD_SEARCH_QUERY))
-          .setExtras(bundle.getBundle(FIELD_EXTRAS))
+          .setExtras(convertToNullIfInvalid(bundle.getBundle(FIELD_EXTRAS)))
           .build();
     }
   }

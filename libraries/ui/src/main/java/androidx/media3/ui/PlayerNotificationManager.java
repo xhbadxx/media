@@ -32,8 +32,8 @@ import static androidx.media3.common.Player.EVENT_POSITION_DISCONTINUITY;
 import static androidx.media3.common.Player.EVENT_REPEAT_MODE_CHANGED;
 import static androidx.media3.common.Player.EVENT_SHUFFLE_MODE_ENABLED_CHANGED;
 import static androidx.media3.common.Player.EVENT_TIMELINE_CHANGED;
-import static androidx.media3.common.util.Assertions.checkArgument;
-import static androidx.media3.common.util.Assertions.checkState;
+import static com.google.common.base.Preconditions.checkArgument;
+import static com.google.common.base.Preconditions.checkState;
 import static java.lang.annotation.ElementType.TYPE_USE;
 
 import android.annotation.SuppressLint;
@@ -1528,14 +1528,7 @@ public class PlayerNotificationManager {
       String action, Context context, int instanceId) {
     Intent intent = new Intent(action).setPackage(context.getPackageName());
     intent.putExtra(EXTRA_INSTANCE_ID, instanceId);
-
-    int pendingFlags;
-    if (Util.SDK_INT >= 23) {
-      pendingFlags = PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE;
-    } else {
-      pendingFlags = PendingIntent.FLAG_UPDATE_CURRENT;
-    }
-
+    int pendingFlags = PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE;
     return PendingIntent.getBroadcast(context, instanceId, intent, pendingFlags);
   }
 

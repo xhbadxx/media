@@ -15,17 +15,19 @@
  */
 package androidx.media3.transformer;
 
-import static androidx.media3.common.util.Assertions.checkNotNull;
 import static androidx.media3.test.utils.TestUtil.extractAllSamplesFromFilePath;
 import static androidx.media3.transformer.TestUtil.ASSET_URI_PREFIX;
+import static com.google.common.base.Preconditions.checkNotNull;
 
 import android.content.Context;
 import androidx.media3.common.MediaItem;
 import androidx.media3.container.Mp4TimestampData;
 import androidx.media3.extractor.mp4.Mp4Extractor;
 import androidx.media3.extractor.text.DefaultSubtitleParserFactory;
+import androidx.media3.muxer.Muxer;
 import androidx.media3.test.utils.DumpFileAsserts;
 import androidx.media3.test.utils.FakeExtractorOutput;
+import androidx.media3.test.utils.TestTransformerBuilder;
 import androidx.test.core.app.ApplicationProvider;
 import com.google.common.collect.ImmutableList;
 import org.checkerframework.checker.nullness.qual.MonotonicNonNull;

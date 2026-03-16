@@ -16,6 +16,8 @@
 
 package androidx.media3.transformer;
 
+import static android.os.Build.VERSION.SDK_INT;
+import static com.google.common.base.Preconditions.checkNotNull;
 import static java.lang.Math.floor;
 import static java.lang.Math.max;
 import static java.lang.Math.round;
@@ -37,7 +39,6 @@ import androidx.media3.common.ColorInfo;
 import androidx.media3.common.Format;
 import androidx.media3.common.MimeTypes;
 import androidx.media3.common.util.UnstableApi;
-import androidx.media3.common.util.Util;
 import com.google.common.base.Ascii;
 import com.google.common.collect.ArrayListMultimap;
 import com.google.common.collect.ImmutableList;
@@ -83,7 +84,7 @@ public final class EncoderUtil {
    */
   public static ImmutableList<MediaCodecInfo> getSupportedEncodersForHdrEditing(
       String mimeType, @Nullable ColorInfo colorInfo) {
-    if (Util.SDK_INT < 33 || colorInfo == null) {
+    if (SDK_INT < 33 || colorInfo == null) {
       return ImmutableList.of();
     }
 
@@ -122,7 +123,7 @@ public final class EncoderUtil {
           isFeatureSupported(
                   mediaCodecInfo, mimeType, MediaCodecInfo.CodecCapabilities.FEATURE_HdrEditing)
               || (colorInfo.colorTransfer == C.COLOR_TRANSFER_HLG
-                  && Util.SDK_INT >= 35
+                  && SDK_INT >= 35
                   && isFeatureSupported(
                       mediaCodecInfo,
                       mimeType,
@@ -194,13 +195,15 @@ public final class EncoderUtil {
     return ImmutableList.of();
   }
 
-  /** Returns whether the {@linkplain MediaCodecInfo encoder} supports the given resolution. */
+  /**
+   * Returns whether the {@linkplain MediaCodecInfo encoder} supports the given resolution for a
+   * specific {@link MimeTypes video MIME type}.
+   */
   public static boolean isSizeSupported(
       MediaCodecInfo encoderInfo, String mimeType, int width, int height) {
-    if (encoderInfo
-        .getCapabilitiesForType(mimeType)
-        .getVideoCapabilities()
-        .isSizeSupported(width, height)) {
+    MediaCodecInfo.VideoCapabilities videoCapabilities =
+        checkNotNull(encoderInfo.getCapabilitiesForType(mimeType).getVideoCapabilities());
+    if (videoCapabilities.isSizeSupported(width, height)) {
       return true;
     }
 
@@ -219,27 +222,28 @@ public final class EncoderUtil {
 
   /**
    * Returns a {@link Range} of supported heights for the given {@link MediaCodecInfo encoder},
-   * {@linkplain MimeTypes MIME type} and {@code width}.
+   * {@linkplain MimeTypes video MIME type} and {@code width}.
    *
    * @throws IllegalArgumentException When the width is not in the range of {@linkplain
    *     #getSupportedResolutionRanges supported widths}.
    */
+  // TODO: b/257464457 - Merge into MediaCodecUtil.
   public static Range<Integer> getSupportedHeights(
       MediaCodecInfo encoderInfo, String mimeType, int width) {
-    return encoderInfo
-        .getCapabilitiesForType(mimeType)
-        .getVideoCapabilities()
-        .getSupportedHeightsFor(width);
+    MediaCodecInfo.VideoCapabilities videoCapabilities =
+        checkNotNull(encoderInfo.getCapabilitiesForType(mimeType).getVideoCapabilities());
+    return videoCapabilities.getSupportedHeightsFor(width);
   }
 
   /**
    * Returns a {@link Pair} of supported width and height {@link Range ranges} for the given {@link
-   * MediaCodecInfo encoder} and {@linkplain MimeTypes MIME type}.
+   * MediaCodecInfo encoder} and {@linkplain MimeTypes video MIME type}.
    */
+  // TODO: b/257464457 - Merge into MediaCodecUtil.
   public static Pair<Range<Integer>, Range<Integer>> getSupportedResolutionRanges(
       MediaCodecInfo encoderInfo, String mimeType) {
     MediaCodecInfo.VideoCapabilities videoCapabilities =
-        encoderInfo.getCapabilitiesForType(mimeType).getVideoCapabilities();
+        checkNotNull(encoderInfo.getCapabilitiesForType(mimeType).getVideoCapabilities());
     return Pair.create(
         videoCapabilities.getSupportedWidths(), videoCapabilities.getSupportedHeights());
   }
@@ -257,7 +261,7 @@ public final class EncoderUtil {
    * required size alignment.
    *
    * @param encoderInfo The {@link MediaCodecInfo} of the encoder.
-   * @param mimeType The output MIME type.
+   * @param mimeType The output {@linkplain MimeTypes video MIME type}.
    * @param width The original width.
    * @param height The original height.
    * @return A {@linkplain Size supported resolution}, or {@code null} if unable to find a fallback.
@@ -266,7 +270,7 @@ public final class EncoderUtil {
   public static Size getSupportedResolution(
       MediaCodecInfo encoderInfo, String mimeType, int width, int height) {
     MediaCodecInfo.VideoCapabilities videoCapabilities =
-        encoderInfo.getCapabilitiesForType(mimeType).getVideoCapabilities();
+        checkNotNull(encoderInfo.getCapabilitiesForType(mimeType).getVideoCapabilities());
     int widthAlignment = videoCapabilities.getWidthAlignment();
     int heightAlignment = videoCapabilities.getHeightAlignment();
 
@@ -325,9 +329,9 @@ public final class EncoderUtil {
    * @return The highest supported encoding level, as documented in {@link
    *     MediaCodecInfo.CodecProfileLevel}, or {@link #LEVEL_UNSET} if the profile is not supported.
    */
+  // TODO: b/257464457 - Merge into MediaCodecUtil.
   public static int findHighestSupportedEncodingLevel(
       MediaCodecInfo encoderInfo, String mimeType, int profile) {
-    // TODO: b/214964116 - Merge into MediaCodecUtil.
     MediaCodecInfo.CodecProfileLevel[] profileLevels =
         encoderInfo.getCapabilitiesForType(mimeType).profileLevels;
 
@@ -340,19 +344,22 @@ public final class EncoderUtil {
     return maxSupportedLevel;
   }
 
-  /** Returns the range of supported bitrates for the given {@linkplain MimeTypes MIME type}. */
+  /**
+   * Returns the range of supported bitrates for the given {@linkplain MimeTypes video MIME type}.
+   */
   public static Range<Integer> getSupportedBitrateRange(
       MediaCodecInfo encoderInfo, String mimeType) {
-    return encoderInfo.getCapabilitiesForType(mimeType).getVideoCapabilities().getBitrateRange();
+    MediaCodecInfo.VideoCapabilities videoCapabilities =
+        checkNotNull(encoderInfo.getCapabilitiesForType(mimeType).getVideoCapabilities());
+    return videoCapabilities.getBitrateRange();
   }
 
   /** Returns whether the bitrate mode is supported by the encoder. */
   public static boolean isBitrateModeSupported(
       MediaCodecInfo encoderInfo, String mimeType, int bitrateMode) {
-    return encoderInfo
-        .getCapabilitiesForType(mimeType)
-        .getEncoderCapabilities()
-        .isBitrateModeSupported(bitrateMode);
+    MediaCodecInfo.EncoderCapabilities encoderCapabilities =
+        checkNotNull(encoderInfo.getCapabilitiesForType(mimeType).getEncoderCapabilities());
+    return encoderCapabilities.isBitrateModeSupported(bitrateMode);
   }
 
   /**
@@ -360,6 +367,7 @@ public final class EncoderUtil {
    * MediaCodecInfo.CodecCapabilities#colorFormats color formats} for the given {@linkplain
    * MediaCodecInfo encoder} and {@linkplain MimeTypes MIME type}.
    */
+  // TODO: b/257464457 - Merge into MediaCodecUtil.
   public static ImmutableList<Integer> getSupportedColorFormats(
       MediaCodecInfo encoderInfo, String mimeType) {
     return ImmutableList.copyOf(
@@ -368,12 +376,13 @@ public final class EncoderUtil {
 
   /**
    * Returns the sample rate supported by the provided {@linkplain MediaCodecInfo encoder} that is
-   * closest to the provided sample rate.
+   * closest to the provided sample rate for a given {@linkplain MimeTypes audio MIME type}.
    */
+  // TODO: b/257464457 - Merge into MediaCodecUtil.
   public static int getClosestSupportedSampleRate(
       MediaCodecInfo encoderInfo, String mimeType, int requestedSampleRate) {
     MediaCodecInfo.AudioCapabilities audioCapabilities =
-        encoderInfo.getCapabilitiesForType(mimeType).getAudioCapabilities();
+        checkNotNull(encoderInfo.getCapabilitiesForType(mimeType).getAudioCapabilities());
     @Nullable int[] supportedSampleRates = audioCapabilities.getSupportedSampleRates();
     int closestSampleRate = Integer.MAX_VALUE;
     if (supportedSampleRates != null) {
@@ -399,9 +408,9 @@ public final class EncoderUtil {
   }
 
   /** Checks if a {@linkplain MediaCodecInfo codec} is hardware-accelerated. */
+  // TODO: b/257464457 - Merge into MediaCodecUtil.
   public static boolean isHardwareAccelerated(MediaCodecInfo encoderInfo, String mimeType) {
-    // TODO: b/214964116 - Merge into MediaCodecUtil.
-    if (Util.SDK_INT >= 29) {
+    if (SDK_INT >= 29) {
       return Api29.isHardwareAccelerated(encoderInfo);
     }
     // codecInfo.isHardwareAccelerated() == !codecInfo.isSoftwareOnly() is not necessarily true.
@@ -410,19 +419,21 @@ public final class EncoderUtil {
   }
 
   /** Returns whether a given feature is supported. */
+  // TODO: b/257464457 - Merge into MediaCodecUtil.
   public static boolean isFeatureSupported(
       MediaCodecInfo encoderInfo, String mimeType, String featureName) {
     return encoderInfo.getCapabilitiesForType(mimeType).isFeatureSupported(featureName);
   }
 
   /** Returns the number of max number of the supported concurrent codec instances. */
-  @RequiresApi(23)
+  // TODO: b/257464457 - Merge into MediaCodecUtil.
   public static int getMaxSupportedInstances(MediaCodecInfo encoderInfo, String mimeType) {
     return encoderInfo.getCapabilitiesForType(mimeType).getMaxSupportedInstances();
   }
 
+  // TODO: b/257464457 - Merge into MediaCodecUtil.
   private static boolean isSoftwareOnly(MediaCodecInfo encoderInfo, String mimeType) {
-    if (Util.SDK_INT >= 29) {
+    if (SDK_INT >= 29) {
       return Api29.isSoftwareOnly(encoderInfo);
     }
 

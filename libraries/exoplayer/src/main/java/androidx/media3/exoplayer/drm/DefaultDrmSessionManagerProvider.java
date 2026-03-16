@@ -15,9 +15,9 @@
  */
 package androidx.media3.exoplayer.drm;
 
-import static androidx.media3.common.util.Assertions.checkNotNull;
 import static androidx.media3.exoplayer.drm.DefaultDrmSessionManager.MODE_DOWNLOAD;
 import static androidx.media3.exoplayer.drm.DefaultDrmSessionManager.MODE_PLAYBACK;
+import static com.google.common.base.Preconditions.checkNotNull;
 
 import android.util.Log;
 import androidx.annotation.GuardedBy;
@@ -117,23 +117,24 @@ public final class DefaultDrmSessionManagerProvider implements DrmSessionManager
     for (Map.Entry<String, String> entry : drmConfiguration.licenseRequestHeaders.entrySet()) {
       httpDrmCallback.setKeyRequestProperty(entry.getKey(), entry.getValue());
     }
-    DefaultDrmSessionManager.Builder builder = new DefaultDrmSessionManager.Builder()
-        .setUuidAndExoMediaDrmProvider(
-            drmConfiguration.scheme, FrameworkMediaDrm.DEFAULT_PROVIDER)
-        .setMultiSession(drmConfiguration.multiSession)
-        .setPlayClearSamplesWithoutKeys(drmConfiguration.playClearContentWithoutKey)
-        .setUseDrmSessionsForClearContent(
-            Ints.toArray(drmConfiguration.forcedSessionTrackTypes));
+    DefaultDrmSessionManager.Builder drmSessionManagerBuilder =
+        new DefaultDrmSessionManager.Builder()
+            .setUuidAndExoMediaDrmProvider(
+                drmConfiguration.scheme, FrameworkMediaDrm.DEFAULT_PROVIDER)
+            .setMultiSession(drmConfiguration.multiSession)
+            .setPlayClearSamplesWithoutKeys(drmConfiguration.playClearContentWithoutKey)
+            .setUseDrmSessionsForClearContent(
+                Ints.toArray(drmConfiguration.forcedSessionTrackTypes));
     if (drmLoadErrorHandlingPolicy != null) {
-      builder.setLoadErrorHandlingPolicy(drmLoadErrorHandlingPolicy);
+      drmSessionManagerBuilder.setLoadErrorHandlingPolicy(drmLoadErrorHandlingPolicy);
     }
-    Log.d("EventLogger", "DrmConfiguration.isSigmaDrm: " + drmConfiguration.isSigmaDrm);
+//    Log.d("EventLogger", "DrmConfiguration.isSigmaDrm: " + drmConfiguration.isSigmaDrm);
     if (drmConfiguration.isSigmaDrm) { // Needed update libs from Sigma
-      builder.setUuidAndExoMediaDrmProvider(drmConfiguration.scheme, SigmaMediaDrm.DEFAULT_PROVIDER);
+      drmSessionManagerBuilder.setUuidAndExoMediaDrmProvider(drmConfiguration.scheme, SigmaMediaDrm.DEFAULT_PROVIDER);
     } else {
-      builder.setUuidAndExoMediaDrmProvider(drmConfiguration.scheme, FrameworkMediaDrm.DEFAULT_PROVIDER);
+      drmSessionManagerBuilder.setUuidAndExoMediaDrmProvider(drmConfiguration.scheme, FrameworkMediaDrm.DEFAULT_PROVIDER);
     }
-    DefaultDrmSessionManager drmSessionManager = builder.build(httpDrmCallback);
+    DefaultDrmSessionManager drmSessionManager = drmSessionManagerBuilder.build(httpDrmCallback);
     drmSessionManager.setDrmCallback(drmConfiguration.drmCallback);
     if (drmConfiguration.enableDrmOffline){
       if (drmConfiguration.getKeySetId() == null) {

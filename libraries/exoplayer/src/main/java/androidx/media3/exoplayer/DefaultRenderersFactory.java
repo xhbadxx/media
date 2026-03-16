@@ -15,6 +15,7 @@
  */
 package androidx.media3.exoplayer;
 
+import static android.os.Build.VERSION.SDK_INT;
 import static java.lang.annotation.ElementType.TYPE_USE;
 
 import android.content.Context;
@@ -24,14 +25,17 @@ import android.os.Handler;
 import android.os.Looper;
 import androidx.annotation.IntDef;
 import androidx.annotation.Nullable;
+import androidx.annotation.RequiresApi;
 import androidx.media3.common.C;
 import androidx.media3.common.MimeTypes;
 import androidx.media3.common.util.Log;
 import androidx.media3.common.util.UnstableApi;
+import androidx.media3.exoplayer.audio.AudioOutput;
 import androidx.media3.exoplayer.audio.AudioRendererEventListener;
 import androidx.media3.exoplayer.audio.AudioSink;
 import androidx.media3.exoplayer.audio.DefaultAudioSink;
 import androidx.media3.exoplayer.audio.MediaCodecAudioRenderer;
+import androidx.media3.exoplayer.image.BitmapFactoryImageDecoder;
 import androidx.media3.exoplayer.image.ImageDecoder;
 import androidx.media3.exoplayer.image.ImageRenderer;
 import androidx.media3.exoplayer.mediacodec.DefaultMediaCodecAdapterFactory;
@@ -46,6 +50,7 @@ import androidx.media3.exoplayer.video.MediaCodecVideoRenderer;
 import androidx.media3.exoplayer.video.VideoRendererEventListener;
 import androidx.media3.exoplayer.video.spherical.CameraMotionRenderer;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
+import com.google.errorprone.annotations.ForOverride;
 import java.lang.annotation.Documented;
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
@@ -107,10 +112,11 @@ public class DefaultRenderersFactory implements RenderersFactory {
   private boolean enableDecoderFallback;
   private MediaCodecSelector mediaCodecSelector;
   private boolean enableFloatOutput;
-  private boolean enableAudioTrackPlaybackParams;
+  private boolean enableAudioOutputPlaybackParameters;
   private boolean enableMediaCodecVideoRendererPrewarming;
   private boolean parseAv1SampleDependencies;
   private long lateThresholdToDropDecoderInputUs;
+  private boolean enableMediaCodecBufferDecodeOnlyFlag;
 
   /**
    * @param context A {@link Context}.
@@ -230,27 +236,37 @@ public class DefaultRenderersFactory implements RenderersFactory {
   }
 
   /**
-   * Sets whether to enable setting playback speed using {@link
-   * android.media.AudioTrack#setPlaybackParams(PlaybackParams)}, which is supported from API level
-   * 23, rather than using application-level audio speed adjustment. This setting has no effect on
-   * builds before API level 23 (application-level speed adjustment will be used in all cases).
-   *
-   * <p>If enabled and supported, new playback speed settings will take effect more quickly because
-   * they are applied at the audio mixer, rather than at the point of writing data to the track.
-   *
-   * <p>When using this mode, the maximum supported playback speed is limited by the size of the
-   * audio track's buffer. If the requested speed is not supported the player's event listener will
-   * be notified twice on setting playback speed, once with the requested speed, then again with the
-   * old playback speed reflecting the fact that the requested speed was not supported.
-   *
-   * @param enableAudioTrackPlaybackParams Whether to enable setting playback speed using {@link
-   *     android.media.AudioTrack#setPlaybackParams(PlaybackParams)}.
-   * @return This factory, for convenience.
+   * @deprecated Use {@link #setEnableAudioOutputPlaybackParameters(boolean)} instead.
    */
+  @Deprecated
   @CanIgnoreReturnValue
   public final DefaultRenderersFactory setEnableAudioTrackPlaybackParams(
       boolean enableAudioTrackPlaybackParams) {
-    this.enableAudioTrackPlaybackParams = enableAudioTrackPlaybackParams;
+    return setEnableAudioOutputPlaybackParameters(enableAudioTrackPlaybackParams);
+  }
+
+  /**
+   * Sets whether to enable setting playback speed via {@link AudioOutput}, using {@link
+   * android.media.AudioTrack#setPlaybackParams(PlaybackParams)} by default, rather than using
+   * application-level audio speed adjustment.
+   *
+   * <p>If enabled and supported, new playback speed settings will take effect more quickly because
+   * they are applied at the audio mixer, rather than at the point of writing data to the output.
+   * However, the setting is more device-dependent, less reliable and may offer fewer available
+   * speeds.
+   *
+   * <p>If the requested speed is not supported the player's event listener will be notified twice
+   * on setting playback speed, once with the requested speed, then again with the old playback
+   * speed reflecting the fact that the requested speed was not supported.
+   *
+   * @param enableAudioOutputPlaybackParameters Whether to enable setting playback speed via {@link
+   *     AudioOutput}.
+   * @return This factory, for convenience.
+   */
+  @CanIgnoreReturnValue
+  public final DefaultRenderersFactory setEnableAudioOutputPlaybackParameters(
+      boolean enableAudioOutputPlaybackParameters) {
+    this.enableAudioOutputPlaybackParameters = enableAudioOutputPlaybackParameters;
     return this;
   }
 
@@ -295,6 +311,26 @@ public class DefaultRenderersFactory implements RenderersFactory {
   public final DefaultRenderersFactory experimentalSetParseAv1SampleDependencies(
       boolean parseAv1SampleDependencies) {
     this.parseAv1SampleDependencies = parseAv1SampleDependencies;
+    return this;
+  }
+
+  /**
+   * Sets whether the {@link MediaCodec#BUFFER_FLAG_DECODE_ONLY} flag will be included when queuing
+   * decode-only input buffers to the decoder.
+   *
+   * <p>If {@code false}, then only if the decoder is set up in tunneling mode will the decode-only
+   * input buffers be queued with the {@link MediaCodec#BUFFER_FLAG_DECODE_ONLY} flag. The default
+   * value is {@code false}.
+   *
+   * <p>Requires API 34.
+   *
+   * <p>This method is experimental and will be renamed or removed in a future release.
+   */
+  @RequiresApi(34)
+  @CanIgnoreReturnValue
+  public DefaultRenderersFactory experimentalSetEnableMediaCodecBufferDecodeOnlyFlag(
+      boolean enableMediaCodecBufferDecodeOnlyFlag) {
+    this.enableMediaCodecBufferDecodeOnlyFlag = enableMediaCodecBufferDecodeOnlyFlag;
     return this;
   }
 
@@ -352,7 +388,7 @@ public class DefaultRenderersFactory implements RenderersFactory {
         renderersList);
     @Nullable
     AudioSink audioSink =
-        buildAudioSink(context, enableFloatOutput, enableAudioTrackPlaybackParams);
+        buildAudioSink(context, enableFloatOutput, enableAudioOutputPlaybackParameters);
     if (audioSink != null) {
       buildAudioRenderers(
           context,
@@ -377,7 +413,7 @@ public class DefaultRenderersFactory implements RenderersFactory {
         extensionRendererMode,
         renderersList);
     buildCameraMotionRenderers(context, extensionRendererMode, renderersList);
-    buildImageRenderers(renderersList);
+    buildImageRenderers(context, renderersList);
     buildMiscellaneousRenderers(context, eventHandler, extensionRendererMode, renderersList);
     return renderersList.toArray(new Renderer[0]);
   }
@@ -406,7 +442,7 @@ public class DefaultRenderersFactory implements RenderersFactory {
       VideoRendererEventListener eventListener,
       long allowedVideoJoiningTimeMs,
       ArrayList<Renderer> out) {
-    MediaCodecVideoRenderer videoRenderer =
+    MediaCodecVideoRenderer.Builder videoRendererBuilder =
         new MediaCodecVideoRenderer.Builder(context)
             .setCodecAdapterFactory(getCodecAdapterFactory())
             .setMediaCodecSelector(mediaCodecSelector)
@@ -416,9 +452,13 @@ public class DefaultRenderersFactory implements RenderersFactory {
             .setEventListener(eventListener)
             .setMaxDroppedFramesToNotify(MAX_DROPPED_VIDEO_FRAME_COUNT_TO_NOTIFY)
             .experimentalSetParseAv1SampleDependencies(parseAv1SampleDependencies)
-            .experimentalSetLateThresholdToDropDecoderInputUs(lateThresholdToDropDecoderInputUs)
-            .build();
-    out.add(videoRenderer);
+            .experimentalSetLateThresholdToDropDecoderInputUs(lateThresholdToDropDecoderInputUs);
+    if (SDK_INT >= 34) {
+      videoRendererBuilder =
+          videoRendererBuilder.experimentalSetEnableMediaCodecBufferDecodeOnlyFlag(
+              enableMediaCodecBufferDecodeOnlyFlag);
+    }
+    out.add(videoRendererBuilder.build());
 
     if (extensionRendererMode == EXTENSION_RENDERER_MODE_OFF) {
       return;
@@ -429,13 +469,15 @@ public class DefaultRenderersFactory implements RenderersFactory {
     }
 
     try {
-      // Full class names used for constructor args so the LINT rule triggers if any of them move.
       // LINT.IfChange
       Class<?> clazz = Class.forName("androidx.media3.decoder.vp9.LibvpxVideoRenderer");
+      // Full class names used for media3 constructor args so the LINT rule triggers if any of them
+      // move.
+      @SuppressWarnings("UnnecessarilyFullyQualified")
       Constructor<?> constructor =
           clazz.getConstructor(
               long.class,
-              android.os.Handler.class,
+              Handler.class,
               androidx.media3.exoplayer.video.VideoRendererEventListener.class,
               int.class);
       // LINT.ThenChange(../../../../../../proguard-rules.txt)
@@ -456,13 +498,15 @@ public class DefaultRenderersFactory implements RenderersFactory {
     }
 
     try {
-      // Full class names used for constructor args so the LINT rule triggers if any of them move.
       // LINT.IfChange
-      Class<?> clazz = Class.forName("androidx.media3.decoder.av1.Libgav1VideoRenderer");
+      Class<?> clazz = Class.forName("androidx.media3.decoder.av1.Libdav1dVideoRenderer");
+      // Full class names used for media3 constructor args so the LINT rule triggers if any of them
+      // move.
+      @SuppressWarnings("UnnecessarilyFullyQualified")
       Constructor<?> constructor =
           clazz.getConstructor(
               long.class,
-              android.os.Handler.class,
+              Handler.class,
               androidx.media3.exoplayer.video.VideoRendererEventListener.class,
               int.class);
       // LINT.ThenChange(../../../../../../proguard-rules.txt)
@@ -474,7 +518,7 @@ public class DefaultRenderersFactory implements RenderersFactory {
                   eventListener,
                   MAX_DROPPED_VIDEO_FRAME_COUNT_TO_NOTIFY);
       out.add(extensionRendererIndex++, renderer);
-      Log.i(TAG, "Loaded Libgav1VideoRenderer.");
+      Log.i(TAG, "Loaded Libdav1dVideoRenderer.");
     } catch (ClassNotFoundException e) {
       // Expected if the app was built without the extension.
     } catch (Exception e) {
@@ -483,14 +527,16 @@ public class DefaultRenderersFactory implements RenderersFactory {
     }
 
     try {
-      // Full class names used for constructor args so the LINT rule triggers if any of them move.
       // LINT.IfChange
       Class<?> clazz =
           Class.forName("androidx.media3.decoder.ffmpeg.ExperimentalFfmpegVideoRenderer");
+      // Full class names used for media3 constructor args so the LINT rule triggers if any of them
+      // move.
+      @SuppressWarnings("UnnecessarilyFullyQualified")
       Constructor<?> constructor =
           clazz.getConstructor(
               long.class,
-              android.os.Handler.class,
+              Handler.class,
               androidx.media3.exoplayer.video.VideoRendererEventListener.class,
               int.class);
       // LINT.ThenChange(../../../../../../proguard-rules.txt)
@@ -554,13 +600,15 @@ public class DefaultRenderersFactory implements RenderersFactory {
     }
 
     try {
-      // Full class names used for constructor args so the LINT rule triggers if any of them move.
       // LINT.IfChange
       Class<?> clazz = Class.forName("androidx.media3.decoder.midi.MidiRenderer");
+      // Full class names used for media3 constructor args so the LINT rule triggers if any of them
+      // move.
+      @SuppressWarnings("UnnecessarilyFullyQualified")
       Constructor<?> constructor =
           clazz.getConstructor(
               Context.class,
-              android.os.Handler.class,
+              Handler.class,
               androidx.media3.exoplayer.audio.AudioRendererEventListener.class,
               androidx.media3.exoplayer.audio.AudioSink.class);
       // LINT.ThenChange(../../../../../../proguard-rules.txt)
@@ -576,12 +624,14 @@ public class DefaultRenderersFactory implements RenderersFactory {
     }
 
     try {
-      // Full class names used for constructor args so the LINT rule triggers if any of them move.
       // LINT.IfChange
       Class<?> clazz = Class.forName("androidx.media3.decoder.opus.LibopusAudioRenderer");
+      // Full class names used for media3 constructor args so the LINT rule triggers if any of them
+      // move.
+      @SuppressWarnings("UnnecessarilyFullyQualified")
       Constructor<?> constructor =
           clazz.getConstructor(
-              android.os.Handler.class,
+              Handler.class,
               androidx.media3.exoplayer.audio.AudioRendererEventListener.class,
               androidx.media3.exoplayer.audio.AudioSink.class);
       // LINT.ThenChange(../../../../../../proguard-rules.txt)
@@ -597,12 +647,14 @@ public class DefaultRenderersFactory implements RenderersFactory {
     }
 
     try {
-      // Full class names used for constructor args so the LINT rule triggers if any of them move.
       // LINT.IfChange
       Class<?> clazz = Class.forName("androidx.media3.decoder.flac.LibflacAudioRenderer");
+      // Full class names used for media3 constructor args so the LINT rule triggers if any of them
+      // move.
+      @SuppressWarnings("UnnecessarilyFullyQualified")
       Constructor<?> constructor =
           clazz.getConstructor(
-              android.os.Handler.class,
+              Handler.class,
               androidx.media3.exoplayer.audio.AudioRendererEventListener.class,
               androidx.media3.exoplayer.audio.AudioSink.class);
       // LINT.ThenChange(../../../../../../proguard-rules.txt)
@@ -618,12 +670,14 @@ public class DefaultRenderersFactory implements RenderersFactory {
     }
 
     try {
-      // Full class names used for constructor args so the LINT rule triggers if any of them move.
       // LINT.IfChange
       Class<?> clazz = Class.forName("androidx.media3.decoder.ffmpeg.FfmpegAudioRenderer");
+      // Full class names used for media3 constructor args so the LINT rule triggers if any of them
+      // move.
+      @SuppressWarnings("UnnecessarilyFullyQualified")
       Constructor<?> constructor =
           clazz.getConstructor(
-              android.os.Handler.class,
+              Handler.class,
               androidx.media3.exoplayer.audio.AudioRendererEventListener.class,
               androidx.media3.exoplayer.audio.AudioSink.class);
       // LINT.ThenChange(../../../../../../proguard-rules.txt)
@@ -639,13 +693,15 @@ public class DefaultRenderersFactory implements RenderersFactory {
     }
 
     try {
-      // Full class names used for constructor args so the LINT rule triggers if any of them move.
       // LINT.IfChange
       Class<?> clazz = Class.forName("androidx.media3.decoder.iamf.LibiamfAudioRenderer");
+      // Full class names used for media3 constructor args so the LINT rule triggers if any of them
+      // move.
+      @SuppressWarnings("UnnecessarilyFullyQualified")
       Constructor<?> constructor =
           clazz.getConstructor(
               Context.class,
-              android.os.Handler.class,
+              Handler.class,
               androidx.media3.exoplayer.audio.AudioRendererEventListener.class,
               androidx.media3.exoplayer.audio.AudioSink.class);
       // LINT.ThenChange(../../../../../../proguard-rules.txt)
@@ -661,13 +717,17 @@ public class DefaultRenderersFactory implements RenderersFactory {
     }
 
     try {
-      // Full class names used for constructor args so the LINT rule triggers if any of them move.
+      // LINT.IfChange
       Class<?> clazz = Class.forName("androidx.media3.decoder.mpegh.MpeghAudioRenderer");
+      // Full class names used for media3 constructor args so the LINT rule triggers if any of them
+      // move.
+      @SuppressWarnings("UnnecessarilyFullyQualified")
       Constructor<?> constructor =
           clazz.getConstructor(
-              android.os.Handler.class,
+              Handler.class,
               androidx.media3.exoplayer.audio.AudioRendererEventListener.class,
               androidx.media3.exoplayer.audio.AudioSink.class);
+      // LINT.ThenChange(../../../../../../proguard-rules.txt)
       Renderer renderer =
           (Renderer) constructor.newInstance(eventHandler, eventListener, audioSink);
       out.add(extensionRendererIndex++, renderer);
@@ -730,15 +790,24 @@ public class DefaultRenderersFactory implements RenderersFactory {
   }
 
   /**
+   * @deprecated Override {@link #buildImageRenderers(Context, ArrayList)} instead.
+   */
+  @Deprecated
+  protected void buildImageRenderers(ArrayList<Renderer> out) {
+    out.add(new ImageRenderer(getImageDecoderFactory(context), /* imageOutput= */ null));
+  }
+
+  /**
    * Builds image renderers for use by the player.
    *
    * <p>The {@link ImageRenderer} is built with {@code ImageOutput} set to null and {@link
    * ImageDecoder.Factory} set to {@code ImageDecoder.Factory.DEFAULT} by default.
    *
+   * @param context The {@link Context} associated with the player.
    * @param out An array to which the built renderers should be appended.
    */
-  protected void buildImageRenderers(ArrayList<Renderer> out) {
-    out.add(new ImageRenderer(getImageDecoderFactory(), /* imageOutput= */ null));
+  protected void buildImageRenderers(Context context, ArrayList<Renderer> out) {
+    buildImageRenderers(out);
   }
 
   /**
@@ -762,18 +831,20 @@ public class DefaultRenderersFactory implements RenderersFactory {
    *
    * @param context The {@link Context} associated with the player.
    * @param enableFloatOutput Whether to enable use of floating point audio output, if available.
-   * @param enableAudioTrackPlaybackParams Whether to enable setting playback speed using {@link
-   *     android.media.AudioTrack#setPlaybackParams(PlaybackParams)}, if supported.
+   * @param enableAudioOutputPlaybackParams Whether to enable setting playback speed via the {@link
+   *     AudioOutput}, using {@link android.media.AudioTrack#setPlaybackParams(PlaybackParams)} by
+   *     default, if supported. The {@link AudioOutput} speed adjustment is lower latency, but
+   *     device-dependent, less reliable or may offer fewer available speeds.
    * @return The {@link AudioSink} to which the audio renderers will output. May be {@code null} if
    *     no audio renderers are required. If {@code null} is returned then {@link
    *     #buildAudioRenderers} will not be called.
    */
   @Nullable
   protected AudioSink buildAudioSink(
-      Context context, boolean enableFloatOutput, boolean enableAudioTrackPlaybackParams) {
+      Context context, boolean enableFloatOutput, boolean enableAudioOutputPlaybackParams) {
     return new DefaultAudioSink.Builder(context)
         .setEnableFloatOutput(enableFloatOutput)
-        .setEnableAudioTrackPlaybackParams(enableAudioTrackPlaybackParams)
+        .setEnableAudioOutputPlaybackParameters(enableAudioOutputPlaybackParams)
         .build();
   }
 
@@ -834,17 +905,23 @@ public class DefaultRenderersFactory implements RenderersFactory {
       long allowedVideoJoiningTimeMs) {
     if (enableMediaCodecVideoRendererPrewarming
         && renderer.getClass() == MediaCodecVideoRenderer.class) {
-      return new MediaCodecVideoRenderer.Builder(context)
-          .setCodecAdapterFactory(getCodecAdapterFactory())
-          .setMediaCodecSelector(mediaCodecSelector)
-          .setAllowedJoiningTimeMs(allowedVideoJoiningTimeMs)
-          .setEnableDecoderFallback(enableDecoderFallback)
-          .setEventHandler(eventHandler)
-          .setEventListener(eventListener)
-          .setMaxDroppedFramesToNotify(MAX_DROPPED_VIDEO_FRAME_COUNT_TO_NOTIFY)
-          .experimentalSetParseAv1SampleDependencies(parseAv1SampleDependencies)
-          .experimentalSetLateThresholdToDropDecoderInputUs(lateThresholdToDropDecoderInputUs)
-          .build();
+      MediaCodecVideoRenderer.Builder builder =
+          new MediaCodecVideoRenderer.Builder(context)
+              .setCodecAdapterFactory(getCodecAdapterFactory())
+              .setMediaCodecSelector(mediaCodecSelector)
+              .setAllowedJoiningTimeMs(allowedVideoJoiningTimeMs)
+              .setEnableDecoderFallback(enableDecoderFallback)
+              .setEventHandler(eventHandler)
+              .setEventListener(eventListener)
+              .setMaxDroppedFramesToNotify(MAX_DROPPED_VIDEO_FRAME_COUNT_TO_NOTIFY)
+              .experimentalSetParseAv1SampleDependencies(parseAv1SampleDependencies)
+              .experimentalSetLateThresholdToDropDecoderInputUs(lateThresholdToDropDecoderInputUs);
+      if (SDK_INT >= 34) {
+        builder =
+            builder.experimentalSetEnableMediaCodecBufferDecodeOnlyFlag(
+                enableMediaCodecBufferDecodeOnlyFlag);
+      }
+      return builder.build();
     }
     return null;
   }
@@ -858,7 +935,8 @@ public class DefaultRenderersFactory implements RenderersFactory {
   }
 
   /** Returns the {@link ImageDecoder.Factory} used to build the image renderer. */
-  protected ImageDecoder.Factory getImageDecoderFactory() {
-    return ImageDecoder.Factory.DEFAULT;
+  @ForOverride
+  protected ImageDecoder.Factory getImageDecoderFactory(Context context) {
+    return new BitmapFactoryImageDecoder.Factory(context);
   }
 }

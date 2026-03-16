@@ -58,6 +58,8 @@ import androidx.media3.exoplayer.upstream.Allocator;
 import androidx.media3.exoplayer.upstream.CmcdConfiguration;
 import androidx.media3.exoplayer.upstream.LoadErrorHandlingPolicy;
 import androidx.media3.exoplayer.upstream.LoaderErrorThrower;
+import androidx.media3.exoplayer.util.ReleasableExecutor;
+import com.google.common.base.Supplier;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
@@ -107,6 +109,7 @@ import java.util.regex.Pattern;
   private final MediaSourceEventListener.EventDispatcher mediaSourceEventDispatcher;
   private final DrmSessionEventListener.EventDispatcher drmEventDispatcher;
   private final PlayerId playerId;
+  @Nullable private final Supplier<ReleasableExecutor> downloadExecutorSupplier;
 
   @Nullable private Callback callback;
   private ChunkSampleStream<DashChunkSource>[] sampleStreams;
@@ -135,7 +138,8 @@ import java.util.regex.Pattern;
       Allocator allocator,
       CompositeSequenceableLoaderFactory compositeSequenceableLoaderFactory,
       PlayerEmsgCallback playerEmsgCallback,
-      PlayerId playerId) {
+      PlayerId playerId,
+      @Nullable Supplier<ReleasableExecutor> downloadExecutorSupplier) {
     this.id = id;
     this.manifest = manifest;
     this.baseUrlExclusionList = baseUrlExclusionList;
@@ -152,6 +156,7 @@ import java.util.regex.Pattern;
     this.allocator = allocator;
     this.compositeSequenceableLoaderFactory = compositeSequenceableLoaderFactory;
     this.playerId = playerId;
+    this.downloadExecutorSupplier = downloadExecutorSupplier;
     this.canReportInitialDiscontinuity = true;
     playerEmsgHandler = new PlayerEmsgHandler(manifest, playerEmsgCallback, allocator);
     sampleStreams = newSampleStreamArray(0);
@@ -608,7 +613,8 @@ import java.util.regex.Pattern;
       if (trickPlayProperty != null) {
         long mainAdaptationSetId = Long.parseLong(trickPlayProperty.value);
         @Nullable Integer mainAdaptationSetIndex = adaptationSetIdToIndex.get(mainAdaptationSetId);
-        if (mainAdaptationSetIndex != null) {
+        if (mainAdaptationSetIndex != null
+            && canMergeAdaptationSets(adaptationSet, adaptationSets.get(mainAdaptationSetIndex))) {
           mergedGroupIndex = mainAdaptationSetIndex;
         }
       }
@@ -663,8 +669,10 @@ import java.util.regex.Pattern;
     }
     Format format1 = adaptationSet1.representations.get(0).format;
     Format format2 = adaptationSet2.representations.get(0).format;
+    int format1RoleFlagsExcludingTrickPlay = format1.roleFlags & ~C.ROLE_FLAG_TRICK_PLAY;
+    int format2RoleFlagsExcludingTrickPlay = format2.roleFlags & ~C.ROLE_FLAG_TRICK_PLAY;
     return Objects.equals(format1.language, format2.language)
-        && format1.roleFlags == format2.roleFlags;
+        && format1RoleFlagsExcludingTrickPlay == format2RoleFlagsExcludingTrickPlay;
   }
 
   /**
@@ -861,7 +869,7 @@ import java.util.regex.Pattern;
             loadErrorHandlingPolicy,
             mediaSourceEventDispatcher,
             canReportInitialDiscontinuity,
-            /* downloadExecutor= */ null);
+            downloadExecutorSupplier != null ? downloadExecutorSupplier.get() : null);
     synchronized (this) {
       // The map is also accessed on the loading thread so synchronize access.
       trackEmsgHandlerBySampleStream.put(stream, trackPlayerEmsgHandler);

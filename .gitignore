@@ -44,6 +44,9 @@ bazel-genfiles
 bazel-out
 bazel-testlogs
 
+# Claude Code
+.claude/
+
 # Other
 .DS_Store
 cmake-build-debug

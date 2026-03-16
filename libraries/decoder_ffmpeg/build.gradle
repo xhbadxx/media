@@ -16,12 +16,8 @@ apply from: "$gradle.ext.androidxMediaSettingsDir/common_library_config.gradle"
 android {
     namespace 'androidx.media3.decoder.ffmpeg'
 
-    // TODO(Internal: b/372449691): Remove packagingOptions once AGP is updated
-    // to version 8.5.1 or higher.
-    packagingOptions {
-        jniLibs {
-            useLegacyPackaging true
-        }
+    sourceSets {
+        androidTest.assets.srcDir '../test_data/src/test/assets'
     }
 }
 
@@ -44,4 +40,7 @@ dependencies {
     compileOnly 'org.jetbrains.kotlin:kotlin-annotations-jvm:' + kotlinAnnotationsVersion
     testImplementation project(modulePrefix + 'test-utils')
     testImplementation 'org.robolectric:robolectric:' + robolectricVersion
+    androidTestImplementation 'androidx.test:runner:' + androidxTestRunnerVersion
+    androidTestImplementation 'androidx.test.ext:junit:' + androidxTestJUnitVersion
+    androidTestImplementation 'com.google.truth:truth:' + truthVersion
 }
