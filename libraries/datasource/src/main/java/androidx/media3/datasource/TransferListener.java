@@ -77,4 +77,17 @@ public interface TransferListener {
    * @param isNetwork Whether the data is transferred through a network.
    */
   void onTransferEnd(DataSource source, DataSpec dataSpec, boolean isNetwork);
+
+  /**
+   * Called incrementally during a transfer.
+   *
+   * @param dataSpec Describes the data being transferred.
+   * @param data data is transferred.
+   * @param offset The offset of bytes transferred.
+   * @param length The number of bytes transferred.
+   */
+  default void onSample(DataSpec dataSpec, byte[] data, long offset, long length) {
+    // Default implementation does nothing.
+  }
+
 }

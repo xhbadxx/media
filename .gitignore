@@ -46,6 +46,7 @@ bazel-testlogs
 
 # Claude Code
 .claude/
+plans/
 
 # Other
 .DS_Store

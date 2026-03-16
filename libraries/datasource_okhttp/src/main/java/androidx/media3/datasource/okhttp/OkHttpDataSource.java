@@ -522,6 +522,12 @@ public class OkHttpDataSource extends BaseDataSource implements HttpDataSource {
       return C.RESULT_END_OF_INPUT;
     }
 
+    // Call onSample() immediately after each read - matches CronetDataSource behavior
+    // This enables accurate timing for fragment-based bandwidth measurement
+    try {
+      sample(buffer, offset, read);
+    } catch (Exception ignored) {}
+
     bytesRead += read;
     bytesTransferred(read);
     return read;

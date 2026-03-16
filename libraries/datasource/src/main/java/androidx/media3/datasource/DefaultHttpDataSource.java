@@ -264,8 +264,14 @@ public class DefaultHttpDataSource extends BaseDataSource implements HttpDataSou
   @Nullable private InputStream inputStream;
   private boolean transferStarted;
   private int responseCode;
+  private static final int DEFAULT_READ_BUFFER_SIZE_BYTES = 32 * 1024;
+
   private long bytesToRead;
   private long bytesRead;
+
+  // Sample buffer for onSample() - does not affect original workflow
+  @Nullable private byte[] sampleBuffer;
+  private int sampleBufferPosition;
 
   private DefaultHttpDataSource(
       @Nullable String userAgent,
@@ -785,6 +791,31 @@ public class DefaultHttpDataSource extends BaseDataSource implements HttpDataSou
       return C.RESULT_END_OF_INPUT;
     }
 
+    // Accumulate data in sample buffer for onSample() - does not affect original workflow
+    try {
+      if (sampleBuffer == null) {
+        sampleBuffer = new byte[DEFAULT_READ_BUFFER_SIZE_BYTES];
+        sampleBufferPosition = 0;
+      }
+
+      int remaining = read;
+      int sourceOffset = offset;
+
+      while (remaining > 0) {
+        int bytesToCopy = (int) min(remaining, DEFAULT_READ_BUFFER_SIZE_BYTES - sampleBufferPosition);
+        System.arraycopy(buffer, sourceOffset, sampleBuffer, sampleBufferPosition, bytesToCopy);
+        sampleBufferPosition += bytesToCopy;
+        sourceOffset += bytesToCopy;
+        remaining -= bytesToCopy;
+
+        // When sample buffer is full, call onSample() and reset
+        if (sampleBufferPosition >= DEFAULT_READ_BUFFER_SIZE_BYTES) {
+          sample(sampleBuffer, 0, sampleBufferPosition);
+          sampleBufferPosition = 0;
+        }
+      }
+    } catch (Exception ignored) {}
+
     bytesRead += read;
     bytesTransferred(read);
     return read;
@@ -799,6 +830,14 @@ public class DefaultHttpDataSource extends BaseDataSource implements HttpDataSou
         Log.e(TAG, "Unexpected error while disconnecting", e);
       }
     }
+    // Flush any remaining data in sample buffer
+    if (sampleBuffer != null && sampleBufferPosition > 0) {
+      try {
+        sample(sampleBuffer, 0, sampleBufferPosition);
+      } catch (Exception ignored) {}
+    }
+    sampleBuffer = null;
+    sampleBufferPosition = 0;
   }
 
   private static boolean isCompressed(HttpURLConnection connection) {

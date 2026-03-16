@@ -104,4 +104,20 @@ public abstract class BaseDataSource implements DataSource {
     }
     this.dataSpec = null;
   }
+
+  /**
+   * Notifies listeners that sample were transferred.
+   *
+   * @param data data is transferred.
+   * @param offset The offset of bytes transferred.
+   * @param length The number of bytes transferred.
+   */
+  protected final void sample(byte[] data, long offset, long length) {
+    DataSpec dataSpec = castNonNull(this.dataSpec);
+    for (int i = 0; i < listenerCount; i++) {
+      listeners
+          .get(i)
+          .onSample(dataSpec, data, offset, length);
+    }
+  }
 }

@@ -856,7 +856,7 @@ public class CronetDataSource extends BaseDataSource implements HttpDataSource {
   /** Returns current {@link UrlResponseInfo}. May be null if the data source is not opened. */
   @UnstableApi
   @Nullable
-  protected UrlResponseInfo getCurrentUrlResponseInfo() {
+  public UrlResponseInfo getCurrentUrlResponseInfo() {
     return responseInfo;
   }
 
@@ -1033,11 +1033,15 @@ public class CronetDataSource extends BaseDataSource implements HttpDataSource {
    */
   @SuppressWarnings("ReferenceEquality")
   private void readInternal(ByteBuffer buffer, DataSpec dataSpec) throws HttpDataSourceException {
+    int pos = buffer.position();
     castNonNull(currentUrlRequest).read(buffer);
     try {
       if (!operation.block(readTimeoutMs)) {
         throw new SocketTimeoutException();
       }
+      try {
+        sample(buffer.array(), buffer.arrayOffset() + pos, buffer.position() - pos);
+      } catch (Exception ignored) {}
     } catch (InterruptedException e) {
       // The operation is ongoing so replace buffer to avoid it being written to by this
       // operation during a subsequent request.
