@@ -1,0 +1,7 @@
+#ifndef MBEDTLS_CONFIG_H
+#define MBEDTLS_CONFIG_H
+
+#define MBEDTLS_AES_C
+#define MBEDTLS_CIPHER_MODE_CBC
+
+#endif /* MBEDTLS_CONFIG_H */
