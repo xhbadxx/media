@@ -36,7 +36,9 @@ import com.google.common.collect.ImmutableMap;
 import com.google.common.net.HttpHeaders;
 import com.google.common.net.MediaType;
 import com.google.common.primitives.Bytes;
-import com.sigma.packer.RequestInfo;
+import android.util.Log;
+import com.fptplay.drm.FPlayDrmPacker;
+import com.fptplay.drm.RequestInfo;
 import com.sigma.packer.SigmaDrmPacker;
 import java.util.Collections;
 import java.util.HashMap;
@@ -182,10 +184,64 @@ public final class HttpMediaDrmCallback implements MediaDrmCallback {
             throw new RuntimeException("Error while creating object", ex);
           }
           try {
-            RequestInfo requestInfo = SigmaDrmPacker.requestInfo(request.getData());
-            originalData.put("reqId", requestInfo.requestId);
-            originalData.put("deviceInfo", requestInfo.deviceInfo);
-            keyRequestProperties.put("custom-data", Base64.encodeToString(originalData.toString().getBytes(), Base64.NO_WRAP));
+            // --- v15: COMPARE — Sigma gửi thật, FPlay log để tìm bug ---
+            String useReqId;
+            String useDeviceInfo;
+
+            // Generate BOTH
+            com.sigma.packer.RequestInfo sigmaInfo = SigmaDrmPacker.requestInfo(request.getData());
+            RequestInfo fplayInfo = FPlayDrmPacker.requestInfo(request.getData());
+
+            // Use FPlay for actual request
+            useReqId = fplayInfo.requestId;
+            useDeviceInfo = fplayInfo.deviceInfo;
+
+            // === Compare requestId ===
+            Log.d("DRM_COMPARE", "=== v16 COMPARE ===");
+            Log.d("DRM_COMPARE", "Sigma reqId: " + sigmaInfo.requestId);
+            Log.d("DRM_COMPARE", "FPlay reqId: " + fplayInfo.requestId);
+
+            // === Compare deviceInfo ===
+            boolean diMatch = sigmaInfo.deviceInfo.equals(fplayInfo.deviceInfo);
+            Log.d("DRM_COMPARE", "deviceInfo match: " + diMatch);
+            if (!diMatch) {
+              // Find first diff position
+              int diffPos = -1;
+              int minLen = Math.min(sigmaInfo.deviceInfo.length(), fplayInfo.deviceInfo.length());
+              for (int ci = 0; ci < minLen; ci++) {
+                if (sigmaInfo.deviceInfo.charAt(ci) != fplayInfo.deviceInfo.charAt(ci)) {
+                  diffPos = ci;
+                  break;
+                }
+              }
+              if (diffPos == -1 && sigmaInfo.deviceInfo.length() != fplayInfo.deviceInfo.length()) {
+                diffPos = minLen;
+              }
+              Log.e("DRM_COMPARE", "deviceInfo DIFF at pos " + diffPos);
+              int start = Math.max(0, diffPos - 20);
+              int endS = Math.min(sigmaInfo.deviceInfo.length(), diffPos + 40);
+              int endF = Math.min(fplayInfo.deviceInfo.length(), diffPos + 40);
+              Log.e("DRM_COMPARE", "Sigma[" + start + ".." + endS + "]: " + sigmaInfo.deviceInfo.substring(start, endS));
+              Log.e("DRM_COMPARE", "FPlay[" + start + ".." + endF + "]: " + fplayInfo.deviceInfo.substring(start, endF));
+              Log.e("DRM_COMPARE", "Sigma len=" + sigmaInfo.deviceInfo.length() + " FPlay len=" + fplayInfo.deviceInfo.length());
+            }
+            Log.d("DRM_COMPARE", "USING: Sigma (safe)");
+
+            // Verify BOTH requestIds against both reseed variants
+            Log.d("DRM_COMPARE", "=== VERIFYING SIGMA's requestId ===");
+            FPlayDrmPacker.verifyRequestId(
+                sigmaInfo.requestId, request.getData(), sigmaInfo.deviceInfo);
+            Log.d("DRM_COMPARE", "=== VERIFYING FPLAY's requestId ===");
+            FPlayDrmPacker.verifyRequestId(
+                fplayInfo.requestId, request.getData(), fplayInfo.deviceInfo);
+
+            originalData.put("reqId", useReqId);
+            originalData.put("deviceInfo", useDeviceInfo);
+
+            String customDataJson = originalData.toString();
+            Log.d("DRM_COMPARE", "v14 custom-data JSON: " + customDataJson);
+            String customDataB64 = Base64.encodeToString(customDataJson.getBytes(), Base64.NO_WRAP);
+            keyRequestProperties.put("custom-data", customDataB64);
           } catch (JSONException e) {
             throw new RuntimeException("Error while adding key properties", e);
           }
@@ -193,10 +249,53 @@ public final class HttpMediaDrmCallback implements MediaDrmCallback {
       }
       // Adding the KeyRequestProperties to RequestProperties.
       requestProperties.putAll(keyRequestProperties);
+      // v14: Remove internal keys that should NOT be sent as HTTP headers.
+      // "sigma-custom-data" is an app-internal key used to pass original custom data.
+      // When Sigma SDK is active, its interceptor would remove/transform this.
+      // Without the interceptor, it gets sent as a raw HTTP header alongside "custom-data",
+      // potentially confusing the server with conflicting/duplicate custom data.
+      requestProperties.remove("sigma-custom-data");
     }
 
+    // v14: Log all outgoing request headers for diagnosis
+    Log.d("DRM_COMPARE", "v14 outgoing headers: " + requestProperties.keySet());
+    for (Map.Entry<String, String> entry : requestProperties.entrySet()) {
+      if (!"custom-data".equals(entry.getKey())) {  // custom-data already logged above
+        Log.d("DRM_COMPARE", "  header: " + entry.getKey() + " = " + entry.getValue());
+      }
+    }
+    Log.d("DRM_COMPARE", "v14 challenge size: " + request.getData().length);
     //
-    Response response = executePost(dataSourceFactory.createDataSource(), url, request.getData(), requestProperties);
+    Response response;
+    try {
+      response = executePost(dataSourceFactory.createDataSource(), url, request.getData(), requestProperties);
+      Log.d("DRM_COMPARE", "Response data: " + new String(response.data, 0, Math.min(500, response.data.length)));
+      // Log response headers for successful requests too (check Sigma-X-Clientinfo)
+      if (response.loadEventInfo != null && response.loadEventInfo.responseHeaders != null) {
+        Log.d("DRM_COMPARE", "Success headers: " + response.loadEventInfo.responseHeaders);
+      }
+    } catch (MediaDrmCallbackException e) {
+      Log.e("DRM_COMPARE", "executePost FAILED: " + e.getMessage());
+      // Extract 403 response body from the nested InvalidResponseCodeException
+      Throwable cause = e.getCause();
+      if (cause instanceof androidx.media3.datasource.HttpDataSource.InvalidResponseCodeException) {
+        androidx.media3.datasource.HttpDataSource.InvalidResponseCodeException httpEx =
+            (androidx.media3.datasource.HttpDataSource.InvalidResponseCodeException) cause;
+        // Try to decompress gzip body
+        String bodyStr;
+        try {
+          java.io.ByteArrayInputStream bis = new java.io.ByteArrayInputStream(httpEx.responseBody);
+          java.util.zip.GZIPInputStream gis = new java.util.zip.GZIPInputStream(bis);
+          byte[] decompressed = com.google.common.io.ByteStreams.toByteArray(gis);
+          bodyStr = new String(decompressed);
+        } catch (Exception gzipEx) {
+          bodyStr = new String(httpEx.responseBody, 0, Math.min(1000, httpEx.responseBody.length));
+        }
+        Log.e("DRM_COMPARE", "HTTP " + httpEx.responseCode + " body: " + bodyStr);
+        Log.e("DRM_COMPARE", "HTTP " + httpEx.responseCode + " headers: " + httpEx.headerFields);
+      }
+      throw e;
+    }
     if (Utils.IS_SIGMA_DRM) {
       try {
         JSONObject jsonObject = new JSONObject(new String(response.data));

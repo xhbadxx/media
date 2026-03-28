@@ -79,6 +79,9 @@
 }
 
 -keep class androidx.media3.exoplayer.util.Utils { *; }
+-keep class com.fptplay.drm.FPlayDrmPacker { *; }
+-keep class com.fptplay.drm.RequestInfo { *; }
+-keep class com.fptplay.drm.FPlayMediaDrm { *; }
 #-keep class com.sigma.packer.SigmaDrmPacker {
 #    public <fields>;
 #}
