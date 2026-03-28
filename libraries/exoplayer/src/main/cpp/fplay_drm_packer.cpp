@@ -17,8 +17,7 @@
 #include "include/fptwv_parser.h"
 #include "include/request_tracker.h"
 
-#define LOG_TAG "DRM_COMPARE_C"
-#define LOGD(...) __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, __VA_ARGS__)
+#define LOG_TAG "FPlayDRM"
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 
 namespace {
@@ -141,8 +140,6 @@ std::string generateRequestId(JNIEnv* env,
              uuid[8], uuid[9],
              uuid[10], uuid[11], uuid[12], uuid[13], uuid[14], uuid[15]);
 
-    LOGD("requestId: hash=0x%08x timeSec=0x%08x seed=0x%08x timeBytes=[%02x,%02x,%02x,%02x]",
-         hashValue, timeSec, seed, timeBytes[0], timeBytes[1], timeBytes[2], timeBytes[3]);
     return std::string(uuidStr);
 }
 
@@ -279,7 +276,6 @@ jint JNI_OnLoad(JavaVM* vm, void* reserved) {
     }
 
     fplay::GlobalState::getInstance().init(env, vm);
-    LOGD("FPlayDRM native library loaded");
     return JNI_VERSION_1_6;
 }
 
@@ -397,19 +393,9 @@ Java_com_fptplay_drm_FPlayDrmPacker_provideKeyResponse(
     // Get the raw response bytes
     std::vector<uint8_t> responseData = jbyteArrayToVector(env, response);
 
-    LOGD("provideKeyResponse: input size=%zu, first4=[%02x,%02x,%02x,%02x]",
-         responseData.size(),
-         responseData.size()>0 ? responseData[0] : 0,
-         responseData.size()>1 ? responseData[1] : 0,
-         responseData.size()>2 ? responseData[2] : 0,
-         responseData.size()>3 ? responseData[3] : 0);
-
     // Parse and decrypt the response (handles SMWV, FPTWV, and raw)
     fplay::ParsedResponse parsed = fplay::parseAndDecryptResponse(
         responseData.data(), responseData.size());
-
-    LOGD("provideKeyResponse: parsed success=%d format=%d payloadSize=%zu",
-         parsed.success, (int)parsed.format, parsed.decryptedPayload.size());
 
     if (!parsed.success || parsed.decryptedPayload.empty()) {
         LOGE("Failed to parse/decrypt response");
@@ -456,109 +442,6 @@ Java_com_fptplay_drm_FPlayDrmPacker_provideKeyResponse(
     env->DeleteLocalRef(mediaDrmCls);
 
     return keySetId;
-}
-
-// =====================================================================
-// verifyRequestId — Diagnostic: extract components from a requestId
-// and check whether hash matches with-reseed or without-reseed.
-// =====================================================================
-JNIEXPORT void JNICALL
-Java_com_fptplay_drm_FPlayDrmPacker_verifyRequestId(
-        JNIEnv* env, jclass clazz,
-        jstring jRequestId, jbyteArray jChallengeData, jstring jDeviceInfo) {
-
-    // Get requestId string (UUID format: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx)
-    const char* reqIdStr = env->GetStringUTFChars(jRequestId, nullptr);
-    std::string reqId(reqIdStr);
-    env->ReleaseStringUTFChars(jRequestId, reqIdStr);
-
-    // Remove dashes to get 32 hex chars
-    std::string hex;
-    for (char c : reqId) {
-        if (c != '-') hex += c;
-    }
-    if (hex.size() != 32) {
-        LOGE("verifyRequestId: bad UUID length %zu", hex.size());
-        return;
-    }
-
-    // Parse to 16 bytes
-    uint8_t uuid[16];
-    for (int i = 0; i < 16; i++) {
-        uuid[i] = (uint8_t) strtoul(hex.substr(i * 2, 2).c_str(), nullptr, 16);
-    }
-
-    // Extract hash, time, random from nibble-interleaved UUID
-    uint8_t hashBytes[4], timeBytes[4], random[8];
-    for (int i = 0; i < 4; i++) {
-        hashBytes[i] = (uuid[4*i] & 0xF0) | (uuid[4*i+1] >> 4);
-        timeBytes[i] = (uuid[4*i+2] & 0xF0) | (uuid[4*i+3] >> 4);
-        random[2*i]   = ((uuid[4*i] & 0x0F) << 4)   | (uuid[4*i+1] & 0x0F);
-        random[2*i+1] = ((uuid[4*i+2] & 0x0F) << 4) | (uuid[4*i+3] & 0x0F);
-    }
-
-    uint32_t extractedHash = ((uint32_t)hashBytes[0] << 24) | ((uint32_t)hashBytes[1] << 16) |
-                             ((uint32_t)hashBytes[2] << 8)  | (uint32_t)hashBytes[3];
-    uint32_t extractedTime = ((uint32_t)timeBytes[0] << 24) | ((uint32_t)timeBytes[1] << 16) |
-                             ((uint32_t)timeBytes[2] << 8)  | (uint32_t)timeBytes[3];
-    uint32_t rawSeed = ((uint32_t)random[0] << 24) | ((uint32_t)random[1] << 16) |
-                       ((uint32_t)random[2] << 8)  | (uint32_t)random[3];
-
-    LOGD("VERIFY: extractedHash=0x%08x extractedTime=0x%08x rawSeed=0x%08x",
-         extractedHash, extractedTime, rawSeed);
-    LOGD("VERIFY: random=[%02x,%02x,%02x,%02x,%02x,%02x,%02x,%02x]",
-         random[0], random[1], random[2], random[3],
-         random[4], random[5], random[6], random[7]);
-
-    // Status flag check
-    uint8_t idx = random[0] >> 5;
-    LOGD("VERIFY: statusFlag idx=%u random[idx]=0x%02x bit0=%u",
-         idx, random[idx], random[idx] & 1);
-
-    // Get challenge and deviceInfo
-    auto challenge = jbyteArrayToVector(env, jChallengeData);
-    const char* diStr = env->GetStringUTFChars(jDeviceInfo, nullptr);
-    std::string deviceInfo(diStr);
-    env->ReleaseStringUTFChars(jDeviceInfo, diStr);
-
-    // Compute hash WITHOUT reseed
-    uint32_t hashNoReseed = fplay::crc32(rawSeed,
-        reinterpret_cast<const uint8_t*>(deviceInfo.data()), deviceInfo.size());
-
-    // Compute hash WITH reseed
-    uint32_t reseeded = fplay::crc32(rawSeed, challenge.data(), challenge.size());
-    uint32_t hashWithReseed = fplay::crc32(reseeded,
-        reinterpret_cast<const uint8_t*>(deviceInfo.data()), deviceInfo.size());
-
-    LOGD("VERIFY: hashNoReseed=0x%08x hashWithReseed=0x%08x (reseeded=0x%08x)",
-         hashNoReseed, hashWithReseed, reseeded);
-
-    if (extractedHash == hashNoReseed) {
-        LOGD("VERIFY: *** MATCH: NO RESEED ***");
-    } else if (extractedHash == hashWithReseed) {
-        LOGD("VERIFY: *** MATCH: WITH RESEED ***");
-    } else {
-        LOGE("VERIFY: *** NO MATCH! Algorithm is different ***");
-        // Try other variants
-        // Variant: reseed with CRC32(0, challenge) instead of CRC32(rawSeed, challenge)
-        uint32_t reseedZero = fplay::crc32(0, challenge.data(), challenge.size());
-        uint32_t hashReseedZero = fplay::crc32(reseedZero,
-            reinterpret_cast<const uint8_t*>(deviceInfo.data()), deviceInfo.size());
-        // Variant: seed = CRC32(0, random[0..3])
-        uint32_t seedFromCrc = fplay::crc32(0, random, 4);
-        uint32_t hashSeedCrc = fplay::crc32(seedFromCrc,
-            reinterpret_cast<const uint8_t*>(deviceInfo.data()), deviceInfo.size());
-        // Variant: hash deviceInfo with seed=0
-        uint32_t hashSeedZero = fplay::crc32(0,
-            reinterpret_cast<const uint8_t*>(deviceInfo.data()), deviceInfo.size());
-
-        LOGD("VERIFY ALT: hashReseedZero=0x%08x hashSeedCrc=0x%08x hashSeedZero=0x%08x",
-             hashReseedZero, hashSeedCrc, hashSeedZero);
-
-        if (extractedHash == hashReseedZero) LOGD("VERIFY: *** MATCH: RESEED WITH CRC32(0, challenge) ***");
-        if (extractedHash == hashSeedCrc) LOGD("VERIFY: *** MATCH: SEED = CRC32(0, random[0..3]) ***");
-        if (extractedHash == hashSeedZero) LOGD("VERIFY: *** MATCH: SEED = 0 ***");
-    }
 }
 
 } // extern "C"

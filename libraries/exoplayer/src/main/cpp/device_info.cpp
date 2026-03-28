@@ -4,7 +4,7 @@
 #include <vector>
 #include <cstdint>
 
-#define LOG_TAG "DRM_COMPARE_C"
+#define LOG_TAG "FPlayDRM"
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 
 namespace fplay {

@@ -4,7 +4,7 @@
 #include <android/log.h>
 #include <cstring>
 
-#define LOG_TAG "DRM_COMPARE_C"
+#define LOG_TAG "FPlayDRM"
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 
 namespace fplay {
@@ -47,10 +47,6 @@ static ParsedResponse decryptPayload(ByteBuffer& buf, int32_t totalSize,
     uint8_t unknown = buf.readByte();
     uint8_t numExtraFields = buf.readByte();
     (void)unknown;
-
-    __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG,
-        "SMWV: totalSize=%d payloadSize=%d encType=%d numExtra=%d",
-        totalSize, payloadSize, encryptionType, numExtraFields);
 
     // Read key material
     std::vector<uint8_t> keyMaterial(numExtraFields);
