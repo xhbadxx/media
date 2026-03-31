@@ -28,7 +28,7 @@ import androidx.media3.datasource.DataSource;
 import androidx.media3.datasource.DefaultHttpDataSource;
 import androidx.media3.exoplayer.upstream.LoadErrorHandlingPolicy;
 import com.google.common.primitives.Ints;
-import com.sigma.packer.SigmaMediaDrm;
+import com.fptplay.drm.FPlayMediaDrm;
 import java.util.Map;
 import java.util.Objects;
 import org.checkerframework.checker.nullness.qual.MonotonicNonNull;
@@ -130,7 +130,7 @@ public final class DefaultDrmSessionManagerProvider implements DrmSessionManager
     }
 //    Log.d("EventLogger", "DrmConfiguration.isSigmaDrm: " + drmConfiguration.isSigmaDrm);
     if (drmConfiguration.isSigmaDrm) { // Needed update libs from Sigma
-      drmSessionManagerBuilder.setUuidAndExoMediaDrmProvider(drmConfiguration.scheme, SigmaMediaDrm.DEFAULT_PROVIDER);
+      drmSessionManagerBuilder.setUuidAndExoMediaDrmProvider(drmConfiguration.scheme, FPlayMediaDrm.DEFAULT_PROVIDER);
     } else {
       drmSessionManagerBuilder.setUuidAndExoMediaDrmProvider(drmConfiguration.scheme, FrameworkMediaDrm.DEFAULT_PROVIDER);
     }

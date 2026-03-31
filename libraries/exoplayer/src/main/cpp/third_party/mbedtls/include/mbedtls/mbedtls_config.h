@@ -3,5 +3,7 @@
 
 #define MBEDTLS_AES_C
 #define MBEDTLS_CIPHER_MODE_CBC
+#define MBEDTLS_SHA256_C
+#define MBEDTLS_MD5_C
 
 #endif /* MBEDTLS_CONFIG_H */

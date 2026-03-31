@@ -1,5 +1,7 @@
 #include "crypto.h"
 #include "mbedtls/aes.h"
+#include "mbedtls/sha256.h"
+#include "mbedtls/md5.h"
 #include <cstring>
 #include <algorithm>
 
@@ -75,13 +77,24 @@ std::vector<uint8_t> aes_ecb_decrypt(
     return output;
 }
 
+// Sigma's feedback XOR cipher (confirmed from x86_64 disasm at 0x74fc0):
+//   feedback = 0
+//   for each byte i:
+//     key_byte = key[i % keyLen]
+//     result[i] = data[i] ^ (feedback & 0xFF) ^ key_byte
+//     feedback ^= key_byte
+//     feedback ^= result[i]
 std::vector<uint8_t> xor_decrypt(
     const uint8_t* data, size_t data_len,
     const uint8_t* key, size_t key_len) {
 
     std::vector<uint8_t> result(data_len);
+    uint32_t feedback = 0;
     for (size_t i = 0; i < data_len; i++) {
-        result[i] = data[i] ^ key[i % key_len];
+        uint8_t key_byte = key[i % key_len];
+        result[i] = data[i] ^ (uint8_t)(feedback & 0xFF) ^ key_byte;
+        feedback ^= key_byte;
+        feedback ^= result[i];
     }
     return result;
 }
@@ -96,6 +109,18 @@ int pkcs7_unpad(const uint8_t* data, size_t len) {
         if (data[i] != pad_val) return -1;
     }
     return static_cast<int>(len - pad_val);
+}
+
+std::vector<uint8_t> sha256(const uint8_t* data, size_t len) {
+    std::vector<uint8_t> hash(32);
+    mbedtls_sha256(data, len, hash.data(), 0); // 0 = SHA-256 (not SHA-224)
+    return hash;
+}
+
+std::vector<uint8_t> md5(const uint8_t* data, size_t len) {
+    std::vector<uint8_t> hash(16);
+    mbedtls_md5(data, len, hash.data());
+    return hash;
 }
 
 } // namespace fplay

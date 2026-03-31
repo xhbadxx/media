@@ -33,4 +33,10 @@ std::vector<uint8_t> xor_decrypt(
 // PKCS7 unpad -- returns actual data size, or -1 on invalid padding
 int pkcs7_unpad(const uint8_t* data, size_t len);
 
+// SHA-256 hash
+std::vector<uint8_t> sha256(const uint8_t* data, size_t len);
+
+// MD5 hash
+std::vector<uint8_t> md5(const uint8_t* data, size_t len);
+
 } // namespace fplay

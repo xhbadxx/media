@@ -63,7 +63,6 @@ def addMissingAarTypeToXml(xml) {
         "com.google.android.material:material",
         "com.google.testparameterinjector:test-parameter-injector",
         "io.antmedia:rtmp-client",
-        'com.sigma.packer:media3-1.6.1',
         // go/keep-sorted end
     ]
     xml.asNode().children().stream()

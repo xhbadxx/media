@@ -193,38 +193,35 @@ public class FPlayMediaDrm implements ExoMediaDrm {
   @Override
   public byte[] provideKeyResponse(byte[] scope, byte[] response)
       throws android.media.NotProvisionedException, android.media.DeniedByServerException {
-    if (!C.CLEARKEY_UUID.equals(uuid)) {
-      return FPlayDrmPacker.provideKeyResponse(mediaDrm, scope, response);
-    }
-    if (Util.SDK_INT >= 27) {
-      return FPlayDrmPacker.provideKeyResponse(mediaDrm, scope, response);
-    }
     // ClearKey response adjustment for API < 27
-    try {
-      JSONObject responseJson = new JSONObject(Util.fromUtf8Bytes(response));
-      StringBuilder adjustedResponse = new StringBuilder("{\"keys\":[");
-      JSONArray keys = responseJson.getJSONArray("keys");
-      for (int i = 0; i < keys.length(); i++) {
-        if (i != 0) {
-          adjustedResponse.append(",");
+    if (C.CLEARKEY_UUID.equals(uuid) && Util.SDK_INT < 27) {
+      try {
+        JSONObject responseJson = new JSONObject(Util.fromUtf8Bytes(response));
+        StringBuilder adjustedResponse = new StringBuilder("{\"keys\":[");
+        JSONArray keys = responseJson.getJSONArray("keys");
+        for (int i = 0; i < keys.length(); i++) {
+          if (i != 0) {
+            adjustedResponse.append(",");
+          }
+          JSONObject key = keys.getJSONObject(i);
+          adjustedResponse.append("{\"k\":\"");
+          adjustedResponse.append(key.getString("k").replace('-', '+').replace('_', '/'));
+          adjustedResponse.append("\",\"kid\":\"");
+          adjustedResponse.append(key.getString("kid").replace('-', '+').replace('_', '/'));
+          adjustedResponse.append("\",\"kty\":\"");
+          adjustedResponse.append(key.getString("kty"));
+          adjustedResponse.append("\"}");
         }
-        JSONObject key = keys.getJSONObject(i);
-        adjustedResponse.append("{\"k\":\"");
-        adjustedResponse.append(key.getString("k").replace('-', '+').replace('_', '/'));
-        adjustedResponse.append("\",\"kid\":\"");
-        adjustedResponse.append(key.getString("kid").replace('-', '+').replace('_', '/'));
-        adjustedResponse.append("\",\"kty\":\"");
-        adjustedResponse.append(key.getString("kty"));
-        adjustedResponse.append("\"}");
+        adjustedResponse.append("]}");
+        response = Util.getUtf8Bytes(adjustedResponse.toString());
+      } catch (JSONException e) {
+        Log.e(
+            "ClearKeyUtil",
+            "Failed to adjust response data: " + Util.fromUtf8Bytes(response),
+            e);
       }
-      adjustedResponse.append("]}");
-      response = Util.getUtf8Bytes(adjustedResponse.toString());
-    } catch (JSONException e) {
-      Log.e(
-          "ClearKeyUtil",
-          "Failed to adjust response data: " + Util.fromUtf8Bytes(response),
-          e);
     }
+
     return FPlayDrmPacker.provideKeyResponse(mediaDrm, scope, response);
   }
 

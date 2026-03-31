@@ -14,6 +14,8 @@ add_library(fplaydrm SHARED
     fptwv_parser.cpp
     request_tracker.cpp
     ${MBEDTLS_DIR}/library/aes.c
+    ${MBEDTLS_DIR}/library/sha256.c
+    ${MBEDTLS_DIR}/library/md5.c
     ${MBEDTLS_DIR}/library/platform_util.c
 )
 

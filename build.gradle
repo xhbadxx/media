@@ -34,9 +34,6 @@ allprojects {
                 includeGroup "com.github.philburk"
             }
         }
-        maven {
-            url "https://maven.sigmadrm.com"
-        }
     }
     if (it.hasProperty('externalBuildDir')) {
         if (!new File(externalBuildDir).isAbsolute()) {

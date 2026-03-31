@@ -16,4 +16,11 @@ public class FPlayDrmPacker {
 
     public static native byte[] provideKeyResponse(
         MediaDrm mediaDrm, byte[] scope, byte[] response);
+
+    /**
+     * Decrypt SMWV/FPTWV response without calling MediaDrm.provideKeyResponse().
+     * Used for verification: compare FPlay's decryption against Sigma's.
+     * Returns decrypted Widevine license bytes, or null if decryption fails.
+     */
+    public static native byte[] decryptResponse(byte[] response);
 }

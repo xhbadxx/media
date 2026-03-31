@@ -444,4 +444,48 @@ Java_com_fptplay_drm_FPlayDrmPacker_provideKeyResponse(
     return keySetId;
 }
 
+// =====================================================================
+// decryptResponse — Decrypt only, do NOT call MediaDrm.provideKeyResponse()
+// Used for verification: compare FPlay decryption against Sigma's.
+// =====================================================================
+JNIEXPORT jbyteArray JNICALL
+Java_com_fptplay_drm_FPlayDrmPacker_decryptResponse(
+        JNIEnv* env, jclass clazz, jbyteArray response) {
+
+    std::vector<uint8_t> responseData = jbyteArrayToVector(env, response);
+
+    LOGE("decryptResponse: input size=%zu", responseData.size());
+    // Hex dump first 128 bytes to understand SMWV binary structure
+    {
+        size_t dumpLen = std::min(responseData.size(), (size_t)128);
+        std::string hexDump;
+        for (size_t i = 0; i < dumpLen; i++) {
+            char buf[4];
+            snprintf(buf, sizeof(buf), "%02x ", responseData[i]);
+            hexDump += buf;
+            if ((i + 1) % 32 == 0) {
+                LOGE("decryptResponse hex [%03zu]: %s", i - 31, hexDump.c_str());
+                hexDump.clear();
+            }
+        }
+        if (!hexDump.empty()) {
+            LOGE("decryptResponse hex [%03zu]: %s",
+                 (dumpLen / 32) * 32, hexDump.c_str());
+        }
+    }
+
+    fplay::ParsedResponse parsed = fplay::parseAndDecryptResponse(
+        responseData.data(), responseData.size());
+
+    LOGE("decryptResponse: result success=%d format=%d payloadSize=%zu",
+         parsed.success, (int)parsed.format, parsed.decryptedPayload.size());
+
+    if (!parsed.success || parsed.decryptedPayload.empty()) {
+        LOGE("decryptResponse: Failed to parse/decrypt");
+        return nullptr;
+    }
+
+    return vectorToJbyteArray(env, parsed.decryptedPayload);
+}
+
 } // extern "C"

@@ -15,6 +15,14 @@ struct ParsedResponse {
     ResponseFormat format = ResponseFormat::RAW;
     std::vector<uint8_t> decryptedPayload;
     bool success = false;
+
+    // Raw SMWV components (populated when decryption fails, for probing)
+    uint8_t encType = 0;
+    uint8_t fieldB = 0;
+    std::vector<uint8_t> keyMaterial;
+    uint8_t iv[16] = {0};
+    std::vector<uint8_t> innerData;
+    std::vector<uint8_t> encLicense;  // remaining bytes after metadata section
 };
 
 // Parse and decrypt an SMWV or FPTWV response.
