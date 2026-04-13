@@ -25,7 +25,9 @@ import androidx.media3.common.C;
 import androidx.media3.common.MediaItem.LiveConfiguration;
 import androidx.media3.common.util.UnstableApi;
 import androidx.media3.common.util.Util;
+import androidx.media3.exoplayer.util.LowLatencyLog;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
+import java.util.Locale;
 
 /**
  * A {@link LivePlaybackSpeedControl} that adjusts the playback speed using a proportional
@@ -277,6 +279,9 @@ public final class DefaultLivePlaybackSpeedControl implements LivePlaybackSpeedC
   private long smoothedMinPossibleLiveOffsetUs;
   private long smoothedMinPossibleLiveOffsetDeviationUs;
 
+  // Rate-limited tick logging (every LowLatencyLog.TICK_LOG_INTERVAL_MS).
+  private long lastLowLatencyLogMs;
+
   private DefaultLivePlaybackSpeedControl(
       float fallbackMinPlaybackSpeed,
       float fallbackMaxPlaybackSpeed,
@@ -304,10 +309,40 @@ public final class DefaultLivePlaybackSpeedControl implements LivePlaybackSpeedC
     currentTargetLiveOffsetUs = C.TIME_UNSET;
     smoothedMinPossibleLiveOffsetUs = C.TIME_UNSET;
     smoothedMinPossibleLiveOffsetDeviationUs = C.TIME_UNSET;
+    lastLowLatencyLogMs = C.TIME_UNSET;
+    if (LowLatencyLog.isFull()) {
+      LowLatencyLog.d(
+          "SpeedCtrl",
+          String.format(
+              Locale.US,
+              "init: fallbackSpeed=[%.3f,%.3f] minUpdateInterval=%dms proportionalFactor=%.6f/us"
+                  + " unitSpeedErrorWindow=%dms rebufferIncrement=%dms",
+              fallbackMinPlaybackSpeed,
+              fallbackMaxPlaybackSpeed,
+              minUpdateIntervalMs,
+              proportionalControlFactor,
+              Util.usToMs(maxLiveOffsetErrorUsForUnitSpeed),
+              Util.usToMs(targetLiveOffsetRebufferDeltaUs)));
+    }
   }
 
   @Override
   public void setLiveConfiguration(LiveConfiguration liveConfiguration) {
+    if (LowLatencyLog.isFull()) {
+      LowLatencyLog.d(
+          "SpeedCtrl",
+          String.format(
+              Locale.US,
+              "setLiveConfiguration: target=%dms min=%dms max=%dms speed=[%.3f,%.3f]"
+                  + " (fallbackSpeed=[%.3f,%.3f])",
+              liveConfiguration.targetOffsetMs,
+              liveConfiguration.minOffsetMs,
+              liveConfiguration.maxOffsetMs,
+              liveConfiguration.minPlaybackSpeed,
+              liveConfiguration.maxPlaybackSpeed,
+              fallbackMinPlaybackSpeed,
+              fallbackMaxPlaybackSpeed));
+    }
     mediaConfigurationTargetLiveOffsetUs = Util.msToUs(liveConfiguration.targetOffsetMs);
     minTargetLiveOffsetUs = Util.msToUs(liveConfiguration.minOffsetMs);
     maxTargetLiveOffsetUs = Util.msToUs(liveConfiguration.maxOffsetMs);
@@ -335,14 +370,32 @@ public final class DefaultLivePlaybackSpeedControl implements LivePlaybackSpeedC
   @Override
   public void notifyRebuffer() {
     if (currentTargetLiveOffsetUs == C.TIME_UNSET) {
+      if (LowLatencyLog.isEnabled()) {
+        LowLatencyLog.w("SpeedCtrl", "REBUFFER: ignored — no current target yet");
+      }
       return;
     }
+    long oldTargetUs = currentTargetLiveOffsetUs;
     currentTargetLiveOffsetUs += targetLiveOffsetRebufferDeltaUs;
+    boolean clamped = false;
     if (maxTargetLiveOffsetUs != C.TIME_UNSET
         && currentTargetLiveOffsetUs > maxTargetLiveOffsetUs) {
       currentTargetLiveOffsetUs = maxTargetLiveOffsetUs;
+      clamped = true;
     }
     lastPlaybackSpeedUpdateMs = C.TIME_UNSET;
+    if (LowLatencyLog.isEnabled()) {
+      LowLatencyLog.d(
+          "SpeedCtrl",
+          String.format(
+              Locale.US,
+              "REBUFFER: target %dms → %dms (increment=%dms, max=%dms, clamped=%s)",
+              Util.usToMs(oldTargetUs),
+              Util.usToMs(currentTargetLiveOffsetUs),
+              Util.usToMs(targetLiveOffsetRebufferDeltaUs),
+              maxTargetLiveOffsetUs == C.TIME_UNSET ? -1 : Util.usToMs(maxTargetLiveOffsetUs),
+              clamped));
+    }
   }
 
   @Override
@@ -355,12 +408,15 @@ public final class DefaultLivePlaybackSpeedControl implements LivePlaybackSpeedC
 
     if (lastPlaybackSpeedUpdateMs != C.TIME_UNSET
         && SystemClock.elapsedRealtime() - lastPlaybackSpeedUpdateMs < minUpdateIntervalMs) {
+      maybeLogTick(liveOffsetUs, bufferedDurationUs, /* cached= */ true);
       return adjustedPlaybackSpeed;
     }
     lastPlaybackSpeedUpdateMs = SystemClock.elapsedRealtime();
 
+    long targetBeforeAdjustUs = currentTargetLiveOffsetUs;
     adjustTargetLiveOffsetUs(liveOffsetUs);
     long liveOffsetErrorUs = liveOffsetUs - currentTargetLiveOffsetUs;
+    float previousSpeed = adjustedPlaybackSpeed;
     if (Math.abs(liveOffsetErrorUs) < maxLiveOffsetErrorUsForUnitSpeed) {
       adjustedPlaybackSpeed = 1f;
     } else {
@@ -368,7 +424,75 @@ public final class DefaultLivePlaybackSpeedControl implements LivePlaybackSpeedC
       adjustedPlaybackSpeed =
           Util.constrainValue(calculatedSpeed, minPlaybackSpeed, maxPlaybackSpeed);
     }
+    if (LowLatencyLog.isEnabled() && targetBeforeAdjustUs != currentTargetLiveOffsetUs) {
+      long safeUs = smoothedMinPossibleLiveOffsetUs
+          + 3 * smoothedMinPossibleLiveOffsetDeviationUs;
+      LowLatencyLog.d(
+          "SpeedCtrl",
+          String.format(
+              Locale.US,
+              "targetAdjust: %dms → %dms (ideal=%dms liveOff=%dms safe=%dms"
+                  + " sMinP=%dms sDev=%dms)",
+              Util.usToMs(targetBeforeAdjustUs),
+              Util.usToMs(currentTargetLiveOffsetUs),
+              Util.usToMs(idealTargetLiveOffsetUs),
+              Util.usToMs(liveOffsetUs),
+              Util.usToMs(safeUs),
+              Util.usToMs(smoothedMinPossibleLiveOffsetUs),
+              Util.usToMs(smoothedMinPossibleLiveOffsetDeviationUs)));
+    }
+    float speedChangeThreshold = LowLatencyLog.isRebufferTest() ? 0.01f : 0.001f;
+    if (LowLatencyLog.isEnabled()
+        && Math.abs(adjustedPlaybackSpeed - previousSpeed) > speedChangeThreshold) {
+      LowLatencyLog.d(
+          "SpeedCtrl",
+          String.format(
+              Locale.US,
+              "speedChange: %.3f → %.3f (err=%+dms target=%dms liveOff=%dms bounds=[%.3f,%.3f])",
+              previousSpeed,
+              adjustedPlaybackSpeed,
+              Util.usToMs(liveOffsetErrorUs),
+              Util.usToMs(currentTargetLiveOffsetUs),
+              Util.usToMs(liveOffsetUs),
+              minPlaybackSpeed,
+              maxPlaybackSpeed));
+    }
+    maybeLogTick(liveOffsetUs, bufferedDurationUs, /* cached= */ false);
     return adjustedPlaybackSpeed;
+  }
+
+  private void maybeLogTick(long liveOffsetUs, long bufferedDurationUs, boolean cached) {
+    if (!LowLatencyLog.isEnabled()) {
+      return;
+    }
+    // In REBUFFER_TEST mode, only log tick when buffer is below threshold.
+    if (LowLatencyLog.isRebufferTest()
+        && Util.usToMs(bufferedDurationUs) > LowLatencyLog.rebufferTestBufferThresholdMs) {
+      return;
+    }
+    long nowMs = SystemClock.elapsedRealtime();
+    if (lastLowLatencyLogMs != C.TIME_UNSET
+        && nowMs - lastLowLatencyLogMs < LowLatencyLog.TICK_LOG_INTERVAL_MS) {
+      return;
+    }
+    lastLowLatencyLogMs = nowMs;
+    long errorUs = liveOffsetUs - currentTargetLiveOffsetUs;
+    LowLatencyLog.d(
+        "SpeedCtrl",
+        String.format(
+            Locale.US,
+            "tick: liveOff=%5dms curTarget=%5dms idealTarget=%5dms err=%+5dms speed=%.3f"
+                + " buf=%5dms minPossible=%5dms%s",
+            Util.usToMs(liveOffsetUs),
+            Util.usToMs(currentTargetLiveOffsetUs),
+            idealTargetLiveOffsetUs == C.TIME_UNSET ? -1 : Util.usToMs(idealTargetLiveOffsetUs),
+            Util.usToMs(errorUs),
+            adjustedPlaybackSpeed,
+            Util.usToMs(bufferedDurationUs),
+            smoothedMinPossibleLiveOffsetUs == C.TIME_UNSET
+                ? -1
+                : Util.usToMs(smoothedMinPossibleLiveOffsetUs),
+            cached ? " (cached)" : ""));
   }
 
   @Override

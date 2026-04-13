@@ -80,6 +80,7 @@ import androidx.media3.exoplayer.upstream.Loader;
 import androidx.media3.exoplayer.upstream.Loader.LoadErrorAction;
 import androidx.media3.exoplayer.upstream.LoaderErrorThrower;
 import androidx.media3.exoplayer.upstream.ParsingLoadable;
+import androidx.media3.exoplayer.util.LowLatencyLog;
 import androidx.media3.exoplayer.util.ReleasableExecutor;
 import androidx.media3.exoplayer.util.SntpClient;
 import androidx.media3.extractor.text.SubtitleParser;
@@ -478,6 +479,8 @@ public final class DashMediaSource extends BaseMediaSource {
 
   @GuardedBy("this")
   private MediaItem.LiveConfiguration liveConfiguration;
+
+  private boolean dashMergeLoggedOnce;
 
   private DashMediaSource(
       MediaItem mediaItem,
@@ -1078,7 +1081,14 @@ public final class DashMediaSource extends BaseMediaSource {
     }
     long targetOffsetMs;
     MediaItem.LiveConfiguration localLiveConfiguration = getLiveConfiguration();
-    if (localLiveConfiguration.targetOffsetMs != C.TIME_UNSET) {
+    if (mediaItemLiveConfiguration.targetOffsetMs != C.TIME_UNSET) {
+      // FPlay fork: always prefer the MediaItem target over the sticky local one so the target
+      // can be re-anchored downward after an early manifest refresh pushed it up (e.g. when
+      // windowDuration + minBufferTime temporarily forced minLiveOffsetMs above the desired
+      // target). Without this, once target drifts up it never comes back down.
+      targetOffsetMs = mediaItemLiveConfiguration.targetOffsetMs;
+      llConfiguration.updateTargetLiveOffset(targetOffsetMs, false);
+    } else if (localLiveConfiguration.targetOffsetMs != C.TIME_UNSET) {
       // Keep existing target offset even if the media configuration changes.
       targetOffsetMs = localLiveConfiguration.targetOffsetMs;
       llConfiguration.updateTargetLiveOffset(targetOffsetMs, false);
@@ -1139,6 +1149,82 @@ public final class DashMediaSource extends BaseMediaSource {
             .setMinPlaybackSpeed(minPlaybackSpeed)
             .setMaxPlaybackSpeed(maxPlaybackSpeed)
             .build());
+    // In REBUFFER_TEST mode, only log DashMerge once to confirm config is correct.
+    if (LowLatencyLog.isEnabled()
+        && (!LowLatencyLog.isRebufferTest() || !dashMergeLoggedOnce)) {
+      dashMergeLoggedOnce = true;
+      long mupMs =
+          manifest.minUpdatePeriodMs == C.TIME_UNSET ? -1 : manifest.minUpdatePeriodMs;
+      long tsbdMs =
+          manifest.timeShiftBufferDepthMs == C.TIME_UNSET ? -1 : manifest.timeShiftBufferDepthMs;
+      long minBufMs = manifest.minBufferTimeMs == C.TIME_UNSET ? -1 : manifest.minBufferTimeMs;
+      LowLatencyLog.d(
+          "DashMerge",
+          String.format(
+              Locale.US,
+              "manifest: mup=%dms tsbd=%dms minBuf=%dms windowDur=%dms nowInWindow=%dms",
+              mupMs,
+              tsbdMs,
+              minBufMs,
+              usToMs(windowDurationUs),
+              usToMs(nowInWindowUs)));
+      LowLatencyLog.d(
+          "DashMerge",
+          String.format(
+              Locale.US,
+              "mediaItem in: target=%s min=%s max=%s speed=[%s,%s]",
+              mediaItemLiveConfiguration.targetOffsetMs == C.TIME_UNSET
+                  ? "UNSET"
+                  : mediaItemLiveConfiguration.targetOffsetMs + "ms",
+              mediaItemLiveConfiguration.minOffsetMs == C.TIME_UNSET
+                  ? "UNSET"
+                  : mediaItemLiveConfiguration.minOffsetMs + "ms",
+              mediaItemLiveConfiguration.maxOffsetMs == C.TIME_UNSET
+                  ? "UNSET"
+                  : mediaItemLiveConfiguration.maxOffsetMs + "ms",
+              mediaItemLiveConfiguration.minPlaybackSpeed == C.RATE_UNSET
+                  ? "UNSET"
+                  : String.format(Locale.US, "%.3f", mediaItemLiveConfiguration.minPlaybackSpeed),
+              mediaItemLiveConfiguration.maxPlaybackSpeed == C.RATE_UNSET
+                  ? "UNSET"
+                  : String.format(Locale.US, "%.3f", mediaItemLiveConfiguration.maxPlaybackSpeed)));
+      if (manifest.serviceDescription != null) {
+        LowLatencyLog.d(
+            "DashMerge",
+            String.format(
+                Locale.US,
+                "serviceDesc  : target=%s min=%s max=%s speed=[%s,%s]",
+                manifest.serviceDescription.targetOffsetMs == C.TIME_UNSET
+                    ? "UNSET"
+                    : manifest.serviceDescription.targetOffsetMs + "ms",
+                manifest.serviceDescription.minOffsetMs == C.TIME_UNSET
+                    ? "UNSET"
+                    : manifest.serviceDescription.minOffsetMs + "ms",
+                manifest.serviceDescription.maxOffsetMs == C.TIME_UNSET
+                    ? "UNSET"
+                    : manifest.serviceDescription.maxOffsetMs + "ms",
+                manifest.serviceDescription.minPlaybackSpeed == C.RATE_UNSET
+                    ? "UNSET"
+                    : String.format(
+                        Locale.US, "%.3f", manifest.serviceDescription.minPlaybackSpeed),
+                manifest.serviceDescription.maxPlaybackSpeed == C.RATE_UNSET
+                    ? "UNSET"
+                    : String.format(
+                        Locale.US, "%.3f", manifest.serviceDescription.maxPlaybackSpeed)));
+      } else {
+        LowLatencyLog.d("DashMerge", "serviceDesc  : absent");
+      }
+      LowLatencyLog.d(
+          "DashMerge",
+          String.format(
+              Locale.US,
+              "merged   OUT: target=%dms min=%dms max=%dms speed=[%.3f,%.3f]",
+              targetOffsetMs,
+              minLiveOffsetMs,
+              maxLiveOffsetMs,
+              minPlaybackSpeed,
+              maxPlaybackSpeed));
+    }
   }
 
   private void simulateManifestRefresh() {

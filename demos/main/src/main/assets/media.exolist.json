@@ -1,5 +1,16 @@
 [
   {
+    "name": "Low Latency Test (SIGMA Widevine)",
+    "samples": [
+      {
+        "name": "EPL HCM 01 HD H265 (targetOffset=2s)",
+        "uri": "https://live-wmk.fptplay53.net/wmt:ODA0MTQxOA.eyJhbGciOiJIUzI1NiIsImtpZCI6Ik5leEd1YXJkVGVzdEtleSIsInR5cCI6IkpXVCJ9.eyJ3bXZlciI6MSwiaWF0IjoxNzc1NjM5MzY2LCJpc3MiOiJOZXhHdWFyZCIsImZyYWdkdXJhdGlvbiI6MTkyMDAwMDAsImV4cCI6MTc3NTcyNTc2Niwid21wYXRmbXQiOiJiYXNlNjQiLCJ3bXBhdCI6IkhpTWxNWk1yMmYvem5RT2RkcnprRTQ4cHlTeVJNa0EzRi9rd2tnUEZieHRoOWE3RXQvTFlGODNXanMxUmhocXFZVkNvcEU2RFFmcy9qYktNRnVLTy9RPT0iLCJ3bXBhdGxlbiI6NTEyLCJhY2Nlc3NUb2tlblNlc3Npb25JZCI6IjgwNDE0MTgifQ.BXph-eZj5tyuFY6itlbhznah_ZA8zi8NfWJAe4_z8xA/live/media/EPL_HCM_01_HD_H265/dash_h_drm/index.mpd",
+        "drm_scheme": "widevine",
+        "drm_license_uri": "https://license.sigmadrm.com/license/verify/widevine"
+      }
+    ]
+  },
+  {
     "name": "Clear DASH",
     "samples": [
       {

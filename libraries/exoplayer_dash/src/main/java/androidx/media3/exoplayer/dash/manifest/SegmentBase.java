@@ -170,6 +170,17 @@ public abstract class SegmentBase {
       this.periodStartUnixTimeUs = periodStartUnixTimeUs;
     }
 
+    /**
+     * Returns whether this segment base is configured for low-latency DASH streaming.
+     *
+     * <p>A stream is considered low-latency when {@code availabilityTimeOffsetUs} is set
+     * (not {@link C#TIME_UNSET}), indicating the server supports early segment requests
+     * via chunked transfer encoding.
+     */
+    public final boolean isLowLatency() {
+      return availabilityTimeOffsetUs != C.TIME_UNSET;
+    }
+
     /** See {@link DashSegmentIndex#getSegmentNum(long, long)}. */
     public long getSegmentNum(long timeUs, long periodDurationUs) {
       final long firstSegmentNum = getFirstSegmentNum();
@@ -209,7 +220,13 @@ public abstract class SegmentBase {
     /** See {@link DashSegmentIndex#getDurationUs(long, long)}. */
     public final long getSegmentDurationUs(long sequenceNumber, long periodDurationUs) {
       if (segmentTimeline != null) {
-        long duration = segmentTimeline.get((int) (sequenceNumber - startNumber)).duration;
+        int idx = (int) (sequenceNumber - startNumber);
+        // LL-Core: For LL-DASH only, if idx is beyond the timeline (extrapolated segment +1),
+        // use the last entry's duration. For non-LL streams, idx should always be in range.
+        if (idx >= segmentTimeline.size() && isLowLatency()) {
+          idx = segmentTimeline.size() - 1;
+        }
+        long duration = segmentTimeline.get(idx).duration;
         return (duration * C.MICROS_PER_SECOND) / timescale;
       } else {
         long segmentCount = getSegmentCount(periodDurationUs);
@@ -224,9 +241,21 @@ public abstract class SegmentBase {
     public final long getSegmentTimeUs(long sequenceNumber) {
       long unscaledSegmentTime;
       if (segmentTimeline != null) {
-        unscaledSegmentTime =
-            segmentTimeline.get((int) (sequenceNumber - startNumber)).startTime
-                - presentationTimeOffset;
+        int idx = (int) (sequenceNumber - startNumber);
+        if (idx < segmentTimeline.size()) {
+          unscaledSegmentTime = segmentTimeline.get(idx).startTime - presentationTimeOffset;
+        } else if (isLowLatency()) {
+          // LL-Core: For LL-DASH only, extrapolate time for the next incomplete segment
+          // beyond the timeline. Non-LL streams should never reach here.
+          SegmentTimelineElement last = segmentTimeline.get(segmentTimeline.size() - 1);
+          long segmentsBeyond = idx - segmentTimeline.size() + 1;
+          unscaledSegmentTime =
+              (last.startTime + last.duration * segmentsBeyond) - presentationTimeOffset;
+        } else {
+          // Non-LL stream: fallback to last entry (should not happen in normal flow).
+          unscaledSegmentTime =
+              segmentTimeline.get(segmentTimeline.size() - 1).startTime - presentationTimeOffset;
+        }
       } else {
         unscaledSegmentTime = (sequenceNumber - startNumber) * duration;
       }
@@ -274,7 +303,13 @@ public abstract class SegmentBase {
       // getSegmentNum(availabilityTimeOffsetUs) will not be completed yet.
       long firstIncompleteSegmentNum = getSegmentNum(availabilityTimeOffsetUs, periodDurationUs);
       long firstAvailableSegmentNum = getFirstAvailableSegmentNum(periodDurationUs, nowUnixTimeUs);
-      return (int) (firstIncompleteSegmentNum - firstAvailableSegmentNum);
+      long availableCount = firstIncompleteSegmentNum - firstAvailableSegmentNum;
+      // LL-Core: For LL-DASH (availabilityTimeOffsetUs != TIME_UNSET), include the incomplete
+      // segment so the player can stream it chunk-by-chunk via chunked transfer.
+      if (isLowLatency()) {
+        availableCount++;
+      }
+      return (int) availableCount;
     }
 
     /** See {@link DashSegmentIndex#getNextSegmentAvailableTimeUs(long, long)}. */
@@ -443,7 +478,18 @@ public abstract class SegmentBase {
     public RangedUri getSegmentUrl(Representation representation, long sequenceNumber) {
       long time;
       if (segmentTimeline != null) {
-        time = segmentTimeline.get((int) (sequenceNumber - startNumber)).startTime;
+        int idx = (int) (sequenceNumber - startNumber);
+        if (idx < segmentTimeline.size()) {
+          time = segmentTimeline.get(idx).startTime;
+        } else if (isLowLatency()) {
+          // LL-Core: For LL-DASH only, extrapolate time for the next incomplete segment.
+          SegmentTimelineElement last = segmentTimeline.get(segmentTimeline.size() - 1);
+          long segmentsBeyond = idx - segmentTimeline.size() + 1;
+          time = last.startTime + last.duration * segmentsBeyond;
+        } else {
+          // Non-LL stream: fallback to last entry (should not happen in normal flow).
+          time = segmentTimeline.get(segmentTimeline.size() - 1).startTime;
+        }
       } else {
         time = (sequenceNumber - startNumber) * duration;
       }
@@ -451,6 +497,18 @@ public abstract class SegmentBase {
           mediaTemplate.buildUri(
               representation.format.id, sequenceNumber, representation.format.bitrate, time);
       return new RangedUri(uriString, 0, C.LENGTH_UNSET);
+    }
+
+    @Override
+    public long getAvailableSegmentCount(long periodDurationUs, long nowUnixTimeUs) {
+      long count = super.getAvailableSegmentCount(periodDurationUs, nowUnixTimeUs);
+      // LL-Core: For LL-DASH with SegmentTimeline, include the next incomplete segment
+      // so the player can request it via chunked transfer (~300ms chunks instead of
+      // waiting for full 1.92s segment in next manifest refresh).
+      if (segmentTimeline != null && isLowLatency()) {
+        return count + 1;
+      }
+      return count;
     }
 
     @Override

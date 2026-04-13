@@ -38,6 +38,7 @@ import androidx.media3.exoplayer.LoadingInfo;
 import androidx.media3.exoplayer.SeekParameters;
 import androidx.media3.exoplayer.analytics.PlayerId;
 import androidx.media3.exoplayer.dash.PlayerEmsgHandler.PlayerTrackEmsgHandler;
+import androidx.media3.exoplayer.util.LowLatencyLog;
 import androidx.media3.exoplayer.dash.manifest.AdaptationSet;
 import androidx.media3.exoplayer.dash.manifest.BaseUrl;
 import androidx.media3.exoplayer.dash.manifest.DashManifest;
@@ -504,6 +505,24 @@ public class DefaultDashChunkSource implements DashChunkSource {
     if (segmentNum > lastAvailableSegmentNum
         || (missingLastSegment && segmentNum >= lastAvailableSegmentNum)) {
       // The segment is beyond the end of the period.
+      // LL-Core: log why player stopped downloading
+      if (LowLatencyLog.isEnabled()) {
+        long segStartUs = representationHolder.getSegmentStartTimeUs(
+            min(segmentNum, lastAvailableSegmentNum));
+        long lastAvailEndUs = representationHolder.getSegmentEndTimeUs(lastAvailableSegmentNum);
+        String trackLabel = trackType == C.TRACK_TYPE_VIDEO ? "V"
+            : trackType == C.TRACK_TYPE_AUDIO ? "A" : "T" + trackType;
+        LowLatencyLog.d(
+            "ChunkSched",
+            String.format(
+                java.util.Locale.US,
+                "WAIT[%s]: seg#%d > lastAvail#%d, bufDur=%dms nowPeriod=%dms",
+                trackLabel,
+                segmentNum,
+                lastAvailableSegmentNum,
+                Util.usToMs(bufferedDurationUs),
+                Util.usToMs(nowPeriodTimeUs)));
+      }
       out.endOfStream = periodEnded;
       return;
     }
@@ -525,6 +544,24 @@ public class DefaultDashChunkSource implements DashChunkSource {
       }
     }
 
+    // LL-Core: log when a segment IS scheduled for download
+    if (LowLatencyLog.isEnabled()) {
+      long segStartUs = representationHolder.getSegmentStartTimeUs(segmentNum);
+      long segEndUs = representationHolder.getSegmentEndTimeUs(segmentNum);
+      String trackLabel = trackType == C.TRACK_TYPE_VIDEO ? "V"
+          : trackType == C.TRACK_TYPE_AUDIO ? "A" : "T" + trackType;
+      LowLatencyLog.d(
+          "ChunkSched",
+          String.format(
+              java.util.Locale.US,
+              "LOAD[%s]: seg#%d [%dms..%dms] lastAvail#%d bufDur=%dms",
+              trackLabel,
+              segmentNum,
+              Util.usToMs(segStartUs),
+              Util.usToMs(segEndUs),
+              lastAvailableSegmentNum,
+              Util.usToMs(bufferedDurationUs)));
+    }
     long seekTimeUs = queue.isEmpty() ? loadPositionUs : C.TIME_UNSET;
     out.chunk =
         newMediaChunk(

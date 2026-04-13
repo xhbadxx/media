@@ -70,6 +70,7 @@ import androidx.media3.exoplayer.analytics.AnalyticsCollector;
 import androidx.media3.exoplayer.analytics.PlayerId;
 import androidx.media3.exoplayer.drm.DrmSession;
 import androidx.media3.exoplayer.source.BehindLiveWindowException;
+import androidx.media3.exoplayer.util.LowLatencyLog;
 import androidx.media3.exoplayer.source.MediaPeriod;
 import androidx.media3.exoplayer.source.MediaSource.MediaPeriodId;
 import androidx.media3.exoplayer.source.ShuffleOrder;
@@ -234,6 +235,9 @@ import java.util.Objects;
   private final boolean hasSecondaryRenderers;
   private final AudioFocusManager audioFocusManager;
   private final boolean avoidLoadingWhileEnded;
+
+  // LL-Core: rate-limit PlayerPos logging
+  private long lastPlayerPosLogMs = C.TIME_UNSET;
 
   private SeekParameters seekParameters;
   private ScrubbingModeParameters scrubbingModeParameters;
@@ -1308,9 +1312,51 @@ import java.util.Objects;
         && playbackInfo.playbackState == Player.STATE_READY
         && shouldUseLivePlaybackSpeedControl(playbackInfo.timeline, playbackInfo.periodId)
         && playbackInfo.playbackParameters.speed == 1f) {
+      long currentLiveOffsetUs = getCurrentLiveOffsetUs();
+      long totalBufferedDurationUs = playbackInfo.totalBufferedDurationUs;
+
+      // LL-Core: log detailed position info for rebuffer analysis (rate-limited to 500ms)
+      if (LowLatencyLog.isEnabled()) {
+        long nowMs = android.os.SystemClock.elapsedRealtime();
+        boolean shouldLogPos =
+            lastPlayerPosLogMs == C.TIME_UNSET
+                || nowMs - lastPlayerPosLogMs >= LowLatencyLog.TICK_LOG_INTERVAL_MS;
+        // In REBUFFER_TEST mode, only log when buffer is below threshold
+        if (LowLatencyLog.isRebufferTest()
+            && Util.usToMs(totalBufferedDurationUs) > LowLatencyLog.rebufferTestBufferThresholdMs) {
+          shouldLogPos = false;
+        }
+        if (shouldLogPos) {
+          lastPlayerPosLogMs = nowMs;
+          int windowIndex =
+              playbackInfo.timeline.getPeriodByUid(playbackInfo.periodId.periodUid, period)
+                  .windowIndex;
+          playbackInfo.timeline.getWindow(windowIndex, window);
+          long liveEdgePositionMs =
+              window.windowStartTimeMs != C.TIME_UNSET
+                  ? window.getCurrentUnixTimeMs() - window.windowStartTimeMs
+                  : C.TIME_UNSET;
+          long playbackPositionMs =
+              Util.usToMs(playbackInfo.positionUs + period.getPositionInWindowUs());
+          long bufMs = Util.usToMs(totalBufferedDurationUs);
+          long bufEndMs = playbackPositionMs + bufMs;
+          LowLatencyLog.d(
+              "PlayerPos",
+              String.format(
+                  java.util.Locale.US,
+                  "liveEdge=%dms pos=%dms bufEnd=%dms buf=%dms liveOff=%dms gap=%dms",
+                  liveEdgePositionMs,
+                  playbackPositionMs,
+                  bufEndMs,
+                  bufMs,
+                  Util.usToMs(currentLiveOffsetUs),
+                  liveEdgePositionMs - bufEndMs));
+        }
+      }
+
       float adjustedSpeed =
           livePlaybackSpeedControl.getAdjustedPlaybackSpeed(
-              getCurrentLiveOffsetUs(), playbackInfo.totalBufferedDurationUs);
+              currentLiveOffsetUs, totalBufferedDurationUs);
       if (mediaClock.getPlaybackParameters().speed != adjustedSpeed) {
         setMediaClockPlaybackParameters(playbackInfo.playbackParameters.withSpeed(adjustedSpeed));
         handlePlaybackParameters(
@@ -1436,6 +1482,33 @@ import java.util.Objects;
           /* isRebuffering= */ shouldPlayWhenReady(), /* resetLastRebufferRealtimeMs= */ false);
       setState(Player.STATE_BUFFERING);
       if (isRebuffering) {
+        // LL-Core: log exact positions at rebuffer moment
+        if (LowLatencyLog.isEnabled()) {
+          long rebufLiveOffsetUs = getCurrentLiveOffsetUs();
+          int wIdx =
+              playbackInfo.timeline.getPeriodByUid(playbackInfo.periodId.periodUid, period)
+                  .windowIndex;
+          playbackInfo.timeline.getWindow(wIdx, window);
+          long liveEdgeMs =
+              window.windowStartTimeMs != C.TIME_UNSET
+                  ? window.getCurrentUnixTimeMs() - window.windowStartTimeMs
+                  : C.TIME_UNSET;
+          long posMs =
+              Util.usToMs(playbackInfo.positionUs + period.getPositionInWindowUs());
+          long bufMs = Util.usToMs(playbackInfo.totalBufferedDurationUs);
+          long bufEndMs = posMs + bufMs;
+          LowLatencyLog.w(
+              "PlayerPos",
+              String.format(
+                  java.util.Locale.US,
+                  "REBUFFER! liveEdge=%dms pos=%dms bufEnd=%dms buf=%dms liveOff=%dms gap=%dms",
+                  liveEdgeMs,
+                  posMs,
+                  bufEndMs,
+                  bufMs,
+                  Util.usToMs(rebufLiveOffsetUs),
+                  liveEdgeMs - bufEndMs));
+        }
         notifyTrackSelectionRebuffer();
         livePlaybackSpeedControl.notifyRebuffer();
       }
