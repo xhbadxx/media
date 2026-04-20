@@ -29,6 +29,7 @@ package androidx.media3.common {
     method public static androidx.media3.common.AudioAttributes fromPlatformAudioAttributes(android.media.AudioAttributes);
     method @Deprecated public androidx.media3.common.AudioAttributes.AudioAttributesV21 getAudioAttributesV21();
     method public android.media.AudioAttributes getPlatformAudioAttributes();
+    method @androidx.media3.common.C.StreamType public int getVolumeControlStream();
     field public static final androidx.media3.common.AudioAttributes DEFAULT;
     field @androidx.media3.common.C.AudioAllowedCapturePolicy public final int allowedCapturePolicy;
     field @androidx.media3.common.C.AudioContentType public final int contentType;
@@ -122,6 +123,15 @@ package androidx.media3.common {
     field public static final int SELECTION_FLAG_FORCED = 2; // 0x2
     field public static final int SPATIALIZATION_BEHAVIOR_AUTO = 0; // 0x0
     field public static final int SPATIALIZATION_BEHAVIOR_NEVER = 1; // 0x1
+    field public static final int STREAM_TYPE_ACCESSIBILITY = 10; // 0xa
+    field public static final int STREAM_TYPE_ALARM = 4; // 0x4
+    field public static final int STREAM_TYPE_DEFAULT = 3; // 0x3
+    field public static final int STREAM_TYPE_DTMF = 8; // 0x8
+    field public static final int STREAM_TYPE_MUSIC = 3; // 0x3
+    field public static final int STREAM_TYPE_NOTIFICATION = 5; // 0x5
+    field public static final int STREAM_TYPE_RING = 2; // 0x2
+    field public static final int STREAM_TYPE_SYSTEM = 1; // 0x1
+    field public static final int STREAM_TYPE_VOICE_CALL = 0; // 0x0
     field public static final long TIME_END_OF_SOURCE = -9223372036854775808L; // 0x8000000000000000L
     field public static final long TIME_UNSET = -9223372036854775807L; // 0x8000000000000001L
     field public static final int TRACK_TYPE_AUDIO = 1; // 0x1
@@ -180,7 +190,10 @@ package androidx.media3.common {
   @IntDef(open=true, value={androidx.media3.common.C.CRYPTO_TYPE_UNSUPPORTED, androidx.media3.common.C.CRYPTO_TYPE_NONE, androidx.media3.common.C.CRYPTO_TYPE_FRAMEWORK}) @java.lang.annotation.Documented @java.lang.annotation.Retention(java.lang.annotation.RetentionPolicy.SOURCE) @java.lang.annotation.Target(java.lang.annotation.ElementType.TYPE_USE) public static @interface C.CryptoType {
   }
 
-  @IntDef({androidx.media3.common.Format.NO_VALUE, androidx.media3.common.C.ENCODING_INVALID, androidx.media3.common.C.ENCODING_PCM_8BIT, androidx.media3.common.C.ENCODING_PCM_16BIT, 0x10000000, androidx.media3.common.C.ENCODING_PCM_24BIT, 0x50000000, androidx.media3.common.C.ENCODING_PCM_32BIT, 0x60000000, androidx.media3.common.C.ENCODING_PCM_FLOAT, androidx.media3.common.C.ENCODING_MP3, androidx.media3.common.C.ENCODING_AAC_LC, androidx.media3.common.C.ENCODING_AAC_HE_V1, androidx.media3.common.C.ENCODING_AAC_HE_V2, androidx.media3.common.C.ENCODING_AAC_XHE, androidx.media3.common.C.ENCODING_AAC_ELD, 0x40000000, androidx.media3.common.C.ENCODING_AC3, androidx.media3.common.C.ENCODING_E_AC3, androidx.media3.common.C.ENCODING_E_AC3_JOC, androidx.media3.common.C.ENCODING_AC4, androidx.media3.common.C.ENCODING_DTS, androidx.media3.common.C.ENCODING_DTS_HD, androidx.media3.common.C.ENCODING_DOLBY_TRUEHD, androidx.media3.common.C.ENCODING_OPUS, androidx.media3.common.C.ENCODING_DTS_UHD_P2}) @java.lang.annotation.Documented @java.lang.annotation.Retention(java.lang.annotation.RetentionPolicy.SOURCE) @java.lang.annotation.Target(java.lang.annotation.ElementType.TYPE_USE) public static @interface C.Encoding {
+  @IntDef({androidx.media3.common.Format.NO_VALUE, androidx.media3.common.C.ENCODING_INVALID, androidx.media3.common.C.ENCODING_PCM_8BIT, androidx.media3.common.C.ENCODING_PCM_16BIT, 0x10000000, androidx.media3.common.C.ENCODING_PCM_24BIT, 0x50000000, androidx.media3.common.C.ENCODING_PCM_32BIT, 0x60000000, androidx.media3.common.C.ENCODING_PCM_FLOAT, 0x70000000, androidx.media3.common.C.ENCODING_MP3, androidx.media3.common.C.ENCODING_AAC_LC, androidx.media3.common.C.ENCODING_AAC_HE_V1, androidx.media3.common.C.ENCODING_AAC_HE_V2, androidx.media3.common.C.ENCODING_AAC_XHE, androidx.media3.common.C.ENCODING_AAC_ELD, 0x40000000, androidx.media3.common.C.ENCODING_AC3, androidx.media3.common.C.ENCODING_E_AC3, androidx.media3.common.C.ENCODING_E_AC3_JOC, androidx.media3.common.C.ENCODING_AC4, androidx.media3.common.C.ENCODING_DTS, androidx.media3.common.C.ENCODING_DTS_HD, androidx.media3.common.C.ENCODING_DOLBY_TRUEHD, androidx.media3.common.C.ENCODING_OPUS, androidx.media3.common.C.ENCODING_DTS_UHD_P2, 0x1f}) @java.lang.annotation.Documented @java.lang.annotation.Retention(java.lang.annotation.RetentionPolicy.SOURCE) @java.lang.annotation.Target(java.lang.annotation.ElementType.TYPE_USE) public static @interface C.Encoding {
+  }
+
+  @IntDef({androidx.media3.common.Format.NO_VALUE, androidx.media3.common.C.ENCODING_INVALID, androidx.media3.common.C.ENCODING_PCM_8BIT, androidx.media3.common.C.ENCODING_PCM_16BIT, 0x10000000, androidx.media3.common.C.ENCODING_PCM_24BIT, 0x50000000, androidx.media3.common.C.ENCODING_PCM_32BIT, 0x60000000, androidx.media3.common.C.ENCODING_PCM_FLOAT, 0x70000000}) @java.lang.annotation.Documented @java.lang.annotation.Retention(java.lang.annotation.RetentionPolicy.SOURCE) @java.lang.annotation.Target(java.lang.annotation.ElementType.TYPE_USE) public static @interface C.PcmEncoding {
   }
 
   @IntDef(flag=true, value={androidx.media3.common.C.ROLE_FLAG_MAIN, androidx.media3.common.C.ROLE_FLAG_ALTERNATE, androidx.media3.common.C.ROLE_FLAG_SUPPLEMENTARY, androidx.media3.common.C.ROLE_FLAG_COMMENTARY, androidx.media3.common.C.ROLE_FLAG_DUB, androidx.media3.common.C.ROLE_FLAG_EMERGENCY, androidx.media3.common.C.ROLE_FLAG_CAPTION, androidx.media3.common.C.ROLE_FLAG_SUBTITLE, androidx.media3.common.C.ROLE_FLAG_SIGN, androidx.media3.common.C.ROLE_FLAG_DESCRIBES_VIDEO, androidx.media3.common.C.ROLE_FLAG_DESCRIBES_MUSIC_AND_SOUND, androidx.media3.common.C.ROLE_FLAG_ENHANCED_DIALOG_INTELLIGIBILITY, androidx.media3.common.C.ROLE_FLAG_TRANSCRIBES_DIALOG, androidx.media3.common.C.ROLE_FLAG_EASY_TO_READ, androidx.media3.common.C.ROLE_FLAG_TRICK_PLAY, androidx.media3.common.C.ROLE_FLAG_AUXILIARY}) @java.lang.annotation.Documented @java.lang.annotation.Retention(java.lang.annotation.RetentionPolicy.SOURCE) @java.lang.annotation.Target({java.lang.annotation.ElementType.FIELD, java.lang.annotation.ElementType.METHOD, java.lang.annotation.ElementType.PARAMETER, java.lang.annotation.ElementType.LOCAL_VARIABLE, java.lang.annotation.ElementType.TYPE_USE}) public static @interface C.RoleFlags {
@@ -190,6 +203,9 @@ package androidx.media3.common {
   }
 
   @IntDef({androidx.media3.common.C.SPATIALIZATION_BEHAVIOR_AUTO, androidx.media3.common.C.SPATIALIZATION_BEHAVIOR_NEVER}) @java.lang.annotation.Documented @java.lang.annotation.Retention(java.lang.annotation.RetentionPolicy.SOURCE) @java.lang.annotation.Target(java.lang.annotation.ElementType.TYPE_USE) public static @interface C.SpatializationBehavior {
+  }
+
+  @IntDef({androidx.media3.common.C.STREAM_TYPE_ALARM, androidx.media3.common.C.STREAM_TYPE_DTMF, androidx.media3.common.C.STREAM_TYPE_MUSIC, androidx.media3.common.C.STREAM_TYPE_NOTIFICATION, androidx.media3.common.C.STREAM_TYPE_RING, androidx.media3.common.C.STREAM_TYPE_SYSTEM, androidx.media3.common.C.STREAM_TYPE_VOICE_CALL, androidx.media3.common.C.STREAM_TYPE_ACCESSIBILITY, androidx.media3.common.C.STREAM_TYPE_DEFAULT}) @java.lang.annotation.Documented @java.lang.annotation.Retention(java.lang.annotation.RetentionPolicy.SOURCE) @java.lang.annotation.Target({java.lang.annotation.ElementType.FIELD, java.lang.annotation.ElementType.METHOD, java.lang.annotation.ElementType.PARAMETER, java.lang.annotation.ElementType.LOCAL_VARIABLE, java.lang.annotation.ElementType.TYPE_USE}) public static @interface C.StreamType {
   }
 
   @IntDef(open=true, value={androidx.media3.common.C.TRACK_TYPE_UNKNOWN, androidx.media3.common.C.TRACK_TYPE_DEFAULT, androidx.media3.common.C.TRACK_TYPE_AUDIO, androidx.media3.common.C.TRACK_TYPE_VIDEO, androidx.media3.common.C.TRACK_TYPE_TEXT, androidx.media3.common.C.TRACK_TYPE_IMAGE, androidx.media3.common.C.TRACK_TYPE_METADATA, androidx.media3.common.C.TRACK_TYPE_CAMERA_MOTION, androidx.media3.common.C.TRACK_TYPE_NONE}) @java.lang.annotation.Documented @java.lang.annotation.Retention(java.lang.annotation.RetentionPolicy.SOURCE) @java.lang.annotation.Target(java.lang.annotation.ElementType.TYPE_USE) public static @interface C.TrackType {
@@ -236,6 +252,7 @@ package androidx.media3.common {
     field @Nullable public final String id;
     field @Nullable public final String label;
     field @Nullable public final String language;
+    field @androidx.media3.common.C.PcmEncoding public final int pcmEncoding;
     field public final float pixelWidthHeightRatio;
     field @androidx.media3.common.C.RoleFlags public final int roleFlags;
     field @Nullable public final String sampleMimeType;
@@ -787,6 +804,7 @@ package androidx.media3.common {
     method public boolean isPlayingAd();
     method public void moveMediaItem(int, int);
     method public void moveMediaItems(int, int, int);
+    method public void mute();
     method public void pause();
     method public void play();
     method public void prepare();
@@ -830,6 +848,7 @@ package androidx.media3.common {
     method public void setVideoTextureView(@Nullable android.view.TextureView);
     method public void setVolume(@FloatRange(from=0, to=1.0) float);
     method public void stop();
+    method public void unmute();
     field @Deprecated public static final int COMMAND_ADJUST_DEVICE_VOLUME = 26; // 0x1a
     field public static final int COMMAND_ADJUST_DEVICE_VOLUME_WITH_FLAGS = 34; // 0x22
     field public static final int COMMAND_CHANGE_MEDIA_ITEMS = 20; // 0x14
@@ -1142,13 +1161,18 @@ package androidx.media3.common {
     field public final int minVideoHeight;
     field public final int minVideoWidth;
     field public final com.google.common.collect.ImmutableMap<androidx.media3.common.TrackGroup,androidx.media3.common.TrackSelectionOverride> overrides;
+    field public final com.google.common.collect.ImmutableList<java.lang.String> preferredAudioLabels;
     field public final com.google.common.collect.ImmutableList<java.lang.String> preferredAudioLanguages;
     field public final com.google.common.collect.ImmutableList<java.lang.String> preferredAudioMimeTypes;
     field @androidx.media3.common.C.RoleFlags public final int preferredAudioRoleFlags;
+    field public final com.google.common.collect.ImmutableList<java.lang.String> preferredTextLabels;
     field public final com.google.common.collect.ImmutableList<java.lang.String> preferredTextLanguages;
     field @androidx.media3.common.C.RoleFlags public final int preferredTextRoleFlags;
+    field public final com.google.common.collect.ImmutableList<java.lang.String> preferredVideoLabels;
+    field public final com.google.common.collect.ImmutableList<java.lang.String> preferredVideoLanguages;
     field public final com.google.common.collect.ImmutableList<java.lang.String> preferredVideoMimeTypes;
     field @androidx.media3.common.C.RoleFlags public final int preferredVideoRoleFlags;
+    field public final boolean selectTextByDefault;
     field public final boolean selectUndeterminedTextLanguage;
     field public final boolean usePreferredTextLanguagesAndRoleFlagsFromCaptioningManager;
     field public final int viewportHeight;
@@ -1179,19 +1203,25 @@ package androidx.media3.common {
     method public androidx.media3.common.TrackSelectionParameters.Builder setMinVideoFrameRate(int);
     method public androidx.media3.common.TrackSelectionParameters.Builder setMinVideoSize(int, int);
     method public androidx.media3.common.TrackSelectionParameters.Builder setOverrideForType(androidx.media3.common.TrackSelectionOverride);
+    method public androidx.media3.common.TrackSelectionParameters.Builder setPreferredAudioLabels(java.lang.String...);
     method public androidx.media3.common.TrackSelectionParameters.Builder setPreferredAudioLanguage(@Nullable String);
     method public androidx.media3.common.TrackSelectionParameters.Builder setPreferredAudioLanguages(java.lang.String...);
     method public androidx.media3.common.TrackSelectionParameters.Builder setPreferredAudioMimeType(@Nullable String);
     method public androidx.media3.common.TrackSelectionParameters.Builder setPreferredAudioMimeTypes(java.lang.String...);
     method public androidx.media3.common.TrackSelectionParameters.Builder setPreferredAudioRoleFlags(@androidx.media3.common.C.RoleFlags int);
+    method public androidx.media3.common.TrackSelectionParameters.Builder setPreferredTextLabels(java.lang.String...);
     method public androidx.media3.common.TrackSelectionParameters.Builder setPreferredTextLanguage(@Nullable String);
     method public androidx.media3.common.TrackSelectionParameters.Builder setPreferredTextLanguageAndRoleFlagsToCaptioningManagerSettings();
     method @Deprecated public androidx.media3.common.TrackSelectionParameters.Builder setPreferredTextLanguageAndRoleFlagsToCaptioningManagerSettings(android.content.Context);
     method public androidx.media3.common.TrackSelectionParameters.Builder setPreferredTextLanguages(java.lang.String...);
     method public androidx.media3.common.TrackSelectionParameters.Builder setPreferredTextRoleFlags(@androidx.media3.common.C.RoleFlags int);
+    method public androidx.media3.common.TrackSelectionParameters.Builder setPreferredVideoLabels(java.lang.String...);
+    method public androidx.media3.common.TrackSelectionParameters.Builder setPreferredVideoLanguage(@Nullable String);
+    method public androidx.media3.common.TrackSelectionParameters.Builder setPreferredVideoLanguages(java.lang.String...);
     method public androidx.media3.common.TrackSelectionParameters.Builder setPreferredVideoMimeType(@Nullable String);
     method public androidx.media3.common.TrackSelectionParameters.Builder setPreferredVideoMimeTypes(java.lang.String...);
     method public androidx.media3.common.TrackSelectionParameters.Builder setPreferredVideoRoleFlags(@androidx.media3.common.C.RoleFlags int);
+    method public androidx.media3.common.TrackSelectionParameters.Builder setSelectTextByDefault(boolean);
     method public androidx.media3.common.TrackSelectionParameters.Builder setSelectUndeterminedTextLanguage(boolean);
     method public androidx.media3.common.TrackSelectionParameters.Builder setTrackTypeDisabled(@androidx.media3.common.C.TrackType int, boolean);
     method public androidx.media3.common.TrackSelectionParameters.Builder setViewportSize(int, int, boolean);
@@ -2007,6 +2037,7 @@ package androidx.media3.session {
     method public final boolean isSessionCommandAvailable(@androidx.media3.session.SessionCommand.CommandCode int);
     method public final void moveMediaItem(int, int);
     method public final void moveMediaItems(int, int, int);
+    method public final void mute();
     method public final void pause();
     method public final void play();
     method public final void prepare();
@@ -2054,6 +2085,7 @@ package androidx.media3.session {
     method public final void setVideoTextureView(@Nullable android.view.TextureView);
     method public final void setVolume(@FloatRange(from=0, to=1) float);
     method public final void stop();
+    method public final void unmute();
   }
 
   public static final class MediaController.Builder {
@@ -2181,12 +2213,11 @@ package androidx.media3.session {
     field public static final int LEGACY_CONTROLLER_VERSION = 0; // 0x0
   }
 
-  public abstract class MediaSessionService extends android.app.Service {
+  public abstract class MediaSessionService extends androidx.lifecycle.LifecycleService {
     ctor public MediaSessionService();
     method public final void addSession(androidx.media3.session.MediaSession);
     method public final java.util.List<androidx.media3.session.MediaSession> getSessions();
     method public final boolean isSessionAdded(androidx.media3.session.MediaSession);
-    method @CallSuper @Nullable public android.os.IBinder onBind(@Nullable android.content.Intent);
     method @Nullable public abstract androidx.media3.session.MediaSession onGetSession(androidx.media3.session.MediaSession.ControllerInfo);
     method @Deprecated public void onUpdateNotification(androidx.media3.session.MediaSession);
     method public void onUpdateNotification(androidx.media3.session.MediaSession, boolean);

@@ -53,7 +53,6 @@ import android.os.Looper;
 import android.os.Message;
 import android.os.Process;
 import android.os.RemoteException;
-import android.os.SystemClock;
 import android.util.TypedValue;
 import android.view.KeyEvent;
 import android.view.ViewConfiguration;
@@ -61,6 +60,7 @@ import androidx.annotation.CheckResult;
 import androidx.annotation.FloatRange;
 import androidx.annotation.GuardedBy;
 import androidx.annotation.Nullable;
+import androidx.concurrent.futures.CallbackToFutureAdapter;
 import androidx.media3.common.AudioAttributes;
 import androidx.media3.common.DeviceInfo;
 import androidx.media3.common.MediaItem;
@@ -94,7 +94,6 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.util.concurrent.FutureCallback;
 import com.google.common.util.concurrent.Futures;
 import com.google.common.util.concurrent.ListenableFuture;
-import com.google.common.util.concurrent.SettableFuture;
 import java.lang.ref.WeakReference;
 import java.util.List;
 import java.util.Objects;
@@ -117,6 +116,8 @@ import org.checkerframework.checker.initialization.qual.Initialized;
   public static final String TAG = "MediaSessionImpl";
 
   private static final SessionResult RESULT_WHEN_CLOSED = new SessionResult(INFO_CANCELLED);
+  private static final String SESSION_URI_SCHEME = "androidx";
+  private static final String SESSION_URI_AUTHORITY = "media3.session";
 
   private final Object lock = new Object();
 
@@ -215,21 +216,7 @@ import org.checkerframework.checker.initialization.qual.Initialized;
     onPlayerInfoChangedHandler = new PlayerInfoChangedHandler(applicationLooper);
     mediaPlayPauseKeyHandler = new MediaPlayPauseKeyHandler(applicationLooper);
 
-    // Build Uri that differentiate sessions across the creation/destruction in PendingIntent.
-    // Here's the reason why Session ID / SessionToken aren't suitable here.
-    //   - Session ID
-    //     PendingIntent from the previously closed session with the same ID can be sent to the
-    //     newly created session.
-    //   - SessionToken
-    //     SessionToken is a Parcelable so we can only put it into the intent extra.
-    //     However, creating two different PendingIntent that only differs extras isn't allowed.
-    //     See {@link PendingIntent} and {@link Intent#filterEquals} for details.
-    sessionUri =
-        new Uri.Builder()
-            .scheme(MediaSessionImpl.class.getName())
-            .appendPath(id)
-            .appendPath(String.valueOf(SystemClock.elapsedRealtime()))
-            .build();
+    sessionUri = createSessionUri(id);
 
     // For MediaSessionLegacyStub, use the same default commands as the proxy controller gets when
     // the app doesn't overrides the default commands in `onConnect`. When the default is overridden
@@ -255,7 +242,7 @@ import org.checkerframework.checker.initialization.qual.Initialized;
             Process.myUid(),
             SessionToken.TYPE_SESSION,
             MediaLibraryInfo.VERSION_INT,
-            MediaSessionStub.VERSION_INT,
+            MediaLibraryInfo.INTERFACE_VERSION,
             context.getPackageName(),
             sessionStub,
             tokenExtras,
@@ -741,7 +728,7 @@ import org.checkerframework.checker.initialization.qual.Initialized;
 
   private void dispatchOnPlayerInfoChanged(
       PlayerInfo playerInfo, boolean excludeTimeline, boolean excludeTracks) {
-    playerInfo = sessionStub.generateAndCacheUniqueTrackGroupIds(playerInfo);
+    playerInfo = sessionStub.updatePlayerInfoWithUniqueTrackGroupIds(playerInfo);
     List<ControllerInfo> controllers =
         sessionStub.getConnectedControllersManager().getConnectedControllers();
     for (int i = 0; i < controllers.size(); i++) {
@@ -1091,6 +1078,37 @@ import org.checkerframework.checker.initialization.qual.Initialized;
     }
   }
 
+  /**
+   * Creates a session URI for the given session ID.
+   *
+   * @param sessionId The session ID, or {@code null} if not set with {@link
+   *     MediaSession.Builder#setId(String)}.
+   * @return The session URI to identify the session.
+   */
+  /* package */ static Uri createSessionUri(@Nullable String sessionId) {
+    return new Uri.Builder()
+        .scheme(SESSION_URI_SCHEME)
+        .authority(SESSION_URI_AUTHORITY)
+        .appendPath(sessionId == null ? MediaSession.DEFAULT_SESSION_ID : sessionId)
+        .build();
+  }
+
+  /**
+   * Returns the session ID encoded in the session URI or {@link MediaSession#DEFAULT_SESSION_ID} if
+   * the URI passed in is not a valid session URI.
+   *
+   * @param sessionUri The session URI from which to extract the session ID.
+   * @return The session ID.
+   */
+  /* package */ static String getSessionId(Uri sessionUri) {
+    List<String> pathSegments = sessionUri.getPathSegments();
+    return !Objects.equals(sessionUri.getScheme(), SESSION_URI_SCHEME)
+            || !Objects.equals(sessionUri.getAuthority(), SESSION_URI_AUTHORITY)
+            || pathSegments.isEmpty()
+        ? MediaSession.DEFAULT_SESSION_ID
+        : pathSegments.get(0);
+  }
+
   /* package */ boolean canResumePlaybackOnStart() {
     return sessionLegacyStub.canResumePlaybackOnStart();
   }
@@ -1115,10 +1133,13 @@ import org.checkerframework.checker.initialization.qual.Initialized;
 
   /* package */ boolean onPlayRequested() {
     if (Looper.myLooper() != Looper.getMainLooper()) {
-      SettableFuture<Boolean> playRequested = SettableFuture.create();
-      mainHandler.post(() -> playRequested.set(onPlayRequested()));
       try {
-        return playRequested.get();
+        return CallbackToFutureAdapter.<Boolean>getFuture(
+                completer -> {
+                  mainHandler.post(() -> completer.set(onPlayRequested()));
+                  return "onPlayRequested";
+                })
+            .get();
       } catch (InterruptedException | ExecutionException e) {
         throw new IllegalStateException(e);
       }
@@ -1269,7 +1290,7 @@ import org.checkerframework.checker.initialization.qual.Initialized;
     }
   }
 
-  protected void dispatchRemoteControllerTaskWithoutReturn(RemoteControllerTask task) {
+  private void dispatchRemoteControllerTaskWithoutReturn(RemoteControllerTask task) {
     List<ControllerInfo> controllers =
         sessionStub.getConnectedControllersManager().getConnectedControllers();
     for (int i = 0; i < controllers.size(); i++) {
@@ -1283,7 +1304,7 @@ import org.checkerframework.checker.initialization.qual.Initialized;
     }
   }
 
-  protected void dispatchRemoteControllerTaskWithoutReturn(
+  protected final void dispatchRemoteControllerTaskWithoutReturn(
       ControllerInfo controller, RemoteControllerTask task) {
     try {
       int seq;

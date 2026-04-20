@@ -17,6 +17,9 @@
 package androidx.media3.ui.compose.state
 
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.MutableState
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
@@ -27,10 +30,13 @@ import androidx.media3.test.utils.robolectric.TestPlayerRunHelper.advance
 import androidx.media3.ui.compose.testutils.createReadyPlayerWithTwoItems
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.google.common.truth.Truth.assertThat
-import org.junit.Assert.assertThrows
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
+import org.mockito.AdditionalAnswers.delegatesTo
+import org.mockito.Mockito.mock
+import org.mockito.Mockito.never
+import org.mockito.Mockito.verify
 
 /** Unit test for [NextButtonState]. */
 @RunWith(AndroidJUnit4::class)
@@ -78,39 +84,45 @@ class NextButtonStateTest {
   }
 
   @Test
-  fun onClick_stateIsDisabled_throwsException() {
+  fun onClick_stateIsDisabled_isNoOp() {
     val player = createReadyPlayerWithTwoItems()
     player.removeCommands(Player.COMMAND_SEEK_TO_NEXT)
-    val state = NextButtonState(player)
+    val spyPlayer = mock(Player::class.java, delegatesTo<Player>(player))
+    val state = NextButtonState(spyPlayer)
+    check(!state.isEnabled)
 
-    assertThat(state.isEnabled).isFalse()
-    assertThrows(IllegalStateException::class.java) { state.onClick() }
+    state.onClick()
+
+    verify(spyPlayer, never()).seekToNext()
   }
 
   @Test
-  fun onClick_stateBecomesDisabled_throwsException() {
+  fun onClick_stateBecomesDisabled_isNoOp() {
     val player = createReadyPlayerWithTwoItems()
+    val spyPlayer = mock(Player::class.java, delegatesTo<Player>(player))
     lateinit var state: NextButtonState
-    composeTestRule.setContent { state = rememberNextButtonState(player) }
+    composeTestRule.setContent { state = rememberNextButtonState(spyPlayer) }
 
     player.removeCommands(Player.COMMAND_SEEK_TO_NEXT)
     composeTestRule.waitForIdle()
+    state.onClick()
 
-    assertThrows(IllegalStateException::class.java) { state.onClick() }
+    verify(spyPlayer, never()).seekToNext()
   }
 
   @Test
   fun onClick_justAfterCommandRemovedWhileStillEnabled_isNoOp() {
     val player = createReadyPlayerWithTwoItems()
+    val spyPlayer = mock(Player::class.java, delegatesTo<Player>(player))
     lateinit var state: NextButtonState
-    composeTestRule.setContent { state = rememberNextButtonState(player) }
+    composeTestRule.setContent { state = rememberNextButtonState(spyPlayer) }
 
     // Simulate command becoming disabled without yet receiving the event callback
     player.removeCommands(Player.COMMAND_SEEK_TO_NEXT)
     check(state.isEnabled)
     state.onClick()
 
-    assertThat(player.currentMediaItemIndex).isEqualTo(0)
+    verify(spyPlayer, never()).seekToNext()
   }
 
   @Test
@@ -186,5 +198,44 @@ class NextButtonStateTest {
 
     // UI syncs up with the fact that we reached the last media item and NextButton is now disabled
     assertThat(state.isEnabled).isFalse()
+  }
+
+  @Test
+  fun nullPlayer_buttonStateIsDisabled() {
+    lateinit var state: NextButtonState
+    composeTestRule.setContent { state = rememberNextButtonState(player = null) }
+
+    assertThat(state.isEnabled).isFalse()
+  }
+
+  @Test
+  fun nullPlayer_onClick_isNoOp() {
+    val state = NextButtonState(player = null)
+
+    assertThat(state.isEnabled).isFalse()
+    state.onClick()
+  }
+
+  @Test
+  fun playerBecomesNullRoundTrip_buttonStateBecomesDisabledAndEnabled() {
+    val player = createReadyPlayerWithTwoItems()
+
+    lateinit var state: NextButtonState
+    lateinit var isPlayerNull: MutableState<Boolean>
+    composeTestRule.setContent {
+      isPlayerNull = remember { mutableStateOf(false) }
+      state = rememberNextButtonState(player = if (isPlayerNull.value) null else player)
+    }
+    assertThat(state.isEnabled).isTrue()
+
+    isPlayerNull.value = true
+    composeTestRule.waitForIdle()
+
+    assertThat(state.isEnabled).isFalse()
+
+    isPlayerNull.value = false
+    composeTestRule.waitForIdle()
+
+    assertThat(state.isEnabled).isTrue()
   }
 }

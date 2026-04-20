@@ -76,6 +76,7 @@ import androidx.media3.common.AudioAttributes;
 import androidx.media3.common.C;
 import androidx.media3.common.DeviceInfo;
 import androidx.media3.common.MediaItem;
+import androidx.media3.common.MediaLibraryInfo;
 import androidx.media3.common.MediaMetadata;
 import androidx.media3.common.PlaybackException;
 import androidx.media3.common.PlaybackParameters;
@@ -1270,7 +1271,8 @@ import org.checkerframework.checker.initialization.qual.Initialized;
         CommandButton.getCustomLayoutFromMediaButtonPreferences(
             mediaButtonPreferencesWithUnavailableButtonsDisabled,
             /* backSlotAllowed= */ true,
-            /* forwardSlotAllowed= */ true);
+            /* forwardSlotAllowed= */ true,
+            MediaLibraryInfo.INTERFACE_VERSION);
     if (needsButtonReservationWorkaroundForSeekbar(androidAutoObserver)) {
       // When applying the workaround, if no custom back slot button is defined and other custom
       // forward or overflow buttons exist, we need to reserve the back slot to prevent the other

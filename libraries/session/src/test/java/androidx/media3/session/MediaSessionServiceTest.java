@@ -832,7 +832,8 @@ public class MediaSessionServiceTest {
                             .customExtras
                             .getString("expectedKey", /* defaultValue= */ "")
                             .equals("expectedValue")
-                        && args.isEmpty()) {
+                        && args.getString("expectedKey", /* defaultValue= */ "")
+                            .equals("expectedValue")) {
                       latch.countDown();
                     }
                     return Futures.immediateFuture(new SessionResult(SessionResult.RESULT_SUCCESS));
@@ -898,6 +899,14 @@ public class MediaSessionServiceTest {
           @Override
           public boolean handleCustomCommand(MediaSession session, String action, Bundle extras) {
             return defaultProvider.handleCustomCommand(session, action, extras);
+          }
+
+          @Override
+          public NotificationChannelInfo getNotificationChannelInfo() {
+            return new NotificationChannelInfo(
+                DefaultMediaNotificationProvider.DEFAULT_CHANNEL_ID,
+                context.getString(
+                    DefaultMediaNotificationProvider.DEFAULT_CHANNEL_NAME_RESOURCE_ID));
           }
         });
     service.addSession(session);

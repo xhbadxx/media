@@ -54,6 +54,7 @@ import android.widget.TextView;
 import android.widget.Toast;
 import androidx.activity.result.contract.ActivityResultContracts;
 import androidx.annotation.Nullable;
+import androidx.annotation.OptIn;
 import androidx.annotation.StringRes;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.app.NotificationCompat;
@@ -75,6 +76,7 @@ import androidx.media3.datasource.DataSourceBitmapLoader;
 import androidx.media3.effect.BitmapOverlay;
 import androidx.media3.effect.Contrast;
 import androidx.media3.effect.DebugTraceUtil;
+import androidx.media3.effect.DefaultHardwareBufferEffectsPipeline;
 import androidx.media3.effect.DrawableOverlay;
 import androidx.media3.effect.GlEffect;
 import androidx.media3.effect.GlShaderProgram;
@@ -102,7 +104,6 @@ import androidx.media3.transformer.ExperimentalAnalyzerModeFactory;
 import androidx.media3.transformer.ExportException;
 import androidx.media3.transformer.ExportResult;
 import androidx.media3.transformer.InAppFragmentedMp4Muxer;
-import androidx.media3.transformer.InAppMp4Muxer;
 import androidx.media3.transformer.JsonUtil;
 import androidx.media3.transformer.MediaProjectionAssetLoader;
 import androidx.media3.transformer.ProgressHolder;
@@ -116,6 +117,7 @@ import com.google.android.material.progressindicator.LinearProgressIndicator;
 import com.google.common.base.Stopwatch;
 import com.google.common.base.Ticker;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableSet;
 import com.google.common.util.concurrent.ListenableFuture;
 import java.io.BufferedWriter;
 import java.io.File;
@@ -292,8 +294,8 @@ public final class TransformerActivity extends AppCompatActivity {
     @Nullable Bundle bundle = intent.getExtras();
     MediaItem mediaItem = createMediaItem(bundle, inputUri);
     Util.maybeRequestReadStoragePermission(/* activity= */ this, mediaItem);
-    Transformer transformer = createTransformer(bundle, inputUri, outputFilePath);
     Composition composition = createComposition(mediaItem, bundle);
+    Transformer transformer = createTransformer(bundle, composition, inputUri, outputFilePath);
     exportStopwatch.reset();
     exportStopwatch.start();
     if (oldOutputFile == null) {
@@ -358,24 +360,24 @@ public final class TransformerActivity extends AppCompatActivity {
     return mediaItemBuilder.build();
   }
 
-  private Transformer createTransformer(@Nullable Bundle bundle, Uri inputUri, String filePath) {
-    Transformer.Builder transformerBuilder =
-        new Transformer.Builder(/* context= */ this)
-            .addListener(
-                new Transformer.Listener() {
-                  @Override
-                  public void onCompleted(Composition composition, ExportResult exportResult) {
-                    TransformerActivity.this.onCompleted(inputUri, filePath, exportResult);
-                  }
+  @OptIn(markerClass = androidx.media3.common.util.ExperimentalApi.class)
+  private Transformer createTransformer(
+      @Nullable Bundle bundle, Composition composition, Uri inputUri, String filePath) {
+    Transformer.Builder transformerBuilder = new Transformer.Builder(/* context= */ this);
 
-                  @Override
-                  public void onError(
-                      Composition composition,
-                      ExportResult exportResult,
-                      ExportException exportException) {
-                    TransformerActivity.this.onError(exportException);
-                  }
-                });
+    transformerBuilder.addListener(
+        new Transformer.Listener() {
+          @Override
+          public void onCompleted(Composition composition, ExportResult exportResult) {
+            TransformerActivity.this.onCompleted(inputUri, filePath, exportResult);
+          }
+
+          @Override
+          public void onError(
+              Composition composition, ExportResult exportResult, ExportException exportException) {
+            TransformerActivity.this.onError(exportException);
+          }
+        });
 
     if (bundle != null) {
       @Nullable String audioMimeType = bundle.getString(ConfigurationActivity.AUDIO_MIME_TYPE);
@@ -391,11 +393,7 @@ public final class TransformerActivity extends AppCompatActivity {
         transformerBuilder.setMaxDelayBetweenMuxerSamplesMs(C.TIME_UNSET);
       }
 
-      if (bundle.getBoolean(ConfigurationActivity.USE_MEDIA3_MP4_MUXER)) {
-        transformerBuilder.setMuxerFactory(new InAppMp4Muxer.Factory());
-      }
-
-      if (bundle.getBoolean(ConfigurationActivity.USE_MEDIA3_FRAGMENTED_MP4_MUXER)) {
+      if (bundle.getBoolean(ConfigurationActivity.PRODUCE_FRAGMENTED_MP4)) {
         transformerBuilder.setMuxerFactory(new InAppFragmentedMp4Muxer.Factory());
       }
 
@@ -461,7 +459,7 @@ public final class TransformerActivity extends AppCompatActivity {
 
   private Composition createComposition(MediaItem mediaItem, @Nullable Bundle bundle) {
     EditedMediaItem.Builder editedMediaItemBuilder = new EditedMediaItem.Builder(mediaItem);
-    // For image inputs. Automatically ignored if input is audio/video.
+    // Required for image inputs. For video inputs, it sets the target FPS.
     editedMediaItemBuilder.setFrameRate(DEFAULT_FRAME_RATE_FPS);
     if (bundle != null) {
       ImmutableList<AudioProcessor> audioProcessors = createAudioProcessorsFromBundle(bundle);
@@ -474,11 +472,9 @@ public final class TransformerActivity extends AppCompatActivity {
           .setEffects(new Effects(audioProcessors, videoEffects));
     }
     EditedMediaItemSequence.Builder editedMediaItemSequenceBuilder =
-        new EditedMediaItemSequence.Builder(editedMediaItemBuilder.build());
-    if (bundle != null) {
-      editedMediaItemSequenceBuilder.experimentalSetForceAudioTrack(
-          bundle.getBoolean(ConfigurationActivity.FORCE_AUDIO_TRACK));
-    }
+        new EditedMediaItemSequence.Builder(ImmutableSet.of(C.TRACK_TYPE_AUDIO, C.TRACK_TYPE_VIDEO))
+            .addItem(editedMediaItemBuilder.build());
+
     Composition.Builder compositionBuilder =
         new Composition.Builder(editedMediaItemSequenceBuilder.build());
     if (bundle != null) {
@@ -745,12 +741,6 @@ public final class TransformerActivity extends AppCompatActivity {
           Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
       TextOverlay textOverlay = TextOverlay.createStaticTextOverlay(overlayText, overlaySettings);
       overlaysBuilder.add(textOverlay);
-    }
-    if (selectedEffects[ConfigurationActivity.CLOCK_OVERLAY_INDEX]) {
-      overlaysBuilder.add(new ClockOverlay());
-    }
-    if (selectedEffects[ConfigurationActivity.CONFETTI_OVERLAY_INDEX]) {
-      overlaysBuilder.add(new ConfettiOverlay());
     }
     if (selectedEffects[ConfigurationActivity.ANIMATING_LOGO_OVERLAY]) {
       overlaysBuilder.add(new AnimatedLogoOverlay(this.getApplicationContext()));

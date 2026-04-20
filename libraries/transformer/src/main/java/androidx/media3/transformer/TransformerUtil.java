@@ -116,6 +116,9 @@ public final class TransformerUtil {
     if (firstEditedMediaItem.flattenForSlowMotion && containsSlowMotionData(inputFormat)) {
       return true;
     }
+    if (firstEditedMediaItem.speedProvider != SpeedProvider.DEFAULT) {
+      return true;
+    }
     if (!firstEditedMediaItem.effects.audioProcessors.isEmpty()) {
       return true;
     }
@@ -175,6 +178,9 @@ public final class TransformerUtil {
             .addAll(firstEditedMediaItem.effects.videoEffects)
             .addAll(composition.effects.videoEffects)
             .build();
+    if (firstEditedMediaItem.speedProvider != SpeedProvider.DEFAULT) {
+      return true;
+    }
     return !combinedEffects.isEmpty()
         && maybeCalculateTotalRotationDegreesAppliedInEffects(combinedEffects, inputFormat) == -1;
   }

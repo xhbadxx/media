@@ -17,14 +17,13 @@
 package androidx.media3.transformer;
 
 import static androidx.media3.common.util.Util.msToUs;
+import static androidx.media3.effect.HardwareBufferFrame.END_OF_STREAM_FRAME;
 import static com.google.common.truth.Truth.assertThat;
 import static com.google.common.util.concurrent.MoreExecutors.directExecutor;
+import static com.google.common.util.concurrent.MoreExecutors.newDirectExecutorService;
 
 import android.content.Context;
-import android.graphics.SurfaceTexture;
-import android.view.Surface;
-import androidx.media3.common.GlTextureInfo;
-import androidx.media3.effect.GlTextureFrame;
+import androidx.media3.effect.HardwareBufferFrame;
 import androidx.media3.exoplayer.ExoPlaybackException;
 import androidx.media3.exoplayer.video.VideoFrameReleaseControl;
 import androidx.media3.exoplayer.video.VideoFrameReleaseControl.FrameTimingEvaluator;
@@ -48,16 +47,16 @@ public class CompositionVideoPacketReleaseControlTest {
   private VideoFrameReleaseControl videoFrameReleaseControl;
   private FakeFrameTimingEvaluator fakeFrameTimingEvaluator;
   private FakeClock fakeClock;
-  private RecordingPacketConsumer outputConsumer;
-  private Set<GlTextureInfo> releasedTextures;
+  private RecordingPacketConsumer<ImmutableList<HardwareBufferFrame>> outputConsumer;
+  private Set<Long> releasedFrameTimestamps;
   // The first packet is required to be sent to the CompositionVideoPacketReleaseControl to
   // initialize the VideoFrameReleaseControl so subsequent behaviour can be tested.
-  private ImmutableList<GlTextureFrame> firstPacket;
+  private ImmutableList<HardwareBufferFrame> firstPacket;
 
   @Before
   public void setUp() {
     Context context = ApplicationProvider.getApplicationContext();
-    releasedTextures = new HashSet<>();
+    releasedFrameTimestamps = new HashSet<>();
     firstPacket = createPacket(/* presentationTimeUs= */ 0);
     fakeFrameTimingEvaluator = new FakeFrameTimingEvaluator();
     fakeClock = new FakeClock(/* initialTimeMs= */ 0);
@@ -65,16 +64,21 @@ public class CompositionVideoPacketReleaseControlTest {
         new VideoFrameReleaseControl(
             context, fakeFrameTimingEvaluator, /* allowedJoiningTimeMs= */ 0);
     videoFrameReleaseControl.setClock(fakeClock);
-    videoFrameReleaseControl.setOutputSurface(new Surface(new SurfaceTexture(1)));
     videoFrameReleaseControl.onStarted();
-    outputConsumer = new RecordingPacketConsumer(/* releaseIncomingFrames= */ false);
+    outputConsumer = new RecordingPacketConsumer<>();
     compositionVideoPacketReleaseControl =
-        new CompositionVideoPacketReleaseControl(videoFrameReleaseControl, outputConsumer);
+        new CompositionVideoPacketReleaseControl(
+            videoFrameReleaseControl,
+            outputConsumer,
+            newDirectExecutorService(),
+            exception -> {
+              throw new IllegalStateException(exception);
+            });
   }
 
   @Test
   public void onRender_releaseActionDrop_releasesFrame() throws ExoPlaybackException {
-    ImmutableList<GlTextureFrame> packet = createPacket(/* presentationTimeUs= */ 50_000);
+    ImmutableList<HardwareBufferFrame> packet = createPacket(/* presentationTimeUs= */ 50_000);
     compositionVideoPacketReleaseControl.queue(firstPacket);
     compositionVideoPacketReleaseControl.onRender(
         /* compositionTimePositionUs= */ 0,
@@ -91,12 +95,12 @@ public class CompositionVideoPacketReleaseControlTest {
         /* compositionTimeOutputStreamStartPositionUs= */ 0);
 
     assertOutputPackets(/* ignoreReleaseTime= */ true, firstPacket);
-    assertThat(releasedTextures).containsExactly(packet.get(0).glTextureInfo);
+    assertThat(releasedFrameTimestamps).containsExactly(packet.get(0).presentationTimeUs);
   }
 
   @Test
   public void onRender_releaseActionTryAgainLater_keepsFrame() throws ExoPlaybackException {
-    ImmutableList<GlTextureFrame> packet = createPacket(/* presentationTimeUs= */ 200_000);
+    ImmutableList<HardwareBufferFrame> packet = createPacket(/* presentationTimeUs= */ 200_000);
     compositionVideoPacketReleaseControl.queue(firstPacket);
     compositionVideoPacketReleaseControl.onRender(
         /* compositionTimePositionUs= */ 0,
@@ -112,13 +116,13 @@ public class CompositionVideoPacketReleaseControlTest {
         /* compositionTimeOutputStreamStartPositionUs= */ 0);
 
     assertOutputPackets(/* ignoreReleaseTime= */ true, firstPacket);
-    assertThat(releasedTextures).isEmpty();
+    assertThat(releasedFrameTimestamps).isEmpty();
   }
 
   @Test
   public void onRender_releaseActionImmediate_forwardsFrameDownstream()
       throws ExoPlaybackException {
-    ImmutableList<GlTextureFrame> packet = createPacket(/* presentationTimeUs= */ 100_000);
+    ImmutableList<HardwareBufferFrame> packet = createPacket(/* presentationTimeUs= */ 100_000);
     compositionVideoPacketReleaseControl.queue(firstPacket);
     compositionVideoPacketReleaseControl.onRender(
         /* compositionTimePositionUs= */ 0,
@@ -134,14 +138,14 @@ public class CompositionVideoPacketReleaseControlTest {
         /* compositionTimeOutputStreamStartPositionUs= */ 0);
 
     assertOutputPackets(/* ignoreReleaseTime= */ true, firstPacket, packet);
-    assertThat(releasedTextures).isEmpty();
+    assertThat(releasedFrameTimestamps).isEmpty();
   }
 
   @Test
   public void onRender_releaseActionSchedule_forwardsFrameDownstreamWithReleaseTime()
       throws ExoPlaybackException {
-    ImmutableList<GlTextureFrame> packet = createPacket(/* presentationTimeUs= */ 120_000);
-    ImmutableList<GlTextureFrame> expectedPacket =
+    ImmutableList<HardwareBufferFrame> packet = createPacket(/* presentationTimeUs= */ 120_000);
+    ImmutableList<HardwareBufferFrame> expectedPacket =
         updatePacketWithReleaseTime(packet, /* releaseTimeNs= */ 120_000_000);
     compositionVideoPacketReleaseControl.queue(firstPacket);
     compositionVideoPacketReleaseControl.onRender(
@@ -159,28 +163,28 @@ public class CompositionVideoPacketReleaseControlTest {
 
     // Update the release time of the first packet to match, to verify that scheduled release time
     // is correct.
-    ImmutableList<GlTextureFrame> expectedFirstFrame =
+    ImmutableList<HardwareBufferFrame> expectedFirstFrame =
         updatePacketWithReleaseTime(
-            firstPacket, outputConsumer.getQueuedPackets().get(0).get(0).releaseTimeNs);
+            firstPacket, outputConsumer.getQueuedPayloads().get(0).get(0).releaseTimeNs);
     assertOutputPackets(/* ignoreReleaseTime= */ false, expectedFirstFrame, expectedPacket);
-    assertThat(releasedTextures).isEmpty();
+    assertThat(releasedFrameTimestamps).isEmpty();
   }
 
   @Test
   public void queue_backwardSeek_flushesAndReleasesHeldFrames() {
-    ImmutableList<GlTextureFrame> packet1 = createPacket(/* presentationTimeUs= */ 200);
-    ImmutableList<GlTextureFrame> packet2 = createPacket(/* presentationTimeUs= */ 100);
+    ImmutableList<HardwareBufferFrame> packet1 = createPacket(/* presentationTimeUs= */ 200);
+    ImmutableList<HardwareBufferFrame> packet2 = createPacket(/* presentationTimeUs= */ 100);
 
     compositionVideoPacketReleaseControl.queue(packet1);
     compositionVideoPacketReleaseControl.queue(packet2);
 
-    assertThat(releasedTextures).containsExactly(packet1.get(0).glTextureInfo);
+    assertThat(releasedFrameTimestamps).containsExactly(packet1.get(0).presentationTimeUs);
   }
 
   @Test
   public void reset_releasesHeldFramesAndResetsReleaseControl() throws ExoPlaybackException {
-    ImmutableList<GlTextureFrame> packet1 = createPacket(/* presentationTimeUs= */ 100);
-    ImmutableList<GlTextureFrame> packet2 = createPacket(/* presentationTimeUs= */ 200);
+    ImmutableList<HardwareBufferFrame> packet1 = createPacket(/* presentationTimeUs= */ 100);
+    ImmutableList<HardwareBufferFrame> packet2 = createPacket(/* presentationTimeUs= */ 200);
     compositionVideoPacketReleaseControl.queue(firstPacket);
     compositionVideoPacketReleaseControl.onRender(
         /* compositionTimePositionUs= */ 0,
@@ -194,52 +198,163 @@ public class CompositionVideoPacketReleaseControlTest {
     compositionVideoPacketReleaseControl.reset();
 
     assertThat(videoFrameReleaseControl.isReady(/* otherwiseReady= */ true)).isFalse();
-    assertThat(releasedTextures)
-        .containsExactly(packet1.get(0).glTextureInfo, packet2.get(0).glTextureInfo);
+    assertThat(releasedFrameTimestamps)
+        .containsExactly(packet1.get(0).presentationTimeUs, packet2.get(0).presentationTimeUs);
   }
 
-  private ImmutableList<GlTextureFrame> createPacket(
-      /* presentationTimeUs= */ long presentationTimeUs) {
-    GlTextureInfo glTextureInfo = new GlTextureInfo((int) presentationTimeUs, 1, 1, 100, 100);
-    GlTextureFrame glFrame =
-        new GlTextureFrame.Builder(glTextureInfo, directExecutor(), releasedTextures::add)
+  @Test
+  public void isEnded_initially_returnsFalse() {
+    assertThat(compositionVideoPacketReleaseControl.isEnded()).isFalse();
+  }
+
+  @Test
+  public void queue_eosPacket_doesNotIsEndedWhenOnRenderNotCalled() {
+    compositionVideoPacketReleaseControl.queue(ImmutableList.of(END_OF_STREAM_FRAME));
+    assertThat(compositionVideoPacketReleaseControl.isEnded()).isFalse();
+  }
+
+  @Test
+  public void onRender_eosPacket_setsIsEndedTrue() throws Exception {
+    compositionVideoPacketReleaseControl.queue(ImmutableList.of(END_OF_STREAM_FRAME));
+    compositionVideoPacketReleaseControl.onRender(
+        /* compositionTimePositionUs= */ 0,
+        /* elapsedRealtimeUs= */ msToUs(fakeClock.elapsedRealtime()),
+        /* compositionTimeOutputStreamStartPositionUs= */ 0);
+
+    assertThat(compositionVideoPacketReleaseControl.isEnded()).isTrue();
+    assertOutputPackets(/* ignoreReleaseTime= */ true);
+    assertThat(releasedFrameTimestamps).isEmpty();
+  }
+
+  @Test
+  public void onRender_eosPacketAfterFrames_setsIsEndedTrue() throws ExoPlaybackException {
+    ImmutableList<HardwareBufferFrame> packet = createPacket(/* presentationTimeUs= */ 100_000);
+    compositionVideoPacketReleaseControl.queue(firstPacket);
+    compositionVideoPacketReleaseControl.onRender(
+        /* compositionTimePositionUs= */ 0,
+        /* elapsedRealtimeUs= */ msToUs(fakeClock.elapsedRealtime()),
+        /* compositionTimeOutputStreamStartPositionUs= */ 0);
+    fakeClock.advanceTime(/* timeDiffMs= */ 100);
+    assertOutputPackets(/* ignoreReleaseTime= */ true, firstPacket);
+
+    compositionVideoPacketReleaseControl.queue(packet);
+    compositionVideoPacketReleaseControl.queue(ImmutableList.of(END_OF_STREAM_FRAME));
+    compositionVideoPacketReleaseControl.onRender(
+        /* compositionTimePositionUs= */ 100_000,
+        /* elapsedRealtimeUs= */ msToUs(fakeClock.elapsedRealtime()),
+        /* compositionTimeOutputStreamStartPositionUs= */ 0);
+
+    assertThat(compositionVideoPacketReleaseControl.isEnded()).isTrue();
+    assertOutputPackets(/* ignoreReleaseTime= */ true, firstPacket, packet);
+    assertThat(releasedFrameTimestamps).isEmpty();
+  }
+
+  @Test
+  public void onRender_eosPacketBeforeFrames_doesNotSetIsEndedTrue() throws ExoPlaybackException {
+    ImmutableList<HardwareBufferFrame> packet = createPacket(/* presentationTimeUs= */ 100_000);
+    compositionVideoPacketReleaseControl.queue(firstPacket);
+    compositionVideoPacketReleaseControl.onRender(
+        /* compositionTimePositionUs= */ 0,
+        /* elapsedRealtimeUs= */ msToUs(fakeClock.elapsedRealtime()),
+        /* compositionTimeOutputStreamStartPositionUs= */ 0);
+    fakeClock.advanceTime(/* timeDiffMs= */ 100);
+    assertOutputPackets(/* ignoreReleaseTime= */ true, firstPacket);
+
+    compositionVideoPacketReleaseControl.queue(ImmutableList.of(END_OF_STREAM_FRAME));
+    compositionVideoPacketReleaseControl.queue(packet);
+    compositionVideoPacketReleaseControl.onRender(
+        /* compositionTimePositionUs= */ 100_000,
+        /* elapsedRealtimeUs= */ msToUs(fakeClock.elapsedRealtime()),
+        /* compositionTimeOutputStreamStartPositionUs= */ 0);
+
+    assertThat(compositionVideoPacketReleaseControl.isEnded()).isFalse();
+    assertOutputPackets(/* ignoreReleaseTime= */ true, firstPacket, packet);
+    assertThat(releasedFrameTimestamps).isEmpty();
+  }
+
+  @Test
+  public void onStarted_afterEos_resetsIsEndedToFalse() throws ExoPlaybackException {
+    compositionVideoPacketReleaseControl.queue(ImmutableList.of(END_OF_STREAM_FRAME));
+    compositionVideoPacketReleaseControl.onRender(
+        /* compositionTimePositionUs= */ 0,
+        /* elapsedRealtimeUs= */ msToUs(fakeClock.elapsedRealtime()),
+        /* compositionTimeOutputStreamStartPositionUs= */ 0);
+    assertThat(compositionVideoPacketReleaseControl.isEnded()).isTrue();
+
+    compositionVideoPacketReleaseControl.onStarted();
+
+    assertThat(compositionVideoPacketReleaseControl.isEnded()).isFalse();
+  }
+
+  @Test
+  public void reset_afterEos_resetsIsEndedToFalse() throws ExoPlaybackException {
+    compositionVideoPacketReleaseControl.queue(ImmutableList.of(END_OF_STREAM_FRAME));
+    compositionVideoPacketReleaseControl.onRender(
+        /* compositionTimePositionUs= */ 0,
+        /* elapsedRealtimeUs= */ msToUs(fakeClock.elapsedRealtime()),
+        /* compositionTimeOutputStreamStartPositionUs= */ 0);
+    assertThat(compositionVideoPacketReleaseControl.isEnded()).isTrue();
+
+    compositionVideoPacketReleaseControl.reset();
+
+    assertThat(compositionVideoPacketReleaseControl.isEnded()).isFalse();
+  }
+
+  @Test
+  public void onRender_emptyQueueWhenEnded_isEndedRemainsTrue() throws ExoPlaybackException {
+    compositionVideoPacketReleaseControl.queue(ImmutableList.of(END_OF_STREAM_FRAME));
+    compositionVideoPacketReleaseControl.onRender(
+        /* compositionTimePositionUs= */ 0,
+        /* elapsedRealtimeUs= */ msToUs(fakeClock.elapsedRealtime()),
+        /* compositionTimeOutputStreamStartPositionUs= */ 0);
+    assertThat(compositionVideoPacketReleaseControl.isEnded()).isTrue();
+
+    compositionVideoPacketReleaseControl.onRender(
+        /* compositionTimePositionUs= */ 10_000,
+        /* elapsedRealtimeUs= */ msToUs(fakeClock.elapsedRealtime() + 10_000),
+        /* compositionTimeOutputStreamStartPositionUs= */ 0);
+
+    assertThat(compositionVideoPacketReleaseControl.isEnded()).isTrue();
+  }
+
+  private ImmutableList<HardwareBufferFrame> createPacket(long presentationTimeUs) {
+    HardwareBufferFrame hardwareBufferFrame =
+        new HardwareBufferFrame.Builder(
+                /* hardwareBuffer= */ null,
+                directExecutor(),
+                (releaseFence) -> releasedFrameTimestamps.add(presentationTimeUs))
             .setPresentationTimeUs(presentationTimeUs)
+            .setInternalFrame(presentationTimeUs)
             .build();
-    return ImmutableList.of(glFrame);
+    return ImmutableList.of(hardwareBufferFrame);
   }
 
   @SafeVarargs
   private final void assertOutputPackets(
-      boolean ignoreReleaseTime, List<GlTextureFrame>... expectedPackets) {
-    List<List<GlTextureFrame>> outputPackets = outputConsumer.getQueuedPackets();
+      boolean ignoreReleaseTime, List<HardwareBufferFrame>... expectedPackets) {
+    List<ImmutableList<HardwareBufferFrame>> outputPackets = outputConsumer.getQueuedPayloads();
     assertThat(outputPackets).hasSize(expectedPackets.length);
     for (int i = 0; i < expectedPackets.length; i++) {
-      List<GlTextureFrame> receivedFrames = outputPackets.get(i);
-      List<GlTextureFrame> expectedFrames = expectedPackets[i];
+      List<HardwareBufferFrame> receivedFrames = outputPackets.get(i);
+      List<HardwareBufferFrame> expectedFrames = expectedPackets[i];
       assertThat(receivedFrames).hasSize(expectedFrames.size());
       for (int j = 0; j < receivedFrames.size(); j++) {
-        GlTextureFrame receivedFrame = receivedFrames.get(j);
-        GlTextureFrame expectedFrame = expectedFrames.get(j);
+        HardwareBufferFrame receivedFrame = receivedFrames.get(j);
+        HardwareBufferFrame expectedFrame = expectedFrames.get(j);
         assertThat(receivedFrame.presentationTimeUs).isEqualTo(expectedFrame.presentationTimeUs);
         if (!ignoreReleaseTime) {
           assertThat(receivedFrame.releaseTimeNs).isEqualTo(expectedFrame.releaseTimeNs);
         }
-        assertThat(receivedFrame.glTextureInfo).isEqualTo(expectedFrame.glTextureInfo);
+        assertThat(receivedFrame.internalFrame).isEqualTo(expectedFrame.internalFrame);
       }
     }
   }
 
-  private static ImmutableList<GlTextureFrame> updatePacketWithReleaseTime(
-      ImmutableList<GlTextureFrame> packet, long releaseTimeNs) {
-    ImmutableList.Builder<GlTextureFrame> updatedPacketBuilder = new ImmutableList.Builder<>();
-    for (GlTextureFrame frame : packet) {
-      updatedPacketBuilder.add(
-          new GlTextureFrame.Builder(
-                  frame.glTextureInfo, frame.releaseTextureExecutor, frame.releaseTextureCallback)
-              .setPresentationTimeUs(frame.presentationTimeUs)
-              .setReleaseTimeNs(releaseTimeNs)
-              .setMetadata(frame.getMetadata())
-              .build());
+  private static ImmutableList<HardwareBufferFrame> updatePacketWithReleaseTime(
+      ImmutableList<HardwareBufferFrame> packet, long releaseTimeNs) {
+    ImmutableList.Builder<HardwareBufferFrame> updatedPacketBuilder = new ImmutableList.Builder<>();
+    for (HardwareBufferFrame frame : packet) {
+      updatedPacketBuilder.add(frame.buildUpon().setReleaseTimeNs(releaseTimeNs).build());
     }
     return updatedPacketBuilder.build();
   }

@@ -412,7 +412,7 @@ public interface Player {
 
     /**
      * Returns whether this position info and the other position info would result in the same
-     * {@link #toBundle() Bundle}.
+     * {@link #toBundle(int) Bundle}.
      */
     @UnstableApi
     public boolean equalsForBundling(PositionInfo other) {
@@ -467,28 +467,28 @@ public interface Player {
      * Returns a {@link Bundle} representing the information stored in this object.
      *
      * <p>It omits the {@link #windowUid} and {@link #periodUid} fields. The {@link #windowUid} and
-     * {@link #periodUid} of an instance restored by {@link #fromBundle(Bundle)} will always be
+     * {@link #periodUid} of an instance restored by {@link #fromBundle(Bundle, int)} will always be
      * {@code null}.
      *
-     * @param controllerInterfaceVersion The interface version of the media controller this Bundle
-     *     will be sent to.
+     * @param interfaceVersion The {@link MediaLibraryInfo#INTERFACE_VERSION} of the receiving
+     *     process.
      */
     @UnstableApi
-    public Bundle toBundle(int controllerInterfaceVersion) {
+    public Bundle toBundle(int interfaceVersion) {
       Bundle bundle = new Bundle();
-      if (controllerInterfaceVersion < 3 || mediaItemIndex != 0) {
+      if (interfaceVersion < 3 || mediaItemIndex != 0) {
         bundle.putInt(FIELD_MEDIA_ITEM_INDEX, mediaItemIndex);
       }
       if (mediaItem != null) {
-        bundle.putBundle(FIELD_MEDIA_ITEM, mediaItem.toBundle());
+        bundle.putBundle(FIELD_MEDIA_ITEM, mediaItem.toBundle(interfaceVersion));
       }
-      if (controllerInterfaceVersion < 3 || periodIndex != 0) {
+      if (interfaceVersion < 3 || periodIndex != 0) {
         bundle.putInt(FIELD_PERIOD_INDEX, periodIndex);
       }
-      if (controllerInterfaceVersion < 3 || positionMs != 0) {
+      if (interfaceVersion < 3 || positionMs != 0) {
         bundle.putLong(FIELD_POSITION_MS, positionMs);
       }
-      if (controllerInterfaceVersion < 3 || contentPositionMs != 0) {
+      if (interfaceVersion < 3 || contentPositionMs != 0) {
         bundle.putLong(FIELD_CONTENT_POSITION_MS, contentPositionMs);
       }
       if (adGroupIndex != C.INDEX_UNSET) {
@@ -509,13 +509,29 @@ public interface Player {
       return toBundle(Integer.MAX_VALUE);
     }
 
-    /** Restores a {@code PositionInfo} from a {@link Bundle}. */
+    /**
+     * @deprecated Use {@link #fromBundle(Bundle, int)} instead.
+     */
     @UnstableApi
+    @Deprecated
     public static PositionInfo fromBundle(Bundle bundle) {
+      return fromBundle(bundle, MediaLibraryInfo.INTERFACE_VERSION);
+    }
+
+    /**
+     * Restores a {@code PositionInfo} from a {@link Bundle}.
+     *
+     * @param bundle The {@link Bundle}.
+     * @param interfaceVersion The {@link MediaLibraryInfo#INTERFACE_VERSION} of the sending
+     *     process.
+     */
+    @UnstableApi
+    public static PositionInfo fromBundle(Bundle bundle, int interfaceVersion) {
       int mediaItemIndex = max(0, bundle.getInt(FIELD_MEDIA_ITEM_INDEX, /* defaultValue= */ 0));
       @Nullable Bundle mediaItemBundle = bundle.getBundle(FIELD_MEDIA_ITEM);
       @Nullable
-      MediaItem mediaItem = mediaItemBundle == null ? null : MediaItem.fromBundle(mediaItemBundle);
+      MediaItem mediaItem =
+          mediaItemBundle == null ? null : MediaItem.fromBundle(mediaItemBundle, interfaceVersion);
       int periodIndex = max(0, bundle.getInt(FIELD_PERIOD_INDEX, /* defaultValue= */ 0));
       long positionMs = bundle.getLong(FIELD_POSITION_MS, /* defaultValue= */ 0);
       long contentPositionMs = bundle.getLong(FIELD_CONTENT_POSITION_MS, /* defaultValue= */ 0);
@@ -1338,7 +1354,6 @@ public interface Player {
    */
   // @Target list includes both 'default' targets and TYPE_USE, to ensure backwards compatibility
   // with Kotlin usages from before TYPE_USE was added.
-  @SuppressWarnings("deprecation") // Includes deprecated command
   @Documented
   @Retention(RetentionPolicy.SOURCE)
   @Target({FIELD, METHOD, PARAMETER, LOCAL_VARIABLE, TYPE_USE})
@@ -1525,7 +1540,41 @@ public interface Player {
   /**
    * Events that can be reported via {@link Listener#onEvents(Player, Events)}.
    *
-   * <p>One of the {@link Player}{@code .EVENT_*} values.
+   * <p>One of:
+   *
+   * <ul>
+   *   <li>{@link #EVENT_TIMELINE_CHANGED}
+   *   <li>{@link #EVENT_MEDIA_ITEM_TRANSITION}
+   *   <li>{@link #EVENT_TRACKS_CHANGED}
+   *   <li>{@link #EVENT_IS_LOADING_CHANGED}
+   *   <li>{@link #EVENT_PLAYBACK_STATE_CHANGED}
+   *   <li>{@link #EVENT_PLAY_WHEN_READY_CHANGED}
+   *   <li>{@link #EVENT_PLAYBACK_SUPPRESSION_REASON_CHANGED}
+   *   <li>{@link #EVENT_IS_PLAYING_CHANGED}
+   *   <li>{@link #EVENT_REPEAT_MODE_CHANGED}
+   *   <li>{@link #EVENT_SHUFFLE_MODE_ENABLED_CHANGED}
+   *   <li>{@link #EVENT_PLAYER_ERROR}
+   *   <li>{@link #EVENT_POSITION_DISCONTINUITY}
+   *   <li>{@link #EVENT_PLAYBACK_PARAMETERS_CHANGED}
+   *   <li>{@link #EVENT_AVAILABLE_COMMANDS_CHANGED}
+   *   <li>{@link #EVENT_MEDIA_METADATA_CHANGED}
+   *   <li>{@link #EVENT_PLAYLIST_METADATA_CHANGED}
+   *   <li>{@link #EVENT_SEEK_BACK_INCREMENT_CHANGED}
+   *   <li>{@link #EVENT_SEEK_FORWARD_INCREMENT_CHANGED}
+   *   <li>{@link #EVENT_MAX_SEEK_TO_PREVIOUS_POSITION_CHANGED}
+   *   <li>{@link #EVENT_TRACK_SELECTION_PARAMETERS_CHANGED}
+   *   <li>{@link #EVENT_AUDIO_ATTRIBUTES_CHANGED}
+   *   <li>{@link #EVENT_AUDIO_SESSION_ID}
+   *   <li>{@link #EVENT_VOLUME_CHANGED}
+   *   <li>{@link #EVENT_SKIP_SILENCE_ENABLED_CHANGED}
+   *   <li>{@link #EVENT_SURFACE_SIZE_CHANGED}
+   *   <li>{@link #EVENT_VIDEO_SIZE_CHANGED}
+   *   <li>{@link #EVENT_RENDERED_FIRST_FRAME}
+   *   <li>{@link #EVENT_CUES}
+   *   <li>{@link #EVENT_METADATA}
+   *   <li>{@link #EVENT_DEVICE_INFO_CHANGED}
+   *   <li>{@link #EVENT_DEVICE_VOLUME_CHANGED}
+   * </ul>
    */
   // @Target list includes both 'default' targets and TYPE_USE, to ensure backwards compatibility
   // with Kotlin usages from before TYPE_USE was added.
@@ -1718,7 +1767,6 @@ public interface Player {
    */
   // @Target list includes both 'default' targets and TYPE_USE, to ensure backwards compatibility
   // with Kotlin usages from before TYPE_USE was added.
-  @SuppressWarnings("deprecation") // Listing deprecated constants.
   @Documented
   @Retention(RetentionPolicy.SOURCE)
   @Target({FIELD, METHOD, PARAMETER, LOCAL_VARIABLE, TYPE_USE})
@@ -3261,7 +3309,6 @@ public interface Player {
    * <p>This method must only be called if {@link #COMMAND_SET_VOLUME} is {@linkplain
    * #getAvailableCommands() available}.
    */
-  @UnstableApi
   void mute();
 
   /**
@@ -3271,7 +3318,6 @@ public interface Player {
    * <p>This method must only be called if {@link #COMMAND_SET_VOLUME} is {@linkplain
    * #getAvailableCommands() available}.
    */
-  @UnstableApi
   void unmute();
 
   /**

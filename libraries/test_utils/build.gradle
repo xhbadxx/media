@@ -14,7 +14,8 @@
 
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
-apply from: "$gradle.ext.androidxMediaSettingsDir/common_library_config.gradle"
+apply plugin: 'com.android.library'
+apply from: "$gradle.ext.androidxMediaSettingsDir/common_config.gradle"
 apply plugin: 'kotlin-android'
 
 android {
@@ -57,6 +58,7 @@ dependencies {
     testImplementation project(modulePrefix + 'test-utils-robolectric')
     testImplementation 'androidx.test.espresso:espresso-core:' + androidxTestEspressoVersion
     testImplementation 'org.robolectric:robolectric:' + robolectricVersion
+    testImplementation 'com.google.guava:guava-testlib:' + guavaVersion
 }
 
 ext {

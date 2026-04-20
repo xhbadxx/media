@@ -30,12 +30,14 @@ import androidx.media3.extractor.text.DefaultSubtitleParserFactory;
 import androidx.media3.test.utils.FakeClock;
 import androidx.media3.test.utils.FakeExtractorOutput;
 import androidx.media3.test.utils.FakeTrackOutput;
+import androidx.media3.test.utils.PassthroughAudioProcessor;
 import androidx.test.core.app.ApplicationProvider;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Iterables;
 import java.io.IOException;
 import java.util.List;
 import java.util.StringJoiner;
+import java.util.concurrent.atomic.AtomicReference;
 
 /** Utility class for {@link Transformer} unit tests */
 @UnstableApi
@@ -70,6 +72,7 @@ public final class TestUtil {
       "mp4/internal_emulator_transformer_output_270_rotated.mp4";
   public static final String FILE_MP4_TRIM_OPTIMIZATION_180 =
       "mp4/internal_emulator_transformer_output_180_rotated.mp4";
+  public static final String FILE_PNG = "png/media3test.png";
   private static final String DUMP_FILE_OUTPUT_DIRECTORY = "transformerdumps";
   private static final String DUMP_FILE_EXTENSION = "dump";
 
@@ -129,6 +132,10 @@ public final class TestUtil {
     return fileName + '.' + DUMP_FILE_EXTENSION;
   }
 
+  public static String getSubstitutedPath(String originalAssetPath, String newSubDir) {
+    return originalAssetPath.replaceFirst("[^/]+/", newSubDir + "/");
+  }
+
   /**
    * Returns the file path of the sequence export dump file, based on the item summaries provided.
    *
@@ -164,7 +171,7 @@ public final class TestUtil {
    * @param filePath The {@link String filepath} to get video timestamps for.
    * @return The {@link List} of video timestamps.
    */
-  public static List<Long> getVideoSampleTimesUs(String filePath) throws IOException {
+  public static ImmutableList<Long> getVideoSampleTimesUs(String filePath) throws IOException {
     Mp4Extractor mp4Extractor = new Mp4Extractor(new DefaultSubtitleParserFactory());
     FakeExtractorOutput fakeExtractorOutput =
         extractAllSamplesFromFilePath(mp4Extractor, checkNotNull(filePath));
@@ -178,7 +185,7 @@ public final class TestUtil {
    * @param filePath The {@link String filepath} to get audio timestamps for.
    * @return The {@link List} of audio timestamps.
    */
-  public static List<Long> getAudioSampleTimesUs(String filePath) throws IOException {
+  public static ImmutableList<Long> getAudioSampleTimesUs(String filePath) throws IOException {
     Mp4Extractor mp4Extractor = new Mp4Extractor(new DefaultSubtitleParserFactory());
     FakeExtractorOutput fakeExtractorOutput =
         extractAllSamplesFromFilePath(mp4Extractor, checkNotNull(filePath));
@@ -203,5 +210,16 @@ public final class TestUtil {
   public static CompositionPlayer.Builder createTestCompositionPlayerBuilder() {
     return new CompositionPlayer.Builder(getApplicationContext())
         .setClock(new FakeClock(/* isAutoAdvancing= */ true));
+  }
+
+  public static final class FormatCapturingAudioProcessor extends PassthroughAudioProcessor {
+    public final AtomicReference<AudioFormat> inputFormat = new AtomicReference<>();
+
+    @Override
+    protected AudioFormat onConfigure(AudioFormat inputAudioFormat)
+        throws UnhandledAudioFormatException {
+      inputFormat.set(inputAudioFormat);
+      return super.onConfigure(inputAudioFormat);
+    }
   }
 }

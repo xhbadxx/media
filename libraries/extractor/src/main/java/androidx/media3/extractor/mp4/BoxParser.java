@@ -46,6 +46,7 @@ import androidx.media3.container.Mp4Box.LeafBox;
 import androidx.media3.container.Mp4LocationData;
 import androidx.media3.container.Mp4TimestampData;
 import androidx.media3.container.NalUnitUtil;
+import androidx.media3.container.OpusUtil;
 import androidx.media3.extractor.AacUtil;
 import androidx.media3.extractor.Ac3Util;
 import androidx.media3.extractor.Ac4Util;
@@ -53,8 +54,8 @@ import androidx.media3.extractor.AvcConfig;
 import androidx.media3.extractor.ExtractorUtil;
 import androidx.media3.extractor.GaplessInfoHolder;
 import androidx.media3.extractor.HevcConfig;
-import androidx.media3.extractor.OpusUtil;
 import androidx.media3.extractor.VorbisUtil;
+import androidx.media3.extractor.VvcConfig;
 import androidx.media3.extractor.text.vobsub.VobsubParser;
 import com.google.common.base.Function;
 import com.google.common.base.Joiner;
@@ -1218,6 +1219,8 @@ public final class BoxParser {
           || childAtomType == Mp4Box.TYPE_mp4v
           || childAtomType == Mp4Box.TYPE_hvc1
           || childAtomType == Mp4Box.TYPE_hev1
+          || childAtomType == Mp4Box.TYPE_vvc1
+          || childAtomType == Mp4Box.TYPE_vvi1
           || childAtomType == Mp4Box.TYPE_s263
           || childAtomType == Mp4Box.TYPE_H263
           || childAtomType == Mp4Box.TYPE_h263
@@ -1228,7 +1231,8 @@ public final class BoxParser {
           || childAtomType == Mp4Box.TYPE_dva1
           || childAtomType == Mp4Box.TYPE_dvhe
           || childAtomType == Mp4Box.TYPE_dvh1
-          || childAtomType == Mp4Box.TYPE_apv1) {
+          || childAtomType == Mp4Box.TYPE_apv1
+          || childAtomType == Mp4Box.TYPE_dav1) {
         parseVideoSampleEntry(
             stsd,
             childAtomType,
@@ -1569,6 +1573,20 @@ public final class BoxParser {
               false, "initializationData must be already set from hvcC atom");
         }
         codecs = lhevcConfig.codecs;
+      } else if (childAtomType == Mp4Box.TYPE_vvcC) {
+        ExtractorUtil.checkContainerInput(mimeType == null, /* message= */ null);
+        mimeType = MimeTypes.VIDEO_H266;
+        parent.setPosition(childStartPosition + Mp4Box.HEADER_SIZE);
+        VvcConfig vvcConfig = VvcConfig.parse(parent);
+        initializationData = vvcConfig.initializationData;
+        out.nalUnitLengthFieldLength = vvcConfig.nalUnitLengthFieldLength;
+        codecs = vvcConfig.codecs;
+        bitdepthLuma = vvcConfig.bitdepthLuma;
+        bitdepthChroma = vvcConfig.bitdepthLuma;
+        // The VVC specification (ITU-T H.266, Annex A) allows a maximum of 16 pictures for
+        // reordering in the decoded picture buffer. Using 16 as a safe default avoids the need to
+        // parse the SPS bitstream for the exact value.
+        maxNumReorderSamples = 16;
       } else if (childAtomType == Mp4Box.TYPE_vexu) {
         VexuData vexuData = parseVideoExtendedUsageBox(parent, childStartPosition, childAtomSize);
         if (vexuData != null && vexuData.eyesData != null) {
@@ -2121,7 +2139,7 @@ public final class BoxParser {
         } else if (bitsPerSample == 32) {
           pcmEncoding = isBigEndian ? C.ENCODING_PCM_32BIT_BIG_ENDIAN : C.ENCODING_PCM_32BIT;
         }
-      } else if (bitsPerSample == 32) {
+      } else if (!isBigEndian && bitsPerSample == 32) {
         pcmEncoding = C.ENCODING_PCM_FLOAT;
       }
       parent.skipBytes(8); // constBytesPerAudioPacket, constLPCMFramesPerAudioPacket

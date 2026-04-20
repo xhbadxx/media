@@ -16,7 +16,8 @@
 
 package androidx.media3.ui.compose.material3.buttons
 
-import androidx.compose.material3.LocalContentColor
+import androidx.compose.material3.IconButtonColors
+import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -45,6 +46,8 @@ import androidx.media3.ui.compose.state.SeekForwardButtonState
  *   an icon that changes based on the seek forward increment.
  * @param contentDescription The content description for accessibility purposes. Defaults to a
  *   string that changes based on the seek forward increment.
+ * @param colors [IconButtonColors] that will be used to resolve the colors used for this icon
+ *   button in different states. See [IconButtonDefaults.iconButtonColors].
  * @param tint Tint to be applied to [painter]. If [Color.Unspecified] is provided, then no tint is
  *   applied.
  * @param onClick The action to be performed when the button is clicked. This lambda has
@@ -61,12 +64,13 @@ import androidx.media3.ui.compose.state.SeekForwardButtonState
 @UnstableApi
 @Composable
 fun SeekForwardButton(
-  player: Player,
+  player: Player?,
   modifier: Modifier = Modifier,
   painter: @Composable SeekForwardButtonState.() -> Painter = defaultSeekForwardPainterIcon,
   contentDescription: @Composable SeekForwardButtonState.() -> String =
     defaultSeekForwardContentDescription,
-  tint: Color = LocalContentColor.current,
+  colors: IconButtonColors = IconButtonDefaults.iconButtonColors(),
+  tint: Color = Color.Unspecified,
   onClick: SeekForwardButtonState.() -> Unit = SeekForwardButtonState::onClick,
 ) {
   // Capture the onClick *parameter* in a local variable.
@@ -79,6 +83,7 @@ fun SeekForwardButton(
       isEnabled,
       icon = painter(),
       contentDescription = contentDescription(),
+      colors = colors,
       tint = tint,
       onClick = { customOnClick() },
     )
@@ -98,6 +103,8 @@ fun SeekForwardButton(
  * @param imageVector The supplier for [ImageVector] used for the icon displayed on the button.
  * @param contentDescription The content description for accessibility purposes. Defaults to a
  *   string that changes based on the seek forward increment.
+ * @param colors [IconButtonColors] that will be used to resolve the colors used for this icon
+ *   button in different states. See [IconButtonDefaults.iconButtonColors].
  * @param tint Tint to be applied to [imageVector]. If [Color.Unspecified] is provided, then no tint
  *   is applied.
  * @param onClick The action to be performed when the button is clicked. This lambda has
@@ -115,12 +122,13 @@ fun SeekForwardButton(
 @UnstableApi
 @Composable
 fun SeekForwardButton(
-  player: Player,
+  player: Player?,
   modifier: Modifier = Modifier,
   imageVector: SeekForwardButtonState.() -> ImageVector,
   contentDescription: @Composable SeekForwardButtonState.() -> String =
     defaultSeekForwardContentDescription,
-  tint: Color = LocalContentColor.current,
+  colors: IconButtonColors = IconButtonDefaults.iconButtonColors(),
+  tint: Color = Color.Unspecified,
   onClick: SeekForwardButtonState.() -> Unit = SeekForwardButtonState::onClick,
 ) {
   // Capture the onClick *parameter* in a local variable.
@@ -133,6 +141,7 @@ fun SeekForwardButton(
       isEnabled,
       icon = imageVector(),
       contentDescription = contentDescription(),
+      colors = colors,
       tint = tint,
       onClick = { customOnClick() },
     )

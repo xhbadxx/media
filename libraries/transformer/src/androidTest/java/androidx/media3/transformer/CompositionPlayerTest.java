@@ -15,10 +15,12 @@
  */
 package androidx.media3.transformer;
 
+import static androidx.media3.common.Player.STATE_ENDED;
 import static androidx.media3.common.util.Util.isRunningOnEmulator;
 import static androidx.media3.test.utils.AssetInfo.JPG_SINGLE_PIXEL_ASSET;
 import static androidx.media3.test.utils.AssetInfo.MP4_ASSET;
 import static androidx.media3.test.utils.AssetInfo.MP4_ASSET_WITH_INCREASING_TIMESTAMPS_320W_240H_5S;
+import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.truth.Truth.assertThat;
 import static com.google.common.util.concurrent.Futures.immediateFailedFuture;
 import static com.google.common.util.concurrent.Futures.immediateFuture;
@@ -50,6 +52,7 @@ import androidx.media3.common.GlTextureInfo;
 import androidx.media3.common.MediaItem;
 import androidx.media3.common.MimeTypes;
 import androidx.media3.common.PlaybackException;
+import androidx.media3.common.Player;
 import androidx.media3.common.SurfaceInfo;
 import androidx.media3.common.VideoGraph;
 import androidx.media3.common.audio.AudioProcessor;
@@ -63,6 +66,7 @@ import androidx.media3.effect.DefaultVideoFrameProcessor;
 import androidx.media3.effect.GlEffect;
 import androidx.media3.effect.GlShaderProgram;
 import androidx.media3.effect.PassthroughShaderProgram;
+import androidx.media3.effect.ProcessAndRenderToSurfaceConsumer;
 import androidx.media3.effect.SingleInputVideoGraph;
 import androidx.media3.exoplayer.analytics.AnalyticsListener;
 import androidx.media3.exoplayer.audio.DefaultAudioSink;
@@ -77,10 +81,13 @@ import androidx.media3.test.utils.TestSpeedProvider;
 import androidx.test.core.app.ApplicationProvider;
 import androidx.test.ext.junit.rules.ActivityScenarioRule;
 import androidx.test.ext.junit.runners.AndroidJUnit4;
+import androidx.test.filters.SdkSuppress;
 import androidx.test.platform.app.InstrumentationRegistry;
 import com.google.common.collect.ImmutableList;
 import com.google.common.util.concurrent.ListenableFuture;
 import java.io.IOException;
+import java.util.Queue;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
@@ -148,11 +155,11 @@ public class CompositionPlayerTest {
           compositionPlayer.addListener(listener);
           compositionPlayer.setComposition(
               new Composition.Builder(
-                      new EditedMediaItemSequence.Builder(
+                      EditedMediaItemSequence.withAudioAndVideoFrom(
+                          ImmutableList.of(
                               new EditedMediaItem.Builder(MediaItem.fromUri(MP4_ASSET.uri))
                                   .setDurationUs(MP4_ASSET.videoDurationUs)
-                                  .build())
-                          .build())
+                                  .build())))
                   .build());
           compositionPlayer.prepare();
         });
@@ -169,11 +176,11 @@ public class CompositionPlayerTest {
           compositionPlayer.addListener(listener);
           compositionPlayer.setComposition(
               new Composition.Builder(
-                      new EditedMediaItemSequence.Builder(
+                      EditedMediaItemSequence.withAudioAndVideoFrom(
+                          ImmutableList.of(
                               new EditedMediaItem.Builder(MediaItem.fromUri(MP4_ASSET.uri))
                                   .setDurationUs(MP4_ASSET.videoDurationUs)
-                                  .build())
-                          .build())
+                                  .build())))
                   .build());
           compositionPlayer.setVideoSurfaceView(surfaceView);
           compositionPlayer.prepare();
@@ -194,11 +201,11 @@ public class CompositionPlayerTest {
           compositionPlayer.addListener(listener);
           compositionPlayer.setComposition(
               new Composition.Builder(
-                      new EditedMediaItemSequence.Builder(
+                      EditedMediaItemSequence.withAudioAndVideoFrom(
+                          ImmutableList.of(
                               new EditedMediaItem.Builder(MediaItem.fromUri(MP4_ASSET.uri))
                                   .setDurationUs(MP4_ASSET.videoDurationUs)
-                                  .build())
-                          .build())
+                                  .build())))
                   .build());
           compositionPlayer.prepare();
         });
@@ -217,11 +224,11 @@ public class CompositionPlayerTest {
           compositionPlayer.addListener(listener);
           compositionPlayer.setComposition(
               new Composition.Builder(
-                      new EditedMediaItemSequence.Builder(
+                      EditedMediaItemSequence.withAudioAndVideoFrom(
+                          ImmutableList.of(
                               new EditedMediaItem.Builder(MediaItem.fromUri(MP4_ASSET.uri))
                                   .setDurationUs(MP4_ASSET.videoDurationUs)
-                                  .build())
-                          .build())
+                                  .build())))
                   .build());
           compositionPlayer.setVideoSurfaceHolder(surfaceHolder);
           compositionPlayer.prepare();
@@ -278,7 +285,7 @@ public class CompositionPlayerTest {
                                 } catch (InterruptedException e) {
                                   Thread.currentThread().interrupt();
                                 }
-                                assertThat(allowSurfaceClearToCompleteOpened).isTrue();
+                                checkState(allowSurfaceClearToCompleteOpened);
                               }
                               super.setOutputSurfaceInfo(outputSurfaceInfo);
                             }
@@ -294,11 +301,11 @@ public class CompositionPlayerTest {
           compositionPlayer.addListener(listener);
           compositionPlayer.setComposition(
               new Composition.Builder(
-                      new EditedMediaItemSequence.Builder(
+                      EditedMediaItemSequence.withAudioAndVideoFrom(
+                          ImmutableList.of(
                               new EditedMediaItem.Builder(MediaItem.fromUri(MP4_ASSET.uri))
                                   .setDurationUs(MP4_ASSET.videoDurationUs)
-                                  .build())
-                          .build())
+                                  .build())))
                   .build());
           compositionPlayer.setVideoSurfaceHolder(surfaceHolder);
           compositionPlayer.prepare();
@@ -358,15 +365,15 @@ public class CompositionPlayerTest {
           compositionPlayer.addListener(listener);
           compositionPlayer.setComposition(
               new Composition.Builder(
-                      new EditedMediaItemSequence.Builder(
+                      EditedMediaItemSequence.withVideoFrom(
+                          ImmutableList.of(
                               new EditedMediaItem.Builder(
                                       new MediaItem.Builder()
                                           .setUri(JPG_SINGLE_PIXEL_ASSET.uri)
                                           .setImageDurationMs(1_000)
                                           .build())
                                   .setFrameRate(30)
-                                  .build())
-                          .build())
+                                  .build())))
                   .build());
           compositionPlayer.prepare();
         });
@@ -407,7 +414,8 @@ public class CompositionPlayerTest {
           compositionPlayer.addListener(listener);
           compositionPlayer.setComposition(
               new Composition.Builder(
-                      new EditedMediaItemSequence.Builder(
+                      EditedMediaItemSequence.withVideoFrom(
+                          ImmutableList.of(
                               new EditedMediaItem.Builder(
                                       new MediaItem.Builder()
                                           .setUri(JPG_SINGLE_PIXEL_ASSET.uri)
@@ -415,8 +423,7 @@ public class CompositionPlayerTest {
                                               MimeTypes.APPLICATION_EXTERNALLY_LOADED_IMAGE)
                                           .setImageDurationMs(1_000)
                                           .build())
-                                  .build())
-                          .build())
+                                  .build())))
                   .build());
           compositionPlayer.prepare();
         });
@@ -445,7 +452,9 @@ public class CompositionPlayerTest {
           compositionPlayer.setVideoSurfaceView(surfaceView);
           compositionPlayer.addListener(listener);
           compositionPlayer.setComposition(
-              new Composition.Builder(new EditedMediaItemSequence.Builder(video).build()).build());
+              new Composition.Builder(
+                      EditedMediaItemSequence.withAudioAndVideoFrom(ImmutableList.of(video)))
+                  .build());
           compositionPlayer.prepare();
           compositionPlayer.play();
         });
@@ -474,7 +483,9 @@ public class CompositionPlayerTest {
           compositionPlayer.setVideoSurfaceView(surfaceView);
           compositionPlayer.addListener(listener);
           compositionPlayer.setComposition(
-              new Composition.Builder(new EditedMediaItemSequence.Builder(video).build()).build());
+              new Composition.Builder(
+                      EditedMediaItemSequence.withAudioAndVideoFrom(ImmutableList.of(video)))
+                  .build());
           compositionPlayer.prepare();
           compositionPlayer.play();
         });
@@ -534,7 +545,9 @@ public class CompositionPlayerTest {
           compositionPlayer.setVideoSurfaceView(surfaceView);
           compositionPlayer.addListener(listener);
           compositionPlayer.setComposition(
-              new Composition.Builder(new EditedMediaItemSequence.Builder(video).build()).build());
+              new Composition.Builder(
+                      EditedMediaItemSequence.withAudioAndVideoFrom(ImmutableList.of(video)))
+                  .build());
           compositionPlayer.prepare();
           compositionPlayer.play();
         });
@@ -582,7 +595,9 @@ public class CompositionPlayerTest {
                   .build();
           compositionPlayer.addListener(playerTestListener);
           compositionPlayer.setComposition(
-              new Composition.Builder(new EditedMediaItemSequence.Builder(video).build()).build());
+              new Composition.Builder(
+                      EditedMediaItemSequence.withAudioAndVideoFrom(ImmutableList.of(video)))
+                  .build());
           compositionPlayer.prepare();
           compositionPlayer.play();
         });
@@ -634,7 +649,9 @@ public class CompositionPlayerTest {
                   .build();
           compositionPlayer.addListener(playerTestListener);
           compositionPlayer.setComposition(
-              new Composition.Builder(new EditedMediaItemSequence.Builder(video).build()).build());
+              new Composition.Builder(
+                      EditedMediaItemSequence.withAudioAndVideoFrom(ImmutableList.of(video)))
+                  .build());
           compositionPlayer.prepare();
           compositionPlayer.play();
         });
@@ -682,14 +699,14 @@ public class CompositionPlayerTest {
           compositionPlayer.addListener(listener);
           compositionPlayer.setComposition(
               new Composition.Builder(
-                      new EditedMediaItemSequence.Builder(
+                      EditedMediaItemSequence.withAudioAndVideoFrom(
+                          ImmutableList.of(
                               new EditedMediaItem.Builder(MediaItem.fromUri(MP4_ASSET.uri))
                                   .setDurationUs(MP4_ASSET.videoDurationUs)
                                   .setEffects(
                                       new Effects(
                                           /* audioProcessors= */ ImmutableList.of(), effects))
-                                  .build())
-                          .build())
+                                  .build())))
                   .build());
           compositionPlayer.prepare();
         });
@@ -809,6 +826,62 @@ public class CompositionPlayerTest {
     playerReleased.block(TEST_TIMEOUT_MS);
 
     assertThat(droppedFramesCounter.get()).isGreaterThan(0);
+  }
+
+  @Test
+  @SdkSuppress(minSdkVersion = 34)
+  public void compositionPlayer_withPacketConsumer_outputsFrameBeforeEnding() throws Exception {
+    PlayerTestListener listener = new PlayerTestListener(TEST_TIMEOUT_MS);
+    Queue<Long> videoTimestamps = new ConcurrentLinkedQueue<>();
+
+    instrumentation.runOnMainSync(
+        () -> {
+          ProcessAndRenderToSurfaceConsumer.Factory packetConsumerFactory =
+              new ProcessAndRenderToSurfaceConsumer.Factory();
+          packetConsumerFactory.setOutput(surfaceView.getHolder(), surfaceView::post);
+          compositionPlayer =
+              new CompositionPlayer.Builder(applicationContext)
+                  .setPacketConsumerFactory(packetConsumerFactory)
+                  .experimentalSetLateThresholdToDropInputUs(C.TIME_UNSET)
+                  .build();
+          compositionPlayer.setVideoFrameMetadataListener(
+              (presentationTimeUs, releaseTimeNs, format, mediaFormat) -> {
+                videoTimestamps.add(presentationTimeUs);
+              });
+          compositionPlayer.addListener(
+              new Player.Listener() {
+                @Override
+                public void onPlaybackStateChanged(int playbackState) {
+                  if (playbackState == STATE_ENDED) {
+                    videoTimestamps.add(-1L);
+                  }
+                }
+              });
+          compositionPlayer.addListener(listener);
+          compositionPlayer.setComposition(
+              new Composition.Builder(
+                      EditedMediaItemSequence.withVideoFrom(
+                          ImmutableList.of(
+                              new EditedMediaItem.Builder(
+                                      new MediaItem.Builder()
+                                          .setUri(
+                                              MP4_ASSET_WITH_INCREASING_TIMESTAMPS_320W_240H_5S.uri)
+                                          .setClippingConfiguration(
+                                              new MediaItem.ClippingConfiguration.Builder()
+                                                  .setEndPositionMs(10)
+                                                  .build())
+                                          .build())
+                                  .setDurationUs(
+                                      MP4_ASSET_WITH_INCREASING_TIMESTAMPS_320W_240H_5S
+                                          .videoDurationUs)
+                                  .build())))
+                  .build());
+          compositionPlayer.prepare();
+          compositionPlayer.play();
+        });
+    listener.waitUntilPlayerEnded();
+
+    assertThat(videoTimestamps).containsExactly(0L, -1L).inOrder();
   }
 
   private static final class TestExternallyLoadedBitmapResolver

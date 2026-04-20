@@ -11,6 +11,7 @@ extracted samples:
   sample #2:
     track = 0
     timeUs = 33366
+    flags = 67108864
     size = 599
   sample #3:
     track = 0
@@ -28,6 +29,7 @@ extracted samples:
   sample #6:
     track = 0
     timeUs = 100100
+    flags = 67108864
     size = 673
   sample #7:
     track = 1
@@ -37,6 +39,7 @@ extracted samples:
   sample #8:
     track = 0
     timeUs = 166833
+    flags = 67108864
     size = 523
   sample #9:
     track = 1
@@ -74,6 +77,7 @@ extracted samples:
   sample #16:
     track = 0
     timeUs = 233566
+    flags = 67108864
     size = 623
   sample #17:
     track = 1
@@ -83,6 +87,7 @@ extracted samples:
   sample #18:
     track = 0
     timeUs = 300300
+    flags = 67108864
     size = 421
   sample #19:
     track = 1
@@ -115,6 +120,7 @@ extracted samples:
   sample #25:
     track = 0
     timeUs = 367033
+    flags = 67108864
     size = 620
   sample #26:
     track = 1
@@ -152,6 +158,7 @@ extracted samples:
   sample #33:
     track = 0
     timeUs = 467133
+    flags = 67108864
     size = 874
   sample #34:
     track = 1
@@ -161,6 +168,7 @@ extracted samples:
   sample #35:
     track = 0
     timeUs = 533866
+    flags = 67108864
     size = 781
   sample #36:
     track = 1
@@ -297,7 +305,7 @@ MediaCodecAdapter (media3.audio.aac):
       rendered = false
 MediaCodecAdapter (media3.video.avc):
   inputBuffers:
-    count = 15
+    count = 14
     input buffer #0:
       timeUs = 1000000000000
       contents = length 36692, hash D216076E
@@ -305,47 +313,44 @@ MediaCodecAdapter (media3.video.avc):
       timeUs = 1000000066733
       contents = length 5312, hash D45D3CA0
     input buffer #2:
-      timeUs = 1000000033366
-      contents = length 599, hash 1BE7812D
-    input buffer #3:
       timeUs = 1000000200200
       contents = length 7735, hash 4490F110
-    input buffer #4:
+    input buffer #3:
       timeUs = 1000000133466
       contents = length 987, hash 560B5036
-    input buffer #5:
+    input buffer #4:
       timeUs = 1000000100100
       contents = length 673, hash ED7CD8C7
-    input buffer #6:
+    input buffer #5:
       timeUs = 1000000166833
       contents = length 523, hash 3020DF50
-    input buffer #7:
+    input buffer #6:
       timeUs = 1000000333666
       contents = length 6061, hash 736C72B2
-    input buffer #8:
+    input buffer #7:
       timeUs = 1000000266933
       contents = length 992, hash FE132F23
-    input buffer #9:
+    input buffer #8:
       timeUs = 1000000233566
       contents = length 623, hash 5B2C1816
-    input buffer #10:
+    input buffer #9:
       timeUs = 1000000300300
       contents = length 421, hash 742E69C1
-    input buffer #11:
+    input buffer #10:
       timeUs = 1000000433766
       contents = length 4899, hash F72F86A1
-    input buffer #12:
+    input buffer #11:
       timeUs = 1000000400400
       contents = length 568, hash 519A8E50
-    input buffer #13:
+    input buffer #12:
       timeUs = 1000000367033
       contents = length 620, hash 3990AA39
-    input buffer #14:
+    input buffer #13:
       timeUs = 0
       flags = 4
       contents = length 0, hash 1
   outputBuffers:
-    count = 14
+    count = 13
     output buffer #0:
       timeUs = 1000000000000
       size = 36692
@@ -355,50 +360,46 @@ MediaCodecAdapter (media3.video.avc):
       size = 5312
       rendered = false
     output buffer #2:
-      timeUs = 1000000033366
-      size = 599
-      rendered = false
-    output buffer #3:
       timeUs = 1000000200200
       size = 7735
       rendered = true
-    output buffer #4:
+    output buffer #3:
       timeUs = 1000000133466
       size = 987
       rendered = true
-    output buffer #5:
+    output buffer #4:
       timeUs = 1000000100100
       size = 673
       rendered = true
-    output buffer #6:
+    output buffer #5:
       timeUs = 1000000166833
       size = 523
       rendered = true
-    output buffer #7:
+    output buffer #6:
       timeUs = 1000000333666
       size = 6061
       rendered = true
-    output buffer #8:
+    output buffer #7:
       timeUs = 1000000266933
       size = 992
       rendered = true
-    output buffer #9:
+    output buffer #8:
       timeUs = 1000000233566
       size = 623
       rendered = true
-    output buffer #10:
+    output buffer #9:
       timeUs = 1000000300300
       size = 421
       rendered = true
-    output buffer #11:
+    output buffer #10:
       timeUs = 1000000433766
       size = 4899
       rendered = true
-    output buffer #12:
+    output buffer #11:
       timeUs = 1000000400400
       size = 568
       rendered = true
-    output buffer #13:
+    output buffer #12:
       timeUs = 1000000367033
       size = 620
       rendered = true

@@ -38,10 +38,12 @@ import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicLong;
 import org.checkerframework.checker.nullness.qual.MonotonicNonNull;
 import org.junit.After;
+import org.junit.Ignore;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 
 /** Performance tests for the effects previewing pipeline in ExoPlayer. */
+@Ignore("Only intended to run on internal infra: b/396671260")
 @RunWith(AndroidJUnit4.class)
 public class VideoEffectsPreviewPerformanceTest {
 
@@ -102,7 +104,7 @@ public class VideoEffectsPreviewPerformanceTest {
 
     assertThat(playbackDurationMs)
         .isIn(Range.closed(expectedPlaybackDurationMs, expectedPlaybackDurationMs + 60));
-    DecoderCounters decoderCounters = checkNotNull(listener.getDecoderCounters());
+    DecoderCounters decoderCounters = checkNotNull(listener.getVideoDecoderCounters());
     assertThat(decoderCounters.droppedBufferCount).isEqualTo(0);
     assertThat(decoderCounters.skippedInputBufferCount).isEqualTo(0);
     assertThat(decoderCounters.skippedOutputBufferCount).isEqualTo(0);

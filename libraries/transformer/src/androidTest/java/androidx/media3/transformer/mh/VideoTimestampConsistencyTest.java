@@ -29,6 +29,7 @@ import androidx.media3.common.Effect;
 import androidx.media3.common.MediaItem;
 import androidx.media3.effect.GlEffect;
 import androidx.media3.effect.Presentation;
+import androidx.media3.exoplayer.DefaultRenderersFactory;
 import androidx.media3.exoplayer.ExoPlayer;
 import androidx.media3.transformer.Composition;
 import androidx.media3.transformer.CompositionPlayer;
@@ -49,6 +50,7 @@ import com.google.common.collect.Lists;
 import java.util.List;
 import org.junit.After;
 import org.junit.Before;
+import org.junit.Ignore;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TestName;
@@ -58,6 +60,7 @@ import org.junit.runner.RunWith;
  * A test that guarantees the timestamp is handled identically between {@link CompositionPlayer} and
  * {@link Transformer}.
  */
+@Ignore("Only intended to run on internal infra: b/396671260")
 @RunWith(AndroidJUnit4.class)
 public class VideoTimestampConsistencyTest {
 
@@ -449,7 +452,13 @@ public class VideoTimestampConsistencyTest {
 
     instrumentation.runOnMainSync(
         () -> {
-          exoplayer = new ExoPlayer.Builder(applicationContext).build();
+          exoplayer =
+              new ExoPlayer.Builder(applicationContext)
+                  // Disable decoder input frame dropping in this test.
+                  .setRenderersFactory(
+                      new DefaultRenderersFactory(applicationContext)
+                          .experimentalSetLateThresholdToDropDecoderInputUs(C.TIME_UNSET))
+                  .build();
           // Set a surface on the player even though there is no UI on this test. We need a surface
           // otherwise the player will skip/drop video frames.
           exoplayer.setVideoSurfaceView(surfaceView);

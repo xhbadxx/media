@@ -102,8 +102,9 @@ public final class CastPlayerTest {
     remoteCastPlayer =
         new RemoteCastPlayer(
             /* context= */ null,
-            mockCastContext,
+            Cast.getSingletonInstance().sideloadCastContext(mockCastContext),
             new DefaultMediaItemConverter(),
+            /* trackSelector= */ null,
             C.DEFAULT_SEEK_BACK_INCREMENT_MS,
             C.DEFAULT_SEEK_FORWARD_INCREMENT_MS,
             C.DEFAULT_MAX_SEEK_TO_PREVIOUS_POSITION_MS);
@@ -123,6 +124,7 @@ public final class CastPlayerTest {
   public void tearDown() throws Exception {
     castPlayer.release();
     mock.close();
+    Cast.reset();
   }
 
   @Test

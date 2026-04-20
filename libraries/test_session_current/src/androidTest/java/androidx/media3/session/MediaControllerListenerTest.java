@@ -16,8 +16,12 @@
 package androidx.media3.session;
 
 import static androidx.media3.common.Player.COMMAND_CHANGE_MEDIA_ITEMS;
+import static androidx.media3.common.Player.COMMAND_GET_AUDIO_ATTRIBUTES;
+import static androidx.media3.common.Player.COMMAND_GET_CURRENT_MEDIA_ITEM;
 import static androidx.media3.common.Player.COMMAND_GET_DEVICE_VOLUME;
+import static androidx.media3.common.Player.COMMAND_GET_METADATA;
 import static androidx.media3.common.Player.COMMAND_GET_TIMELINE;
+import static androidx.media3.common.Player.COMMAND_GET_TRACKS;
 import static androidx.media3.common.Player.COMMAND_PREPARE;
 import static androidx.media3.common.Player.COMMAND_RELEASE;
 import static androidx.media3.common.Player.COMMAND_SEEK_BACK;
@@ -27,6 +31,10 @@ import static androidx.media3.common.Player.EVENT_PLAYBACK_STATE_CHANGED;
 import static androidx.media3.common.Player.EVENT_PLAYER_ERROR;
 import static androidx.media3.common.Player.EVENT_PLAY_WHEN_READY_CHANGED;
 import static androidx.media3.common.Player.EVENT_RENDERED_FIRST_FRAME;
+import static androidx.media3.common.Player.MEDIA_ITEM_TRANSITION_REASON_AUTO;
+import static androidx.media3.common.Player.MEDIA_ITEM_TRANSITION_REASON_REPEAT;
+import static androidx.media3.common.Player.MEDIA_ITEM_TRANSITION_REASON_SEEK;
+import static androidx.media3.session.MediaTestUtils.createMediaItem;
 import static androidx.media3.session.MediaTestUtils.createTimeline;
 import static androidx.media3.session.MediaUtils.createPlayerCommandsWith;
 import static androidx.media3.session.MediaUtils.createPlayerCommandsWithout;
@@ -249,7 +257,7 @@ public class MediaControllerListenerTest {
     MediaController controller = controllerTestRule.createController(token);
 
     assertThat(controller.getConnectedToken().getInterfaceVersion())
-        .isEqualTo(MediaSessionStub.VERSION_INT);
+        .isEqualTo(MediaLibraryInfo.INTERFACE_VERSION);
     assertThat(controller.getConnectedToken().getSessionVersion())
         .isEqualTo(MediaLibraryInfo.VERSION_INT);
   }
@@ -863,7 +871,15 @@ public class MediaControllerListenerTest {
     int testCurrentAdGroupIndex = 33;
     int testCurrentAdIndexInAdGroup = 11;
     Commands testCommands =
-        new Commands.Builder().addAllCommands().remove(Player.COMMAND_STOP).build();
+        new Commands.Builder()
+            .addAll(
+                COMMAND_GET_TIMELINE,
+                COMMAND_GET_TRACKS,
+                COMMAND_GET_CURRENT_MEDIA_ITEM,
+                COMMAND_GET_AUDIO_ATTRIBUTES,
+                COMMAND_GET_METADATA,
+                COMMAND_RELEASE)
+            .build();
     AtomicInteger stateRef = new AtomicInteger();
     AtomicReference<Timeline> timelineRef = new AtomicReference<>();
     AtomicReference<MediaMetadata> playlistMetadataRef = new AtomicReference<>();
@@ -1118,7 +1134,8 @@ public class MediaControllerListenerTest {
   }
 
   @Test
-  public void onMediaItemTransition() throws Exception {
+  public void onMediaItemTransition_mediaItemTransitionSeek_callbackCalledForReasonSeek()
+      throws Exception {
     int currentIndex = 0;
     Timeline timeline =
         MediaTestUtils.createTimeline(/* windowCount= */ 5, /* buildWithUri= */ false);
@@ -1148,10 +1165,12 @@ public class MediaControllerListenerTest {
                       public void onMediaItemTransition(
                           @Nullable MediaItem mediaItem,
                           @Player.MediaItemTransitionReason int reason) {
-                        mediaItemFromParamRef.set(mediaItem);
-                        mediaItemFromGetterRef.set(controller.getCurrentMediaItem());
-                        reasonRef.set(reason);
-                        latch.countDown();
+                        if (reason == MEDIA_ITEM_TRANSITION_REASON_SEEK) {
+                          mediaItemFromParamRef.set(mediaItem);
+                          mediaItemFromGetterRef.set(controller.getCurrentMediaItem());
+                          reasonRef.set(reason);
+                          latch.countDown();
+                        }
                       }
 
                       @Override
@@ -1175,6 +1194,274 @@ public class MediaControllerListenerTest {
     assertThat(mediaItemFromGetterRef.get()).isEqualTo(currentMediaItem);
     assertThat(mediaItemFromOnEventsRef.get()).isEqualTo(currentMediaItem);
     assertThat(reasonRef.get()).isEqualTo(testReason);
+    assertThat(getEventsAsList(eventsRef.get())).contains(Player.EVENT_MEDIA_ITEM_TRANSITION);
+  }
+
+  @Test
+  public void
+      onMediaItemTransition_autoDiscontinuitySameMediaItemDifferentMediaItemIndex_callbackCalledForReasonAuto()
+          throws Exception {
+    MediaItem mediaItem = createMediaItem("mediaId", /* buildWithUri= */ true);
+    Timeline timeline = MediaTestUtils.createTimeline(ImmutableList.of(mediaItem, mediaItem));
+    AtomicReference<MediaItem> mediaItemFromParamRef = new AtomicReference<>();
+    AtomicReference<MediaItem> mediaItemFromGetterRef = new AtomicReference<>();
+    AtomicReference<MediaItem> mediaItemFromOnEventsRef = new AtomicReference<>();
+    AtomicInteger reasonRef = new AtomicInteger();
+    AtomicReference<Player.Events> eventsRef = new AtomicReference<>();
+    CountDownLatch latch = new CountDownLatch(2);
+    CountDownLatch timelineLatch = new CountDownLatch(1);
+    MediaController controller = controllerTestRule.createController(remoteSession.getToken());
+    threadTestRule
+        .getHandler()
+        .postAndSync(
+            () ->
+                controller.addListener(
+                    new Player.Listener() {
+                      @Override
+                      public void onTimelineChanged(Timeline timeline, int reason) {
+                        timelineLatch.countDown();
+                      }
+
+                      @Override
+                      public void onMediaItemTransition(
+                          @Nullable MediaItem mediaItem,
+                          @Player.MediaItemTransitionReason int reason) {
+                        if (reason == MEDIA_ITEM_TRANSITION_REASON_AUTO) {
+                          mediaItemFromParamRef.set(mediaItem);
+                          mediaItemFromGetterRef.set(controller.getCurrentMediaItem());
+                          reasonRef.set(reason);
+                          latch.countDown();
+                        }
+                      }
+
+                      @Override
+                      public void onEvents(Player player, Player.Events events) {
+                        if (events.contains(Player.EVENT_MEDIA_ITEM_TRANSITION)) {
+                          eventsRef.set(events);
+                          mediaItemFromOnEventsRef.set(player.getCurrentMediaItem());
+                          latch.countDown();
+                        }
+                      }
+                    }));
+    remoteSession.getMockPlayer().setTimeline(timeline);
+    remoteSession.getMockPlayer().setCurrentMediaItemIndex(/* index= */ 0);
+    remoteSession.getMockPlayer().setCurrentPeriodIndex(/* index= */ 0);
+    remoteSession
+        .getMockPlayer()
+        .notifyTimelineChanged(Player.TIMELINE_CHANGE_REASON_PLAYLIST_CHANGED);
+    assertThat(timelineLatch.await(TIMEOUT_MS, MILLISECONDS)).isTrue();
+    remoteSession.getMockPlayer().setCurrentMediaItemIndex(/* index= */ 1);
+    remoteSession.getMockPlayer().setCurrentPeriodIndex(/* index= */ 1);
+    MediaItem expectedMediaItemWithoutUri = createMediaItem("mediaId", /* buildWithUri= */ false);
+
+    remoteSession
+        .getMockPlayer()
+        .notifyPositionDiscontinuity(
+            new PositionInfo(
+                /* windowUid= */ new Object(),
+                /* mediaItemIndex= */ 0,
+                mediaItem,
+                /* periodUid= */ new Object(),
+                /* periodIndex= */ 0,
+                /* positionMs= */ 10_000L,
+                /* contentPositionMs= */ 10_000L,
+                /* adGroupIndex= */ C.INDEX_UNSET,
+                /* adIndexInAdGroup= */ C.INDEX_UNSET),
+            new PositionInfo(
+                /* windowUid= */ new Object(),
+                /* mediaItemIndex= */ 1,
+                mediaItem,
+                /* periodUid= */ new Object(),
+                /* periodIndex= */ 1,
+                /* positionMs= */ 0L,
+                /* contentPositionMs= */ 0L,
+                /* adGroupIndex= */ C.INDEX_UNSET,
+                /* adIndexInAdGroup= */ C.INDEX_UNSET),
+            Player.DISCONTINUITY_REASON_AUTO_TRANSITION);
+
+    assertThat(latch.await(TIMEOUT_MS, MILLISECONDS)).isTrue();
+    assertThat(getEventsAsList(eventsRef.get())).contains(Player.EVENT_MEDIA_ITEM_TRANSITION);
+    assertThat(mediaItemFromParamRef.get()).isEqualTo(expectedMediaItemWithoutUri);
+    assertThat(mediaItemFromGetterRef.get()).isEqualTo(expectedMediaItemWithoutUri);
+    assertThat(mediaItemFromOnEventsRef.get()).isEqualTo(expectedMediaItemWithoutUri);
+    assertThat(reasonRef.get()).isEqualTo(Player.MEDIA_ITEM_TRANSITION_REASON_AUTO);
+  }
+
+  @Test
+  public void
+      onMediaItemTransition_autoDiscontinuitySameMediaItemSameMediaItemIndex_callbackCalledForReasonRepeat()
+          throws Exception {
+    MediaItem mediaItem = createMediaItem("mediaId", /* buildWithUri= */ true);
+    Timeline timeline = MediaTestUtils.createTimeline(ImmutableList.of(mediaItem, mediaItem));
+    AtomicReference<MediaItem> mediaItemFromParamRef = new AtomicReference<>();
+    AtomicReference<MediaItem> mediaItemFromGetterRef = new AtomicReference<>();
+    AtomicReference<MediaItem> mediaItemFromOnEventsRef = new AtomicReference<>();
+    AtomicInteger reasonRef = new AtomicInteger();
+    AtomicReference<Player.Events> eventsRef = new AtomicReference<>();
+    CountDownLatch latch = new CountDownLatch(2);
+    CountDownLatch timelineLatch = new CountDownLatch(1);
+    MediaController controller = controllerTestRule.createController(remoteSession.getToken());
+    threadTestRule
+        .getHandler()
+        .postAndSync(
+            () ->
+                controller.addListener(
+                    new Player.Listener() {
+                      @Override
+                      public void onTimelineChanged(Timeline timeline, int reason) {
+                        timelineLatch.countDown();
+                      }
+
+                      @Override
+                      public void onMediaItemTransition(
+                          @Nullable MediaItem mediaItem,
+                          @Player.MediaItemTransitionReason int reason) {
+                        mediaItemFromParamRef.set(mediaItem);
+                        mediaItemFromGetterRef.set(controller.getCurrentMediaItem());
+                        reasonRef.set(reason);
+                        latch.countDown();
+                      }
+
+                      @Override
+                      public void onEvents(Player player, Player.Events events) {
+                        if (events.contains(Player.EVENT_MEDIA_ITEM_TRANSITION)) {
+                          eventsRef.set(events);
+                          mediaItemFromOnEventsRef.set(player.getCurrentMediaItem());
+                          latch.countDown();
+                        }
+                      }
+                    }));
+    remoteSession.getMockPlayer().setTimeline(timeline);
+    remoteSession.getMockPlayer().setCurrentMediaItemIndex(/* index= */ 0);
+    remoteSession.getMockPlayer().setCurrentPeriodIndex(/* index= */ 0);
+    remoteSession
+        .getMockPlayer()
+        .notifyTimelineChanged(Player.TIMELINE_CHANGE_REASON_PLAYLIST_CHANGED);
+    assertThat(timelineLatch.await(TIMEOUT_MS, MILLISECONDS)).isTrue();
+    remoteSession.getMockPlayer().setCurrentMediaItemIndex(/* index= */ 0);
+    remoteSession.getMockPlayer().setCurrentPeriodIndex(/* index= */ 0);
+    MediaItem expectedMediaItemWithoutUri = createMediaItem("mediaId", /* buildWithUri= */ false);
+    Object windowUid = new Object();
+    Object periodUid = new Object();
+
+    remoteSession
+        .getMockPlayer()
+        .notifyPositionDiscontinuity(
+            new PositionInfo(
+                /* windowUid= */ windowUid,
+                /* mediaItemIndex= */ 0,
+                mediaItem,
+                /* periodUid= */ periodUid,
+                /* periodIndex= */ 0,
+                /* positionMs= */ 10_000L,
+                /* contentPositionMs= */ 10_000L,
+                /* adGroupIndex= */ C.INDEX_UNSET,
+                /* adIndexInAdGroup= */ C.INDEX_UNSET),
+            new PositionInfo(
+                /* windowUid= */ windowUid,
+                /* mediaItemIndex= */ 0,
+                mediaItem,
+                /* periodUid= */ periodUid,
+                /* periodIndex= */ 0,
+                /* positionMs= */ 0L,
+                /* contentPositionMs= */ 0L,
+                /* adGroupIndex= */ C.INDEX_UNSET,
+                /* adIndexInAdGroup= */ C.INDEX_UNSET),
+            Player.DISCONTINUITY_REASON_AUTO_TRANSITION);
+
+    assertThat(latch.await(TIMEOUT_MS, MILLISECONDS)).isTrue();
+    assertThat(mediaItemFromParamRef.get()).isEqualTo(expectedMediaItemWithoutUri);
+    assertThat(mediaItemFromGetterRef.get()).isEqualTo(expectedMediaItemWithoutUri);
+    assertThat(mediaItemFromOnEventsRef.get()).isEqualTo(expectedMediaItemWithoutUri);
+    assertThat(reasonRef.get()).isEqualTo(MEDIA_ITEM_TRANSITION_REASON_REPEAT);
+    assertThat(getEventsAsList(eventsRef.get())).contains(Player.EVENT_MEDIA_ITEM_TRANSITION);
+  }
+
+  @Test
+  public void
+      onMediaItemTransition_seekDiscontinuitySameMediaItemDifferentMediaItemIndex_callbackCalledForReasonSeek()
+          throws Exception {
+    MediaItem mediaItem = createMediaItem("mediaId", /* buildWithUri= */ true);
+    Timeline timeline = MediaTestUtils.createTimeline(ImmutableList.of(mediaItem, mediaItem));
+    AtomicReference<MediaItem> mediaItemFromParamRef = new AtomicReference<>();
+    AtomicReference<MediaItem> mediaItemFromGetterRef = new AtomicReference<>();
+    AtomicReference<MediaItem> mediaItemFromOnEventsRef = new AtomicReference<>();
+    AtomicInteger reasonRef = new AtomicInteger();
+    AtomicReference<Player.Events> eventsRef = new AtomicReference<>();
+    CountDownLatch latch = new CountDownLatch(2);
+    CountDownLatch timelineLatch = new CountDownLatch(1);
+    MediaController controller = controllerTestRule.createController(remoteSession.getToken());
+    threadTestRule
+        .getHandler()
+        .postAndSync(
+            () ->
+                controller.addListener(
+                    new Player.Listener() {
+                      @Override
+                      public void onTimelineChanged(Timeline timeline, int reason) {
+                        timelineLatch.countDown();
+                      }
+
+                      @Override
+                      public void onMediaItemTransition(
+                          @Nullable MediaItem mediaItem,
+                          @Player.MediaItemTransitionReason int reason) {
+                        if (reason == MEDIA_ITEM_TRANSITION_REASON_SEEK) {
+                          mediaItemFromParamRef.set(mediaItem);
+                          mediaItemFromGetterRef.set(controller.getCurrentMediaItem());
+                          reasonRef.set(reason);
+                          latch.countDown();
+                        }
+                      }
+
+                      @Override
+                      public void onEvents(Player player, Player.Events events) {
+                        eventsRef.set(events);
+                        mediaItemFromOnEventsRef.set(player.getCurrentMediaItem());
+                        latch.countDown();
+                      }
+                    }));
+    remoteSession.getMockPlayer().setTimeline(timeline);
+    remoteSession.getMockPlayer().setCurrentMediaItemIndex(/* index= */ 0);
+    remoteSession.getMockPlayer().setCurrentPeriodIndex(/* index= */ 0);
+    remoteSession
+        .getMockPlayer()
+        .notifyTimelineChanged(Player.TIMELINE_CHANGE_REASON_PLAYLIST_CHANGED);
+    assertThat(timelineLatch.await(TIMEOUT_MS, MILLISECONDS)).isTrue();
+    remoteSession.getMockPlayer().setCurrentMediaItemIndex(/* index= */ 0);
+    remoteSession.getMockPlayer().setCurrentPeriodIndex(/* index= */ 0);
+    MediaItem expectedMediaItemWithoutUri = createMediaItem("mediaId", /* buildWithUri= */ false);
+
+    remoteSession
+        .getMockPlayer()
+        .notifyPositionDiscontinuity(
+            new PositionInfo(
+                /* windowUid= */ new Object(),
+                /* mediaItemIndex= */ 0,
+                mediaItem,
+                /* periodUid= */ new Object(),
+                /* periodIndex= */ 0,
+                /* positionMs= */ 10_000L,
+                /* contentPositionMs= */ 10_000L,
+                /* adGroupIndex= */ C.INDEX_UNSET,
+                /* adIndexInAdGroup= */ C.INDEX_UNSET),
+            new PositionInfo(
+                /* windowUid= */ new Object(),
+                /* mediaItemIndex= */ 1,
+                mediaItem,
+                /* periodUid= */ new Object(),
+                /* periodIndex= */ 1,
+                /* positionMs= */ 0L,
+                /* contentPositionMs= */ 0L,
+                /* adGroupIndex= */ C.INDEX_UNSET,
+                /* adIndexInAdGroup= */ C.INDEX_UNSET),
+            Player.DISCONTINUITY_REASON_SEEK);
+
+    assertThat(latch.await(TIMEOUT_MS, MILLISECONDS)).isTrue();
+    assertThat(mediaItemFromParamRef.get()).isEqualTo(expectedMediaItemWithoutUri);
+    assertThat(mediaItemFromGetterRef.get()).isEqualTo(expectedMediaItemWithoutUri);
+    assertThat(mediaItemFromOnEventsRef.get()).isEqualTo(expectedMediaItemWithoutUri);
+    assertThat(reasonRef.get()).isEqualTo(MEDIA_ITEM_TRANSITION_REASON_SEEK);
     assertThat(getEventsAsList(eventsRef.get())).contains(Player.EVENT_MEDIA_ITEM_TRANSITION);
   }
 
@@ -1739,7 +2026,7 @@ public class MediaControllerListenerTest {
             });
 
     player.notifyAvailableCommandsChanged(
-        availableCommands.get().buildUpon().remove(Player.COMMAND_GET_TRACKS).build());
+        availableCommands.get().buildUpon().remove(COMMAND_GET_TRACKS).build());
 
     assertThat(latch.await(TIMEOUT_MS, MILLISECONDS)).isTrue();
     assertThat(capturedCurrentTracks).hasSize(2);
@@ -4032,6 +4319,49 @@ public class MediaControllerListenerTest {
     threadTestRule.getHandler().postAndSync(() -> controller.addListener(listener));
 
     MediaMetadata testMediaMetadata = new MediaMetadata.Builder().setTitle("title").build();
+    remoteSession.getMockPlayer().notifyMediaMetadataChanged(testMediaMetadata);
+
+    assertThat(latch.await(TIMEOUT_MS, MILLISECONDS)).isTrue();
+    assertThat(mediaMetadataFromParamRef.get()).isEqualTo(testMediaMetadata);
+    assertThat(mediaMetadataFromGetterRef.get()).isEqualTo(testMediaMetadata);
+    assertThat(mediaMetadataFromOnEventsRef.get()).isEqualTo(testMediaMetadata);
+    assertThat(getEventsAsList(eventsRef.get()))
+        .containsExactly(Player.EVENT_MEDIA_METADATA_CHANGED);
+  }
+
+  @Test
+  public void onMediaMetadataChanged_withLargeArtworkData_isNotifiedAndUpdatesGetter()
+      throws Exception {
+    MediaController controller = controllerTestRule.createController(remoteSession.getToken());
+    CountDownLatch latch = new CountDownLatch(2);
+    AtomicReference<MediaMetadata> mediaMetadataFromParamRef = new AtomicReference<>();
+    AtomicReference<MediaMetadata> mediaMetadataFromGetterRef = new AtomicReference<>();
+    AtomicReference<MediaMetadata> mediaMetadataFromOnEventsRef = new AtomicReference<>();
+    AtomicReference<Player.Events> eventsRef = new AtomicReference<>();
+    Player.Listener listener =
+        new Player.Listener() {
+          @Override
+          public void onMediaMetadataChanged(MediaMetadata mediaMetadata) {
+            mediaMetadataFromParamRef.set(mediaMetadata);
+            mediaMetadataFromGetterRef.set(controller.getMediaMetadata());
+            latch.countDown();
+          }
+
+          @Override
+          public void onEvents(Player player, Player.Events events) {
+            mediaMetadataFromOnEventsRef.set(player.getMediaMetadata());
+            eventsRef.set(events);
+            latch.countDown();
+          }
+        };
+    threadTestRule.getHandler().postAndSync(() -> controller.addListener(listener));
+    byte[] largeArtworkData = new byte[4_000_000];
+    largeArtworkData[0] = (byte) 1234;
+    MediaMetadata testMediaMetadata =
+        new MediaMetadata.Builder()
+            .setArtworkData(largeArtworkData, MediaMetadata.PICTURE_TYPE_FRONT_COVER)
+            .build();
+
     remoteSession.getMockPlayer().notifyMediaMetadataChanged(testMediaMetadata);
 
     assertThat(latch.await(TIMEOUT_MS, MILLISECONDS)).isTrue();
