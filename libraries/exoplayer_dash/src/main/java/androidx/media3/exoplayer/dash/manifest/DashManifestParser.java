@@ -44,6 +44,7 @@ import androidx.media3.exoplayer.dash.manifest.SegmentBase.SegmentTemplate;
 import androidx.media3.exoplayer.dash.manifest.SegmentBase.SegmentTimelineElement;
 import androidx.media3.exoplayer.dash.manifest.SegmentBase.SingleSegmentBase;
 import androidx.media3.exoplayer.upstream.ParsingLoadable;
+import androidx.media3.exoplayer.util.LowLatencyLog;
 import androidx.media3.extractor.metadata.emsg.EventMessage;
 import androidx.media3.extractor.mp4.PsshAtomUtil;
 import com.google.common.base.Ascii;
@@ -402,6 +403,7 @@ public class DashManifestParser extends DefaultHandler
     // sides so LL logic never runs on non-LL paths.
     long peerMaxCount = 0L;
     boolean anyLowLatency = false;
+    StringBuilder trackBreakdown = LowLatencyLog.isFull() ? new StringBuilder() : null;
     for (AdaptationSet as : adaptationSets) {
       for (Representation r : as.representations) {
         if (r instanceof Representation.MultiSegmentRepresentation) {
@@ -411,7 +413,17 @@ public class DashManifestParser extends DefaultHandler
             SegmentTemplate st = (SegmentTemplate) multi;
             if (st.segmentTimeline != null && st.isLowLatency()) {
               anyLowLatency = true;
-              peerMaxCount = Math.max(peerMaxCount, st.segmentTimeline.size());
+              int size = st.segmentTimeline.size();
+              peerMaxCount = Math.max(peerMaxCount, size);
+              if (trackBreakdown != null) {
+                if (trackBreakdown.length() > 0) {
+                  trackBreakdown.append(", ");
+                }
+                trackBreakdown
+                    .append(trackTypeTag(as.type))
+                    .append("=")
+                    .append(size);
+              }
             }
           }
         }
@@ -419,6 +431,21 @@ public class DashManifestParser extends DefaultHandler
     }
     if (anyLowLatency) {
       peerMaxCountHolder[0] = peerMaxCount;
+    }
+    // LL-Core: Log Period peer-max state once per MPD refresh. Under sync the tracks
+    // share the same size (holder = each.count). Under CCU load the audio track
+    // typically lags 1 — you'll see e.g. "V=9, A=8" and the audio track will then
+    // emit its own "[PeerMax] BUMP" from getAvailableSegmentCount().
+    if (LowLatencyLog.isFull() && trackBreakdown != null) {
+      LowLatencyLog.d(
+          "PeerMax",
+          "Period parsed: anyLL="
+              + anyLowLatency
+              + " max="
+              + peerMaxCount
+              + " tracks=["
+              + trackBreakdown
+              + "]");
     }
 
     return Pair.create(
@@ -2200,6 +2227,20 @@ public class DashManifestParser extends DefaultHandler
       }
     }
     return C.INDEX_UNSET;
+  }
+
+  /** LL-Core: short tag for track type in peer-max log breakdown (V / A / T / ?). */
+  private static String trackTypeTag(@C.TrackType int trackType) {
+    switch (trackType) {
+      case C.TRACK_TYPE_VIDEO:
+        return "V";
+      case C.TRACK_TYPE_AUDIO:
+        return "A";
+      case C.TRACK_TYPE_TEXT:
+        return "T";
+      default:
+        return "?";
+    }
   }
 
   private static long getFinalAvailabilityTimeOffset(

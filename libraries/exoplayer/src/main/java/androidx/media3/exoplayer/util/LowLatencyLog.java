@@ -37,6 +37,11 @@ import androidx.media3.common.util.UnstableApi;
  *       buffered duration and smoothed minPossible.
  *   <li>{@code DefaultLivePlaybackSpeedControl.notifyRebuffer} — emits a REBUFFER marker and shows
  *       how the target was shifted.
+ *   <li>{@code DashManifestParser.parsePeriod} — logs Period peer-max state ("[PeerMax]") once per
+ *       MPD refresh so you can verify whether tracks are in sync and what holder value was set.
+ *   <li>{@code SegmentBase.SegmentTemplate.getAvailableSegmentCount} — logs "[PeerMax] BUMP" only
+ *       when the track-aware bump actually applies (count &lt; peerMax), so log volume stays bounded
+ *       — you'll only see it for the lagging track under CCU load.
  * </ul>
  */
 @UnstableApi

@@ -25,6 +25,7 @@ import androidx.media3.common.C;
 import androidx.media3.common.util.UnstableApi;
 import androidx.media3.common.util.Util;
 import androidx.media3.exoplayer.dash.DashSegmentIndex;
+import androidx.media3.exoplayer.util.LowLatencyLog;
 import com.google.common.math.BigIntegerMath;
 import java.math.BigInteger;
 import java.math.RoundingMode;
@@ -608,7 +609,16 @@ public abstract class SegmentBase {
             (peerMaxCountHolder != null && peerMaxCountHolder[0] > 0)
                 ? peerMaxCountHolder[0]
                 : 0L;
-        return Math.max(count, peerMax) + 1;
+        long result = Math.max(count, peerMax) + 1;
+        // LL-Core: Log only when the track-aware bump actually applies (count < peerMax),
+        // so log volume stays bounded — only the lagging track emits under CCU load. In
+        // steady state, all tracks are in sync so this branch is skipped.
+        if (LowLatencyLog.isFull() && peerMax > 0 && count < peerMax) {
+          LowLatencyLog.d(
+              "PeerMax",
+              "BUMP: count=" + count + " peerMax=" + peerMax + " → " + result);
+        }
+        return result;
       }
       return count;
     }
