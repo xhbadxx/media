@@ -133,6 +133,25 @@ public abstract class SegmentBase {
     @VisibleForTesting /* package */ final long availabilityTimeOffsetUs;
 
     /**
+     * LL-Core: Holder shared with peer tracks in the same Period parse to enable track-aware
+     * low-latency extrapolation.
+     *
+     * <p>Index 0 stores the max {@code segmentTimeline.size()} across all low-latency tracks in the
+     * enclosing Period. Populated by {@link DashManifestParser} after all AdaptationSets are parsed
+     * and before the resulting {@link DashManifest} is published.
+     *
+     * <p>A {@code null} value or value {@code 0} means the holder is unavailable (e.g. synthetic
+     * construction from tests, non-LL manifests, or backward-compat callers using the ctor overload
+     * without holder). In those cases, callers fall back to the original {@code count + 1}
+     * behavior.
+     */
+    @Nullable /* package */ final long[] peerMaxCountHolder;
+
+    /**
+     * Backward-compatible constructor without peer max holder. Delegates to the primary constructor
+     * with {@code peerMaxCountHolder = null}, preserving the pre-track-aware behavior (no peer
+     * bump, {@code count + 1} fallback) for callers that don't participate in Period-scoped sync.
+     *
      * @param initialization A {@link RangedUri} corresponding to initialization data, if such data
      *     exists.
      * @param timescale The timescale in units per second.
@@ -161,6 +180,38 @@ public abstract class SegmentBase {
         long availabilityTimeOffsetUs,
         long timeShiftBufferDepthUs,
         long periodStartUnixTimeUs) {
+      this(
+          initialization,
+          timescale,
+          presentationTimeOffset,
+          startNumber,
+          duration,
+          segmentTimeline,
+          availabilityTimeOffsetUs,
+          timeShiftBufferDepthUs,
+          periodStartUnixTimeUs,
+          /* peerMaxCountHolder= */ null);
+    }
+
+    /**
+     * Primary constructor with peer max holder for track-aware low-latency extrapolation.
+     *
+     * @param peerMaxCountHolder LL-Core: Period-scoped holder set by the parser after parsing all
+     *     AdaptationSets. Index 0 holds the max {@code segmentTimeline.size()} across LL tracks in
+     *     the enclosing Period, or 0 if the Period has no LL tracks. Pass {@code null} to opt out
+     *     of track-aware sync (fallback to {@code count + 1}).
+     */
+    public MultiSegmentBase(
+        @Nullable RangedUri initialization,
+        long timescale,
+        long presentationTimeOffset,
+        long startNumber,
+        long duration,
+        @Nullable List<SegmentTimelineElement> segmentTimeline,
+        long availabilityTimeOffsetUs,
+        long timeShiftBufferDepthUs,
+        long periodStartUnixTimeUs,
+        @Nullable long[] peerMaxCountHolder) {
       super(initialization, timescale, presentationTimeOffset);
       this.startNumber = startNumber;
       this.duration = duration;
@@ -168,6 +219,7 @@ public abstract class SegmentBase {
       this.availabilityTimeOffsetUs = availabilityTimeOffsetUs;
       this.timeShiftBufferDepthUs = timeShiftBufferDepthUs;
       this.periodStartUnixTimeUs = periodStartUnixTimeUs;
+      this.peerMaxCountHolder = peerMaxCountHolder;
     }
 
     /**
@@ -407,6 +459,9 @@ public abstract class SegmentBase {
     /* package */ final long endNumber;
 
     /**
+     * Backward-compatible constructor without peer max holder. Delegates to the primary
+     * constructor with {@code peerMaxCountHolder = null}, preserving pre-track-aware behavior.
+     *
      * @param initialization A {@link RangedUri} corresponding to initialization data, if such data
      *     exists. The value of this parameter is ignored if {@code initializationTemplate} is
      *     non-null.
@@ -446,6 +501,44 @@ public abstract class SegmentBase {
         @Nullable UrlTemplate mediaTemplate,
         long timeShiftBufferDepthUs,
         long periodStartUnixTimeUs) {
+      this(
+          initialization,
+          timescale,
+          presentationTimeOffset,
+          startNumber,
+          endNumber,
+          duration,
+          segmentTimeline,
+          availabilityTimeOffsetUs,
+          initializationTemplate,
+          mediaTemplate,
+          timeShiftBufferDepthUs,
+          periodStartUnixTimeUs,
+          /* peerMaxCountHolder= */ null);
+    }
+
+    /**
+     * Primary constructor with peer max holder for track-aware low-latency extrapolation.
+     *
+     * @param peerMaxCountHolder LL-Core: Period-scoped holder set by the parser after parsing all
+     *     AdaptationSets. Index 0 stores the max {@code segmentTimeline.size()} across LL tracks
+     *     in the enclosing Period, or 0 if the Period has no LL tracks. Pass {@code null} to opt
+     *     out of track-aware sync (fallback to {@code count + 1}).
+     */
+    public SegmentTemplate(
+        RangedUri initialization,
+        long timescale,
+        long presentationTimeOffset,
+        long startNumber,
+        long endNumber,
+        long duration,
+        @Nullable List<SegmentTimelineElement> segmentTimeline,
+        long availabilityTimeOffsetUs,
+        @Nullable UrlTemplate initializationTemplate,
+        @Nullable UrlTemplate mediaTemplate,
+        long timeShiftBufferDepthUs,
+        long periodStartUnixTimeUs,
+        @Nullable long[] peerMaxCountHolder) {
       super(
           initialization,
           timescale,
@@ -455,7 +548,8 @@ public abstract class SegmentBase {
           segmentTimeline,
           availabilityTimeOffsetUs,
           timeShiftBufferDepthUs,
-          periodStartUnixTimeUs);
+          periodStartUnixTimeUs,
+          peerMaxCountHolder);
       this.initializationTemplate = initializationTemplate;
       this.mediaTemplate = mediaTemplate;
       this.endNumber = endNumber;
@@ -502,11 +596,19 @@ public abstract class SegmentBase {
     @Override
     public long getAvailableSegmentCount(long periodDurationUs, long nowUnixTimeUs) {
       long count = super.getAvailableSegmentCount(periodDurationUs, nowUnixTimeUs);
-      // LL-Core: For LL-DASH with SegmentTimeline, include the next incomplete segment
-      // so the player can request it via chunked transfer (~300ms chunks instead of
-      // waiting for full 1.92s segment in next manifest refresh).
+      // LL-Core: Track-aware extrapolation. Gated by isLowLatency() so non-LL streams
+      // (VOD, non-LL live, DVR) bypass entirely. When this track's timeline lags peers
+      // (e.g. audio MPD trailing video MPD by 1 cycle under CCU load), Math.max(count,
+      // peerMax) bumps the lagging track up to peer max before the +1 — the player
+      // can fetch the next in-progress segment via chunked transfer instead of WAIT-ing
+      // for the next MPD refresh cycle. In-sync tracks and the fallback path (null or
+      // 0 holder) degrade to the original count + 1.
       if (segmentTimeline != null && isLowLatency()) {
-        return count + 1;
+        long peerMax =
+            (peerMaxCountHolder != null && peerMaxCountHolder[0] > 0)
+                ? peerMaxCountHolder[0]
+                : 0L;
+        return Math.max(count, peerMax) + 1;
       }
       return count;
     }
