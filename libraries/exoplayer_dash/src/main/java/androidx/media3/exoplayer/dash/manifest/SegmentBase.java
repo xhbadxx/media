@@ -613,7 +613,7 @@ public abstract class SegmentBase {
         // LL-Core: Log only when the track-aware bump actually applies (count < peerMax),
         // so log volume stays bounded — only the lagging track emits under CCU load. In
         // steady state, all tracks are in sync so this branch is skipped.
-        if (LowLatencyLog.isFull() && peerMax > 0 && count < peerMax) {
+        if (LowLatencyLog.isEnabled() && peerMax > 0 && count < peerMax) {
           LowLatencyLog.d(
               "PeerMax",
               "BUMP: count=" + count + " peerMax=" + peerMax + " → " + result);
