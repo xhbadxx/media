@@ -330,6 +330,12 @@ public class DashManifestParser extends DefaultHandler
     ArrayList<BaseUrl> baseUrls = new ArrayList<>();
     boolean seenFirstBaseUrl = false;
     long segmentBaseAvailabilityTimeOffsetUs = C.TIME_UNSET;
+    // LL-Core: Period-scoped holder shared across all SegmentTemplates parsed below.
+    // Populated after the do-while loop once all tracks are known. SegmentTemplates
+    // created before the holder is populated still hold a reference to this same
+    // array, so the later write is visible at query time via DashManifest reference
+    // publication (happens-before).
+    long[] peerMaxCountHolder = new long[] {0L};
     do {
       xpp.next();
       if (XmlPullParserUtil.isStartTag(xpp, "BaseURL")) {
@@ -350,7 +356,8 @@ public class DashManifestParser extends DefaultHandler
                 segmentBaseAvailabilityTimeOffsetUs,
                 periodStartUnixTimeMs,
                 timeShiftBufferDepthMs,
-                dvbProfileDeclared));
+                dvbProfileDeclared,
+                peerMaxCountHolder));
       } else if (XmlPullParserUtil.isStartTag(xpp, "EventStream")) {
         eventStreams.add(parseEventStream(xpp));
       } else if (XmlPullParserUtil.isStartTag(xpp, "SegmentBase")) {
@@ -379,13 +386,40 @@ public class DashManifestParser extends DefaultHandler
                 durationMs,
                 baseUrlAvailabilityTimeOffsetUs,
                 segmentBaseAvailabilityTimeOffsetUs,
-                timeShiftBufferDepthMs);
+                timeShiftBufferDepthMs,
+                peerMaxCountHolder);
       } else if (XmlPullParserUtil.isStartTag(xpp, "AssetIdentifier")) {
         assetIdentifier = parseDescriptor(xpp, "AssetIdentifier");
       } else {
         maybeSkipTag(xpp);
       }
     } while (!XmlPullParserUtil.isEndTag(xpp, "Period"));
+
+    // LL-Core: Compute peer max ONLY when this Period has at least one low-latency
+    // track. Non-LL manifests (VOD, non-LL live, DVR) skip entirely — holder stays 0
+    // and SegmentTemplate.getAvailableSegmentCount() falls back to count + 1 because
+    // its LL gate (isLowLatency()) is false. Gate applied at BOTH parser and consumer
+    // sides so LL logic never runs on non-LL paths.
+    long peerMaxCount = 0L;
+    boolean anyLowLatency = false;
+    for (AdaptationSet as : adaptationSets) {
+      for (Representation r : as.representations) {
+        if (r instanceof Representation.MultiSegmentRepresentation) {
+          SegmentBase.MultiSegmentBase multi =
+              ((Representation.MultiSegmentRepresentation) r).segmentBase;
+          if (multi instanceof SegmentTemplate) {
+            SegmentTemplate st = (SegmentTemplate) multi;
+            if (st.segmentTimeline != null && st.isLowLatency()) {
+              anyLowLatency = true;
+              peerMaxCount = Math.max(peerMaxCount, st.segmentTimeline.size());
+            }
+          }
+        }
+      }
+    }
+    if (anyLowLatency) {
+      peerMaxCountHolder[0] = peerMaxCount;
+    }
 
     return Pair.create(
         buildPeriod(id, startMs, adaptationSets, eventStreams, assetIdentifier), durationMs);
@@ -411,7 +445,8 @@ public class DashManifestParser extends DefaultHandler
       long segmentBaseAvailabilityTimeOffsetUs,
       long periodStartUnixTimeMs,
       long timeShiftBufferDepthMs,
-      boolean dvbProfileDeclared)
+      boolean dvbProfileDeclared,
+      @Nullable long[] peerMaxCountHolder)
       throws XmlPullParserException, IOException {
     long id = parseLong(xpp, "id", AdaptationSet.ID_UNSET);
     @C.TrackType int contentType = parseContentType(xpp);
@@ -494,7 +529,8 @@ public class DashManifestParser extends DefaultHandler
                 baseUrlAvailabilityTimeOffsetUs,
                 segmentBaseAvailabilityTimeOffsetUs,
                 timeShiftBufferDepthMs,
-                dvbProfileDeclared);
+                dvbProfileDeclared,
+                peerMaxCountHolder);
         contentType =
             checkContentTypeConsistency(
                 contentType, MimeTypes.getTrackType(representationInfo.format.sampleMimeType));
@@ -525,7 +561,8 @@ public class DashManifestParser extends DefaultHandler
                 periodDurationMs,
                 baseUrlAvailabilityTimeOffsetUs,
                 segmentBaseAvailabilityTimeOffsetUs,
-                timeShiftBufferDepthMs);
+                timeShiftBufferDepthMs,
+                peerMaxCountHolder);
       } else if (XmlPullParserUtil.isStartTag(xpp, "InbandEventStream")) {
         inbandEventStreams.add(parseDescriptor(xpp, "InbandEventStream"));
       } else if (XmlPullParserUtil.isStartTag(xpp, "Label")) {
@@ -714,7 +751,8 @@ public class DashManifestParser extends DefaultHandler
       long baseUrlAvailabilityTimeOffsetUs,
       long segmentBaseAvailabilityTimeOffsetUs,
       long timeShiftBufferDepthMs,
-      boolean dvbProfileDeclared)
+      boolean dvbProfileDeclared,
+      @Nullable long[] peerMaxCountHolder)
       throws XmlPullParserException, IOException {
     String id = xpp.getAttributeValue(null, "id");
     int bandwidth = parseInt(xpp, "bandwidth", Format.NO_VALUE);
@@ -776,7 +814,8 @@ public class DashManifestParser extends DefaultHandler
                 periodDurationMs,
                 baseUrlAvailabilityTimeOffsetUs,
                 segmentBaseAvailabilityTimeOffsetUs,
-                timeShiftBufferDepthMs);
+                timeShiftBufferDepthMs,
+                peerMaxCountHolder);
       } else if (XmlPullParserUtil.isStartTag(xpp, "ContentProtection")) {
         Pair<String, SchemeData> contentProtection = parseContentProtection(xpp);
         if (contentProtection.first != null) {
@@ -1067,7 +1106,8 @@ public class DashManifestParser extends DefaultHandler
       long periodDurationMs,
       long baseUrlAvailabilityTimeOffsetUs,
       long segmentBaseAvailabilityTimeOffsetUs,
-      long timeShiftBufferDepthMs)
+      long timeShiftBufferDepthMs,
+      @Nullable long[] peerMaxCountHolder)
       throws XmlPullParserException, IOException {
     long timescale = parseLong(xpp, "timescale", parent != null ? parent.timescale : 1);
     long presentationTimeOffset =
@@ -1118,7 +1158,8 @@ public class DashManifestParser extends DefaultHandler
         initializationTemplate,
         mediaTemplate,
         timeShiftBufferDepthMs,
-        periodStartUnixTimeMs);
+        periodStartUnixTimeMs,
+        peerMaxCountHolder);
   }
 
   protected SegmentTemplate buildSegmentTemplate(
@@ -1133,7 +1174,8 @@ public class DashManifestParser extends DefaultHandler
       @Nullable UrlTemplate initializationTemplate,
       @Nullable UrlTemplate mediaTemplate,
       long timeShiftBufferDepthMs,
-      long periodStartUnixTimeMs) {
+      long periodStartUnixTimeMs,
+      @Nullable long[] peerMaxCountHolder) {
     return new SegmentTemplate(
         initialization,
         timescale,
@@ -1146,7 +1188,8 @@ public class DashManifestParser extends DefaultHandler
         initializationTemplate,
         mediaTemplate,
         Util.msToUs(timeShiftBufferDepthMs),
-        Util.msToUs(periodStartUnixTimeMs));
+        Util.msToUs(periodStartUnixTimeMs),
+        peerMaxCountHolder);
   }
 
   /**
