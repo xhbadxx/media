@@ -77,6 +77,7 @@ public class DashManifestParserTest {
       "media/mpd/sample_mpd_relative_baseUrls_dvb_profile_not_declared";
   private static final String SAMPLE_MPD_RELATIVE_BASE_URLS_DVB_PROFILE_DECLARED =
       "media/mpd/sample_mpd_relative_baseUrls_dvb_profile_declared";
+  private static final String SAMPLE_MPD_LIVE_LL_AUDIO_LAG = "media/mpd/sample_mpd_live_ll_audio_lag";
   private static final String SAMPLE_MPD_AVAILABILITY_TIME_OFFSET_SEGMENT_TEMPLATE =
       "media/mpd/sample_mpd_availabilityTimeOffset_segmentTemplate";
   private static final String SAMPLE_MPD_AVAILABILITY_TIME_OFFSET_SEGMENT_LIST =
@@ -1046,5 +1047,45 @@ public class DashManifestParserTest {
     SegmentBase.MultiSegmentBase segmentBase =
         ((Representation.MultiSegmentRepresentation) representation).segmentBase;
     return segmentBase.availabilityTimeOffsetUs;
+  }
+
+  // LL-Core: Track-aware Fix 2 parser integration test.
+
+  @Test
+  public void parseMediaPresentationDescription_llWithAudioLag_audioCountBumpsToVideoMax()
+      throws IOException {
+    DashManifestParser parser = new DashManifestParser();
+    DashManifest manifest =
+        parser.parse(
+            Uri.parse("https://example.com/test.mpd"),
+            TestUtil.getInputStream(
+                ApplicationProvider.getApplicationContext(), SAMPLE_MPD_LIVE_LL_AUDIO_LAG));
+
+    Period period = manifest.getPeriod(0);
+    AdaptationSet audioSet = findAdaptationSetByType(period, C.TRACK_TYPE_AUDIO);
+    AdaptationSet videoSet = findAdaptationSetByType(period, C.TRACK_TYPE_VIDEO);
+
+    long videoCount =
+        ((Representation.MultiSegmentRepresentation) videoSet.representations.get(0))
+            .getAvailableSegmentCount(
+                /* periodDurationUs= */ C.TIME_UNSET, /* nowUnixTimeUs= */ 0L);
+    long audioCount =
+        ((Representation.MultiSegmentRepresentation) audioSet.representations.get(0))
+            .getAvailableSegmentCount(
+                /* periodDurationUs= */ C.TIME_UNSET, /* nowUnixTimeUs= */ 0L);
+
+    // Fixture: video timeline has 9 segments (r=8), audio has 8 (r=7, lag=1).
+    // With track-aware Fix 2: video=9+1=10, audio=max(8,9)+1=10 (audio bumped).
+    assertThat(videoCount).isEqualTo(10L);
+    assertThat(audioCount).isEqualTo(10L);
+  }
+
+  private static AdaptationSet findAdaptationSetByType(Period period, @C.TrackType int type) {
+    for (AdaptationSet as : period.adaptationSets) {
+      if (as.type == type) {
+        return as;
+      }
+    }
+    throw new IllegalStateException("No AdaptationSet of type " + type);
   }
 }

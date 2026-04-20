@@ -19,6 +19,8 @@ import static com.google.common.truth.Truth.assertThat;
 
 import androidx.media3.common.C;
 import androidx.test.ext.junit.runners.AndroidJUnit4;
+import java.util.ArrayList;
+import java.util.List;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 
@@ -220,5 +222,83 @@ public final class SegmentBaseTest {
             /* timeShiftBufferDepthUs= */ C.TIME_UNSET,
             /* periodStartUnixTimeUs= */ C.TIME_UNSET);
     assertThat(segmentTemplate.getSegmentCount(1618875028000000L)).isEqualTo(8994299808L);
+  }
+
+  // LL-Core: Track-aware Fix 2 tests.
+
+  @Test
+  public void getAvailableSegmentCount_llAudioLagsVideo_bumpsAudioToMatchVideoPlusOne() {
+    long[] holder = new long[] {0L};
+    SegmentBase.SegmentTemplate video = createLLTemplateWithTimelineSize(9, holder);
+    SegmentBase.SegmentTemplate audio = createLLTemplateWithTimelineSize(8, holder);
+    holder[0] = 9L;
+
+    assertThat(video.getAvailableSegmentCount(C.TIME_UNSET, /* nowUnixTimeUs= */ 0))
+        .isEqualTo(10L);
+    assertThat(audio.getAvailableSegmentCount(C.TIME_UNSET, /* nowUnixTimeUs= */ 0))
+        .isEqualTo(10L);
+  }
+
+  @Test
+  public void getAvailableSegmentCount_llTracksInSync_behavesAsPlusOne() {
+    long[] holder = new long[] {0L};
+    SegmentBase.SegmentTemplate video = createLLTemplateWithTimelineSize(9, holder);
+    SegmentBase.SegmentTemplate audio = createLLTemplateWithTimelineSize(9, holder);
+    holder[0] = 9L;
+
+    assertThat(video.getAvailableSegmentCount(C.TIME_UNSET, /* nowUnixTimeUs= */ 0))
+        .isEqualTo(10L);
+    assertThat(audio.getAvailableSegmentCount(C.TIME_UNSET, /* nowUnixTimeUs= */ 0))
+        .isEqualTo(10L);
+  }
+
+  @Test
+  public void getAvailableSegmentCount_llHolderUnset_fallsBackToPlusOne() {
+    long[] holder = new long[] {0L};
+    SegmentBase.SegmentTemplate video = createLLTemplateWithTimelineSize(9, holder);
+
+    assertThat(video.getAvailableSegmentCount(C.TIME_UNSET, /* nowUnixTimeUs= */ 0))
+        .isEqualTo(10L);
+  }
+
+  @Test
+  public void getAvailableSegmentCount_nonLL_ignoresHolder() {
+    long[] holder = new long[] {20L};
+    SegmentBase.SegmentTemplate nonLL = createNonLLTemplateWithTimelineSize(9, holder);
+
+    assertThat(nonLL.getAvailableSegmentCount(C.TIME_UNSET, /* nowUnixTimeUs= */ 0))
+        .isEqualTo(9L);
+  }
+
+  private static SegmentBase.SegmentTemplate createLLTemplateWithTimelineSize(
+      int size, long[] holder) {
+    return createTemplate(size, /* availabilityTimeOffsetUs= */ 1_680_000L, holder);
+  }
+
+  private static SegmentBase.SegmentTemplate createNonLLTemplateWithTimelineSize(
+      int size, long[] holder) {
+    return createTemplate(size, /* availabilityTimeOffsetUs= */ C.TIME_UNSET, holder);
+  }
+
+  private static SegmentBase.SegmentTemplate createTemplate(
+      int timelineSize, long availabilityTimeOffsetUs, long[] holder) {
+    List<SegmentBase.SegmentTimelineElement> timeline = new ArrayList<>();
+    for (int i = 0; i < timelineSize; i++) {
+      timeline.add(new SegmentBase.SegmentTimelineElement(i * 1_920_000L, 1_920_000L));
+    }
+    return new SegmentBase.SegmentTemplate(
+        /* initialization= */ null,
+        /* timescale= */ 10_000_000L,
+        /* presentationTimeOffset= */ 0L,
+        /* startNumber= */ 1L,
+        /* endNumber= */ C.INDEX_UNSET,
+        /* duration= */ 1_920_000L,
+        timeline,
+        availabilityTimeOffsetUs,
+        /* initializationTemplate= */ null,
+        /* mediaTemplate= */ UrlTemplate.compile("segment-$Number$.mp4"),
+        /* timeShiftBufferDepthUs= */ 16_000_000L,
+        /* periodStartUnixTimeUs= */ 0L,
+        holder);
   }
 }

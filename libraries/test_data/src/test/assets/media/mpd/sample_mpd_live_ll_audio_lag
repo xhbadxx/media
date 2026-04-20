@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<MPD xmlns="urn:mpeg:dash:schema:mpd:2011"
+     type="dynamic"
+     minimumUpdatePeriod="PT1S"
+     timeShiftBufferDepth="PT17S"
+     availabilityStartTime="2026-04-20T00:00:00Z"
+     publishTime="2026-04-20T00:10:00Z"
+     profiles="urn:mpeg:dash:profile:isoff-live:2011">
+  <ServiceDescription id="0">
+    <Latency min="4000" max="7000" target="5000"/>
+  </ServiceDescription>
+  <Period id="0" start="PT0S">
+    <AdaptationSet id="1" contentType="audio" mimeType="audio/mp4" lang="vie">
+      <SegmentTemplate timescale="10000000"
+                       availabilityTimeOffset="1.68"
+                       availabilityTimeComplete="false"
+                       media="audio-$Number$.mp4"
+                       initialization="audio-init.mp4">
+        <SegmentTimeline>
+          <S t="0" d="19200000" r="7"/>
+        </SegmentTimeline>
+      </SegmentTemplate>
+      <Representation id="audio_0" codecs="mp4a.40.2" bandwidth="128000"/>
+    </AdaptationSet>
+    <AdaptationSet id="2" contentType="video" mimeType="video/mp4">
+      <SegmentTemplate timescale="10000000"
+                       availabilityTimeOffset="1.68"
+                       availabilityTimeComplete="false"
+                       media="video-$Number$.mp4"
+                       initialization="video-init.mp4">
+        <SegmentTimeline>
+          <S t="0" d="19200000" r="8"/>
+        </SegmentTimeline>
+      </SegmentTemplate>
+      <Representation id="video_0" codecs="hvc1.1.6.L93.90" bandwidth="4800000" width="1920" height="1080"/>
+    </AdaptationSet>
+  </Period>
+</MPD>
