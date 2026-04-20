@@ -56,7 +56,9 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -403,12 +405,14 @@ public class DashManifestParser extends DefaultHandler
     // sides so LL logic never runs on non-LL paths.
     long peerMaxCount = 0L;
     boolean anyLowLatency = false;
-    StringBuilder trackBreakdown = LowLatencyLog.isEnabled() ? new StringBuilder() : null;
+    // LL-Core: Collect AdaptationSet stats into a LinkedHashMap keyed by "type=size"
+    // so entries with the same type AND same size are merged. Output:
+    //   tracks=[A=8(×2), V=8(×5)]                   when all in sync
+    //   tracks=[A=7(×1), A=8(×1), V=8(×5)]          when audio_1 lags but audio_2 is sync
+    // Preserves insertion order (same as MPD declaration order).
+    LinkedHashMap<String, Integer> trackCounts =
+        LowLatencyLog.isEnabled() ? new LinkedHashMap<>() : null;
     for (AdaptationSet as : adaptationSets) {
-      // LL-Core: All Representations in the same AdaptationSet typically share the
-      // SegmentTimeline (inherited from parent SegmentTemplate), so sizes are equal.
-      // Log one entry per AdaptationSet (not per Representation) for readable output:
-      // "tracks=[A=7(×1), V=8(×5)]" instead of "A=7, V=8, V=8, V=8, V=8, V=8".
       int asSize = -1;
       int asLLRepCount = 0;
       for (Representation r : as.representations) {
@@ -429,17 +433,9 @@ public class DashManifestParser extends DefaultHandler
           }
         }
       }
-      if (trackBreakdown != null && asSize != -1) {
-        if (trackBreakdown.length() > 0) {
-          trackBreakdown.append(", ");
-        }
-        trackBreakdown
-            .append(trackTypeTag(as.type))
-            .append("=")
-            .append(asSize)
-            .append("(×")
-            .append(asLLRepCount)
-            .append(")");
+      if (trackCounts != null && asSize != -1) {
+        String key = trackTypeTag(as.type) + "=" + asSize;
+        trackCounts.merge(key, asLLRepCount, Integer::sum);
       }
     }
     if (anyLowLatency) {
@@ -449,7 +445,18 @@ public class DashManifestParser extends DefaultHandler
     // share the same size (holder = each.count). Under CCU load the audio track
     // typically lags 1 — you'll see e.g. "V=9, A=8" and the audio track will then
     // emit its own "[PeerMax] BUMP" from getAvailableSegmentCount().
-    if (LowLatencyLog.isEnabled() && trackBreakdown != null) {
+    if (LowLatencyLog.isEnabled() && trackCounts != null) {
+      StringBuilder trackBreakdown = new StringBuilder();
+      for (Map.Entry<String, Integer> entry : trackCounts.entrySet()) {
+        if (trackBreakdown.length() > 0) {
+          trackBreakdown.append(", ");
+        }
+        trackBreakdown
+            .append(entry.getKey())
+            .append("(×")
+            .append(entry.getValue())
+            .append(")");
+      }
       LowLatencyLog.d(
           "PeerMax",
           "Period parsed: anyLL="
