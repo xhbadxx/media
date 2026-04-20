@@ -109,7 +109,6 @@ All 8 WAIT events had **buffer > 1800ms** — no danger of rebuffer. Player was 
 
 | Risk | Detail |
 |---|---|
-| Transfer margin | Transfer 1787ms vs segment duration 1920ms → margin only **133ms** |
 | Bandwidth | Effective ~13.3 Mbps for 12.6 Mbps stream → headroom ~5% |
 | Network degradation | Slight network drop could cause transfer > segment duration → rebuffer |
 
@@ -117,7 +116,7 @@ All 8 WAIT events had **buffer > 1800ms** — no danger of rebuffer. Player was 
 
 - Akamai chunk transfer works perfectly for both 4K video and audio
 - TTFB consistently low (~116ms) despite 3MB segment size (2.7x larger than 1080p ~1.1MB)
-- Transfer time ~1.8s is close to segment duration 1.92s — tight margin but stable on good WiFi
+- Transfer time ~1.8s = data streams gradually via 8 chunks over segment duration — normal for chunk transfer
 - Speed control converges to ideal in ~18s, then completely stable for 10 minutes
 - No ABR switches — network sustained 4K throughout
 
@@ -332,7 +331,7 @@ Post-recovery (12:49:01+):
 | Network stability | 1 network outage (~25s) caused rebuffer + 28s live offset spike |
 | Recovery | Player recovered fully — target back to ideal 3000ms |
 | CDN chunk transfer | **Both video and audio** — excellent (same as Akamai) |
-| Transfer margin | 21ms (1%) at rebuffer — tightest of all CDNs |
+| CDN chunk transfer | **Both video and audio** — excellent (same as Akamai) |
 
 ---
 
@@ -460,7 +459,7 @@ Incident 2 (13:43:07):
 | Buffer too thin | Target 2s → buf only ~1000ms steady state → 500ms margin before drain |
 | DRM stall | Rebuffers with buf 400-450ms suggest DRM decryption delays, not CDN issue |
 | Recovery cost | Each incident: 9+ rebuffers, target escalates to 5000ms, ~60s to recover |
-| Verdict | **Target 2s NOT viable for 4K** — transfer ~1778ms vs segment 1920ms leaves only 142ms headroom, combined with DRM processing makes it too tight |
+| Verdict | **Target 2s NOT viable for 4K** — DRM decryption stall causes rebuffer cascade even with buf 400-450ms |
 
 ---
 
@@ -585,7 +584,7 @@ Steady-state (13:55:32 → 14:05:47, ~10+ minutes):
 | Video TTFB avg | 127ms | **66ms** |
 | Audio TTFB avg | 142ms | **71ms** |
 | Transfer avg (video) | 1778ms | 1822ms |
-| Transfer margin | 142ms (7%) | **98ms (5%)** |
+| Transfer time (video) | 1778ms | 1822ms |
 | WAIT events | 13 | 39 |
 
 **FPT significantly better than Akamai at target 2s:** Only 1 startup incident vs 2 mid-session incidents. After recovery, FPT maintained stable 2000-2018ms for 10+ minutes with zero rebuffers. Akamai had recurring DRM stall cascades mid-session.
@@ -597,7 +596,7 @@ Steady-state (13:55:32 → 14:05:47, ~10+ minutes):
 | Startup vulnerability | Rebuffer cascade during initial catchup — safeOffset not yet calibrated |
 | DRM stall | Rebuffers #2-3 with buf 419-451ms — same DRM stall pattern as Akamai |
 | Post-recovery stability | **Excellent** — 10+ min stable at target 2000-2018ms, 0 rebuffers |
-| Transfer margin | 98ms (5%) — tight but FPT chunk transfer very consistent |
+| Post-recovery stability | **Excellent** — 10+ min stable at target 2000-2018ms, 0 rebuffers |
 | Verdict | FPT CDN at target 2s **borderline viable** — startup rebuffers but very stable after recovery. Better than Akamai at target 2s |
 
 ---
@@ -630,7 +629,7 @@ Steady-state (13:55:32 → 14:05:47, ~10+ minutes):
 | Video chunk transfer | **Yes** | **Yes** | **Yes** |
 | Audio chunk transfer | **Yes** | **No** | **Yes** |
 | Video segment size | 2962KB | 2955KB | 2960KB |
-| Transfer margin | 133ms (7%) | 32ms (2%) | 21ms (1%) |
+| Transfer time (video) | 1787ms | 1812ms | 1833ms |
 | HTTP errors | 0 | 0 | **5** (network incident) |
 | Post-rebuffer target | — | 3729ms | 5000ms→3000ms (recovered) |
 
@@ -650,7 +649,7 @@ Steady-state (13:55:32 → 14:05:47, ~10+ minutes):
 | Video size/seg | ~1117KB | **2962KB** | **x2.7** |
 | Transfer time | — | 1787ms | — |
 | Bandwidth | ~4.7 Mbps | **~13.3 Mbps** | **x2.8** |
-| Transfer margin | — | **133ms (7%)** | tight |
+| Transfer time | — | 1787ms | — |
 | WAIT events | 5 | 8 | +3 |
 
 ### BytePlus
@@ -683,9 +682,9 @@ Steady-state (13:55:32 → 14:05:47, ~10+ minutes):
 1. **Akamai:** TTFB stays low despite 2.7x larger segments — CDN chunk transfer scales well
 2. **BytePlus video TTFB improved** on 4K (75ms vs 249ms for 1080p) — possibly CDN caching/routing better for 4K stream
 3. **BytePlus audio still broken** — TTFB ~1844ms on 4K, same as 1080p (~1868ms). Audio not chunk-transferred. This is a CDN config issue, not resolution-dependent
-4. **Tight bandwidth margin** on 4K — 4K needs ~13 Mbps, leaving only ~5-7% headroom
+4. **4K bandwidth** — 4K needs ~13 Mbps, but chunk transfer delivers data gradually so transfer time ≈ segment duration is normal
 5. **BytePlus 4K target closer to ideal** than 1080p (3056ms vs 3575ms) — counterintuitive but video TTFB improvement partially offsets audio delay
-6. **BytePlus rebuffer on 4K** caused by audio pipeline stall, same root cause as 1080p but 4K's tighter margin made it fatal
+6. **BytePlus rebuffer on 4K** caused by audio pipeline stall (full-segment delivery), same root cause as 1080p
 7. **FPT best TTFB** of all CDNs (65-71ms) — lowest and most consistent on both video and audio
 8. **FPT target 2s viable** after startup recovery — 10+ min stable, unlike Akamai which has recurring mid-session incidents
 
@@ -730,7 +729,7 @@ num_chunks       = segment_duration / chunk_duration = 1.92 / 0.24 = 8
 | **Audio TTFB** | 131ms | **1844ms** ✗ | **69ms** | 142ms | **71ms** |
 | **Video chunk** | ✓ | ✓ | ✓ | ✓ | ✓ |
 | **Audio chunk** | ✓ | **✗** | ✓ | ✓ | ✓ |
-| **Transfer margin** | 133ms (7%) | 32ms (2%) | 21ms (1%) | 142ms (7%) | 98ms (5%) |
+| **Transfer time** | 1787ms | 1812ms | 1833ms | 1778ms | 1822ms |
 | **WAIT events** | 8 | 62 | 84 | 13 | 39 |
 | **Post-rebuffer** | — | 3729ms | recovered | 5000ms (recurring) | recovered 100s |
 | **Stability** | ★★★★★ | ★★★☆☆ | ★★★★☆ | ★☆☆☆☆ | ★★★★☆ |
@@ -742,7 +741,7 @@ num_chunks       = segment_duration / chunk_duration = 1.92 / 0.24 = 8
 | CDN | Strengths | Weaknesses | Verdict |
 |---|---|---|---|
 | **Akamai** | Chunk transfer V+A, stable TTFB, target 3s perfect | TTFB higher than FPT (~2x), target 2s DRM cascade | **Best for target 3s** |
-| **FPT** | Lowest TTFB (66-71ms), chunk V+A, target 2s viable | Network incident (T3), tightest margin (1-5%) | **Best for target 2s** |
+| **FPT** | Lowest TTFB (66-71ms), chunk V+A, target 2s viable | Network incident (T3) | **Best for target 2s** |
 | **BytePlus** | Good video TTFB (75ms) | **Audio NOT chunk transferred** → target pushed +60ms, rebuffer risk | **Not recommended** for LL |
 
 ### Target Assessment
@@ -750,7 +749,7 @@ num_chunks       = segment_duration / chunk_duration = 1.92 / 0.24 = 8
 | Target | Verdict | Reason |
 |---|---|---|
 | **3s** | ✅ **Recommended** | 0 rebuffers on Akamai, FPT also stable (rebuffer was network, not CDN). BytePlus 0 rebuffers but target pushed to 3060ms |
-| **2s** | ⚠️ **High risk** | Akamai: 22 rebuffers, DRM stall cascade. FPT: viable after startup but only 5% margin. Not suitable for production |
+| **2s** | ⚠️ **High risk** | Akamai: 22 rebuffers, DRM stall cascade. FPT: viable after startup but DRM stall risk remains. Not suitable for production |
 
 ### Root Cause Analysis
 
@@ -758,13 +757,12 @@ num_chunks       = segment_duration / chunk_duration = 1.92 / 0.24 = 8
 |---|---|---|
 | **DRM stall** | Rebuffer with buf=400-450ms (not buffer drain). DRM decryption blocks audio pipeline | Akamai 2s, FPT 2s |
 | **Audio full-segment** | BytePlus does not enable chunk transfer for audio (TTFB ~1.8s) | BytePlus (all tests) |
-| **Tight margin** | Transfer 1.8s vs segment 1.92s → only 100-140ms headroom. Minor network jitter = rebuffer | All CDNs at 4K |
 
 ### Recommendation
 
 ```
 Production 4K:     target=3000ms, CDN=Akamai or FPT
-Production 1080p:  target=2000ms viable (wider margin)
+Production 1080p:  target=2000ms viable
 BytePlus:          Request audio chunk transfer enablement
 Target 2s + 4K:    DO NOT use in production — DRM stall risk too high
 ```
