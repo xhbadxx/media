@@ -18,11 +18,14 @@ package androidx.media3.ui.compose.material3.buttons
 
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.IconButtonColors
+import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.LocalContentColor
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.painter.Painter
+import androidx.compose.ui.graphics.takeOrElse
 import androidx.compose.ui.graphics.vector.ImageVector
 
 @Composable
@@ -31,10 +34,17 @@ internal fun ClickableIconButton(
   enabled: Boolean,
   icon: Painter,
   contentDescription: String,
-  tint: Color = LocalContentColor.current,
+  colors: IconButtonColors = IconButtonDefaults.iconButtonColors(),
+  tint: Color = Color.Unspecified,
   onClick: () -> Unit,
 ) {
-  IconButton(onClick, modifier, enabled) { Icon(icon, contentDescription, tint = tint) }
+  IconButton(onClick = onClick, modifier = modifier, enabled = enabled, colors = colors) {
+    Icon(
+      painter = icon,
+      contentDescription = contentDescription,
+      tint = tint.takeOrElse { LocalContentColor.current },
+    )
+  }
 }
 
 @Composable
@@ -43,8 +53,15 @@ internal fun ClickableIconButton(
   enabled: Boolean,
   icon: ImageVector,
   contentDescription: String,
-  tint: Color = LocalContentColor.current,
+  colors: IconButtonColors = IconButtonDefaults.iconButtonColors(),
+  tint: Color = Color.Unspecified,
   onClick: () -> Unit,
 ) {
-  IconButton(onClick, modifier, enabled) { Icon(icon, contentDescription, tint = tint) }
+  IconButton(onClick = onClick, modifier = modifier, enabled = enabled, colors = colors) {
+    Icon(
+      imageVector = icon,
+      contentDescription = contentDescription,
+      tint = tint.takeOrElse { LocalContentColor.current },
+    )
+  }
 }

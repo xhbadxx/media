@@ -16,7 +16,8 @@
 
 package androidx.media3.ui.compose.material3.buttons
 
-import androidx.compose.material3.LocalContentColor
+import androidx.compose.material3.IconButtonColors
+import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -46,6 +47,8 @@ import androidx.media3.ui.compose.state.RepeatButtonState
  *   composable lambda with [RepeatButtonState] as its receiver, allowing the icon to be updated
  *   based on the button's current state (e.g. [RepeatButtonState.repeatModeState]).
  * @param contentDescription The content description for accessibility purposes.
+ * @param colors [IconButtonColors] that will be used to resolve the colors used for this icon
+ *   button in different states. See [IconButtonDefaults.iconButtonColors].
  * @param tint Tint to be applied to [painter]. If [Color.Unspecified] is provided, then no tint is
  *   applied.
  * @param onClick The action to be performed when the button is clicked. This lambda has
@@ -62,14 +65,15 @@ import androidx.media3.ui.compose.state.RepeatButtonState
 @UnstableApi
 @Composable
 fun RepeatButton(
-  player: Player,
+  player: Player?,
   modifier: Modifier = Modifier,
   toggleModeSequence: List<@Player.RepeatMode Int> =
     listOf(Player.REPEAT_MODE_OFF, Player.REPEAT_MODE_ONE, Player.REPEAT_MODE_ALL),
   painter: @Composable RepeatButtonState.() -> Painter = defaultRepeatModePainterIcon,
   contentDescription: @Composable RepeatButtonState.() -> String =
     defaultRepeatModeContentDescription,
-  tint: Color = LocalContentColor.current,
+  colors: IconButtonColors = IconButtonDefaults.iconButtonColors(),
+  tint: Color = Color.Unspecified,
   onClick: RepeatButtonState.() -> Unit = RepeatButtonState::onClick,
 ) {
   // Capture the onClick *parameter* in a local variable.
@@ -82,6 +86,7 @@ fun RepeatButton(
       isEnabled,
       icon = painter(),
       contentDescription = contentDescription(),
+      colors = colors,
       tint = tint,
       onClick = { customOnClick() },
     )
@@ -104,6 +109,8 @@ fun RepeatButton(
  *   is a composable lambda with [RepeatButtonState] as its receiver, allowing the icon to be
  *   updated based on the button's current state (e.g. [RepeatButtonState.repeatModeState]).
  * @param contentDescription The content description for accessibility purposes.
+ * @param colors [IconButtonColors] that will be used to resolve the colors used for this icon
+ *   button in different states. See [IconButtonDefaults.iconButtonColors].
  * @param tint Tint to be applied to [imageVector]. If [Color.Unspecified] is provided, then no tint
  *   is applied.
  * @param onClick The action to be performed when the button is clicked. This lambda has
@@ -121,14 +128,15 @@ fun RepeatButton(
 @UnstableApi
 @Composable
 fun RepeatButton(
-  player: Player,
+  player: Player?,
   modifier: Modifier = Modifier,
   toggleModeSequence: List<@Player.RepeatMode Int> =
     listOf(Player.REPEAT_MODE_OFF, Player.REPEAT_MODE_ONE, Player.REPEAT_MODE_ALL),
   imageVector: RepeatButtonState.() -> ImageVector,
   contentDescription: @Composable RepeatButtonState.() -> String =
     defaultRepeatModeContentDescription,
-  tint: Color = LocalContentColor.current,
+  colors: IconButtonColors = IconButtonDefaults.iconButtonColors(),
+  tint: Color = Color.Unspecified,
   onClick: RepeatButtonState.() -> Unit = RepeatButtonState::onClick,
 ) {
   // Capture the onClick *parameter* in a local variable.
@@ -141,6 +149,7 @@ fun RepeatButton(
       isEnabled,
       icon = imageVector(),
       contentDescription = contentDescription(),
+      colors = colors,
       tint = tint,
       onClick = { customOnClick() },
     )

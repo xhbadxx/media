@@ -16,6 +16,8 @@
 package androidx.media3.exoplayer.video;
 
 import static android.media.MediaCodec.INFO_TRY_AGAIN_LATER;
+import static android.media.MediaCodecInfo.CodecProfileLevel.AV1Level2;
+import static android.media.MediaCodecInfo.CodecProfileLevel.AV1ProfileMain10;
 import static android.media.MediaCodecInfo.CodecProfileLevel.AVCLevel42;
 import static android.media.MediaCodecInfo.CodecProfileLevel.AVCProfileBaseline;
 import static android.media.MediaCodecInfo.CodecProfileLevel.AVCProfileHigh;
@@ -59,6 +61,7 @@ import android.view.Display;
 import android.view.Surface;
 import androidx.annotation.Nullable;
 import androidx.media3.common.C;
+import androidx.media3.common.ColorInfo;
 import androidx.media3.common.Format;
 import androidx.media3.common.MimeTypes;
 import androidx.media3.common.TrackGroup;
@@ -93,6 +96,7 @@ import androidx.media3.exoplayer.trackselection.ExoTrackSelection;
 import androidx.media3.exoplayer.trackselection.FixedTrackSelection;
 import androidx.media3.exoplayer.upstream.Allocator;
 import androidx.media3.exoplayer.upstream.DefaultAllocator;
+import androidx.media3.test.utils.FakeClock;
 import androidx.media3.test.utils.FakeMediaPeriod;
 import androidx.media3.test.utils.FakeSampleStream;
 import androidx.media3.test.utils.FakeTimeline;
@@ -209,7 +213,8 @@ public class MediaCodecVideoRendererTest {
                 .setEnableDecoderFallback(false)
                 .setEventHandler(new Handler(testMainLooper))
                 .setEventListener(eventListener)
-                .setMaxDroppedFramesToNotify(1)) {
+                .setMaxDroppedFramesToNotify(1)
+                .setEnableDurationToProgressUs(true)) {
           @Override
           protected @Capabilities int supportsFormat(
               MediaCodecSelector mediaCodecSelector, Format format) {
@@ -4056,7 +4061,7 @@ public class MediaCodecVideoRendererTest {
   }
 
   @Test
-  public void supportsFormat_withDolbyVisionMedia_returnsTrueWhenFallbackToH265orH264Allowed()
+  public void supportsFormat_withDolbyVisionMedia_returnsTrueWhenFallbackToAv1H265orH264Allowed()
       throws Exception {
     // Create Dolby media formats that could fall back to H265 or H264.
     Format formatDvheDtrFallbackToH265 =
@@ -4073,6 +4078,30 @@ public class MediaCodecVideoRendererTest {
         new Format.Builder()
             .setSampleMimeType(MimeTypes.VIDEO_DOLBY_VISION)
             .setCodecs("dvav.09.01")
+            .build();
+    // Profile 10.1 (Limited Range PQ) which allows fallback to AV1.
+    Format formatDav1FallbackToAv1 =
+        new Format.Builder()
+            .setSampleMimeType(MimeTypes.VIDEO_DOLBY_VISION)
+            .setCodecs("dav1.10.01")
+            .setColorInfo(
+                new ColorInfo.Builder()
+                    .setColorSpace(C.COLOR_SPACE_BT2020)
+                    .setColorTransfer(C.COLOR_TRANSFER_ST2084)
+                    .setColorRange(C.COLOR_RANGE_LIMITED)
+                    .build())
+            .build();
+    // Profile 10.0 (Full Range PQ) which does NOT allow fallback.
+    Format formatDav1NoFallbackPossible =
+        new Format.Builder()
+            .setSampleMimeType(MimeTypes.VIDEO_DOLBY_VISION)
+            .setCodecs("dav1.10.01")
+            .setColorInfo(
+                new ColorInfo.Builder()
+                    .setColorSpace(C.COLOR_SPACE_BT2020)
+                    .setColorTransfer(C.COLOR_TRANSFER_ST2084)
+                    .setColorRange(C.COLOR_RANGE_FULL)
+                    .build())
             .build();
     Format formatNoFallbackPossible =
         new Format.Builder()
@@ -4119,6 +4148,21 @@ public class MediaCodecVideoRendererTest {
                       /* vendor= */ false,
                       /* forceDisableAdaptive= */ false,
                       /* forceSecure= */ false));
+            case MimeTypes.VIDEO_AV1:
+              CodecCapabilities capabilitiesAv1 = new CodecCapabilities();
+              capabilitiesAv1.profileLevels =
+                  new CodecProfileLevel[] {createCodecProfileLevel(AV1ProfileMain10, AV1Level2)};
+              return ImmutableList.of(
+                  MediaCodecInfo.newInstance(
+                      /* name= */ "av1-codec",
+                      /* mimeType= */ mimeType,
+                      /* codecMimeType= */ mimeType,
+                      /* capabilities= */ capabilitiesAv1,
+                      /* hardwareAccelerated= */ false,
+                      /* softwareOnly= */ true,
+                      /* vendor= */ false,
+                      /* forceDisableAdaptive= */ false,
+                      /* forceSecure= */ false));
             default:
               return ImmutableList.of();
           }
@@ -4140,6 +4184,10 @@ public class MediaCodecVideoRendererTest {
     @Capabilities
     int capabilitiesDvavSeFallbackToH264 = renderer.supportsFormat(formatDvavSeFallbackToH264);
     @Capabilities
+    int capabilitiesDav1FallbackToAv1 = renderer.supportsFormat(formatDav1FallbackToAv1);
+    @Capabilities
+    int capabilitiesDav1NoFallbackToAv1 = renderer.supportsFormat(formatDav1NoFallbackPossible);
+    @Capabilities
     int capabilitiesNoFallbackPossible = renderer.supportsFormat(formatNoFallbackPossible);
 
     assertThat(RendererCapabilities.getFormatSupport(capabilitiesDvheDtrFallbackToH265))
@@ -4148,6 +4196,10 @@ public class MediaCodecVideoRendererTest {
         .isEqualTo(C.FORMAT_HANDLED);
     assertThat(RendererCapabilities.getFormatSupport(capabilitiesDvavSeFallbackToH264))
         .isEqualTo(C.FORMAT_HANDLED);
+    assertThat(RendererCapabilities.getFormatSupport(capabilitiesDav1FallbackToAv1))
+        .isEqualTo(C.FORMAT_HANDLED);
+    assertThat(RendererCapabilities.getFormatSupport(capabilitiesDav1NoFallbackToAv1))
+        .isEqualTo(C.FORMAT_UNSUPPORTED_SUBTYPE);
     assertThat(RendererCapabilities.getFormatSupport(capabilitiesNoFallbackPossible))
         .isEqualTo(C.FORMAT_UNSUPPORTED_SUBTYPE);
   }
@@ -4774,6 +4826,832 @@ public class MediaCodecVideoRendererTest {
 
     shadowOf(Looper.getMainLooper()).idle();
     verify(eventListener).onVideoCodecParametersChanged(codecParameters);
+  }
+
+  @Test
+  public void getDurationToProgressUs_withWaitingOutputBuffer_returnsCalculatedDuration()
+      throws Exception {
+    FakeSampleStream fakeSampleStream =
+        new FakeSampleStream(
+            new DefaultAllocator(/* trimOnReset= */ true, /* individualAllocationSize= */ 1024),
+            /* mediaSourceEventDispatcher= */ null,
+            DrmSessionManager.DRM_UNSUPPORTED,
+            new DrmSessionEventListener.EventDispatcher(),
+            /* initialFormat= */ VIDEO_H264,
+            ImmutableList.of(
+                oneByteSample(/* timeUs= */ 0, C.BUFFER_FLAG_KEY_FRAME), // First buffer.
+                oneByteSample(/* timeUs= */ 75_000),
+                oneByteSample(/* timeUs= */ 100_000), // Last buffer.
+                END_OF_STREAM_ITEM));
+    fakeSampleStream.writeData(/* startPositionUs= */ 0);
+    mediaCodecVideoRenderer.enable(
+        RendererConfiguration.DEFAULT,
+        new Format[] {VIDEO_H264},
+        fakeSampleStream,
+        /* positionUs= */ 0,
+        /* joining= */ false,
+        /* mayRenderStartOfStream= */ true,
+        /* startPositionUs= */ 0,
+        /* offsetUs= */ 0,
+        /* mediaPeriodId= */ new MediaSource.MediaPeriodId(new Object()));
+    mediaCodecVideoRenderer.start();
+    for (int i = 0; i < 6; i++) {
+      // Render first frame and process up to second frame.
+      mediaCodecVideoRenderer.render(0, SystemClock.elapsedRealtime() * 1000);
+      codecAdapterFactory.idleQueueingAndCallbackThreads();
+    }
+
+    long durationToProgressUs =
+        mediaCodecVideoRenderer.getDurationToProgressUs(
+            /* positionUs= */ 10_000,
+            SystemClock.elapsedRealtime() * 1000,
+            /* isOnBufferAvailableListenerRegistered= */ true);
+
+    assertThat(durationToProgressUs).isEqualTo(40_000L);
+  }
+
+  @Test
+  public void
+      getDurationToProgressUs_withDurationToProgressUsDisabledAndWaitingOutputBuffer_returnsDefaultDuration()
+          throws Exception {
+    mediaCodecVideoRenderer =
+        new MediaCodecVideoRenderer(
+            new MediaCodecVideoRenderer.Builder(ApplicationProvider.getApplicationContext())
+                .setCodecAdapterFactory(codecAdapterFactory)
+                .setMediaCodecSelector(mediaCodecSelector)
+                .setAllowedJoiningTimeMs(0)
+                .setEnableDecoderFallback(false)
+                .setEventHandler(new Handler(testMainLooper))
+                .setEventListener(eventListener)
+                .setMaxDroppedFramesToNotify(1)
+                .setEnableDurationToProgressUs(false)) {
+          @Override
+          protected @Capabilities int supportsFormat(
+              MediaCodecSelector mediaCodecSelector, Format format) {
+            return RendererCapabilities.create(C.FORMAT_HANDLED);
+          }
+
+          @Override
+          protected void onOutputFormatChanged(Format format, @Nullable MediaFormat mediaFormat) {
+            super.onOutputFormatChanged(format, mediaFormat);
+            currentOutputFormat = format;
+          }
+        };
+    mediaCodecVideoRenderer.init(/* index= */ 0, PlayerId.UNSET, Clock.DEFAULT);
+    surface = new Surface(new SurfaceTexture(/* texName= */ 0));
+    mediaCodecVideoRenderer.handleMessage(Renderer.MSG_SET_VIDEO_OUTPUT, surface);
+    FakeSampleStream fakeSampleStream =
+        new FakeSampleStream(
+            new DefaultAllocator(/* trimOnReset= */ true, /* individualAllocationSize= */ 1024),
+            /* mediaSourceEventDispatcher= */ null,
+            DrmSessionManager.DRM_UNSUPPORTED,
+            new DrmSessionEventListener.EventDispatcher(),
+            /* initialFormat= */ VIDEO_H264,
+            ImmutableList.of(
+                oneByteSample(/* timeUs= */ 0, C.BUFFER_FLAG_KEY_FRAME), // First buffer.
+                oneByteSample(/* timeUs= */ 75_000),
+                oneByteSample(/* timeUs= */ 100_000), // Last buffer.
+                END_OF_STREAM_ITEM));
+    fakeSampleStream.writeData(/* startPositionUs= */ 0);
+    mediaCodecVideoRenderer.enable(
+        RendererConfiguration.DEFAULT,
+        new Format[] {VIDEO_H264},
+        fakeSampleStream,
+        /* positionUs= */ 0,
+        /* joining= */ false,
+        /* mayRenderStartOfStream= */ true,
+        /* startPositionUs= */ 0,
+        /* offsetUs= */ 0,
+        /* mediaPeriodId= */ new MediaSource.MediaPeriodId(new Object()));
+    mediaCodecVideoRenderer.start();
+    for (int i = 0; i < 6; i++) {
+      // Render first frame and process up to second frame.
+      mediaCodecVideoRenderer.render(0, SystemClock.elapsedRealtime() * 1000);
+      codecAdapterFactory.idleQueueingAndCallbackThreads();
+    }
+
+    long durationToProgressUs =
+        mediaCodecVideoRenderer.getDurationToProgressUs(
+            /* positionUs= */ 10_000,
+            SystemClock.elapsedRealtime() * 1000,
+            /* isOnBufferAvailableListenerRegistered= */ true);
+
+    assertThat(durationToProgressUs).isEqualTo(10_000L);
+  }
+
+  @Test
+  public void
+      getDurationToProgressUs_withWaitingOutputBufferAndDoublePlaybackSpeed_returnsCalculatedDuration()
+          throws Exception {
+    FakeSampleStream fakeSampleStream =
+        new FakeSampleStream(
+            new DefaultAllocator(/* trimOnReset= */ true, /* individualAllocationSize= */ 1024),
+            /* mediaSourceEventDispatcher= */ null,
+            DrmSessionManager.DRM_UNSUPPORTED,
+            new DrmSessionEventListener.EventDispatcher(),
+            /* initialFormat= */ VIDEO_H264,
+            ImmutableList.of(
+                oneByteSample(/* timeUs= */ 0, C.BUFFER_FLAG_KEY_FRAME), // First buffer.
+                oneByteSample(/* timeUs= */ 125_000),
+                oneByteSample(/* timeUs= */ 250_000), // Last buffer.
+                END_OF_STREAM_ITEM));
+    fakeSampleStream.writeData(/* startPositionUs= */ 0);
+    mediaCodecVideoRenderer.enable(
+        RendererConfiguration.DEFAULT,
+        new Format[] {VIDEO_H264},
+        fakeSampleStream,
+        /* positionUs= */ 0,
+        /* joining= */ false,
+        /* mayRenderStartOfStream= */ true,
+        /* startPositionUs= */ 0,
+        /* offsetUs= */ 0,
+        /* mediaPeriodId= */ new MediaSource.MediaPeriodId(new Object()));
+    mediaCodecVideoRenderer.setPlaybackSpeed(2.0f, 2.0f);
+    mediaCodecVideoRenderer.start();
+    for (int i = 0; i < 6; i++) {
+      // Render first frame and process up to second frame.
+      mediaCodecVideoRenderer.render(0, SystemClock.elapsedRealtime() * 1000);
+      codecAdapterFactory.idleQueueingAndCallbackThreads();
+    }
+
+    long durationToProgressUs =
+        mediaCodecVideoRenderer.getDurationToProgressUs(
+            /* positionUs= */ 10_000,
+            SystemClock.elapsedRealtime() * 1000,
+            /* isOnBufferAvailableListenerRegistered= */ true);
+
+    assertThat(durationToProgressUs).isEqualTo(32_500L);
+  }
+
+  @Test
+  public void
+      getDurationToProgressUs_withWaitingOutputBufferAndPlaybackAdvancement_returnsCalculatedDuration()
+          throws Exception {
+    FakeClock fakeClock = new FakeClock(/* initialTimeMs= */ 100, /* isAutoAdvancing= */ true);
+    mediaCodecVideoRenderer =
+        new MediaCodecVideoRenderer(
+            new MediaCodecVideoRenderer.Builder(ApplicationProvider.getApplicationContext())
+                .setCodecAdapterFactory(codecAdapterFactory)
+                .setMediaCodecSelector(mediaCodecSelector)
+                .setAllowedJoiningTimeMs(0)
+                .setEnableDecoderFallback(false)
+                .setEventHandler(new Handler(testMainLooper))
+                .setEventListener(eventListener)
+                .setMaxDroppedFramesToNotify(1)
+                .setEnableDurationToProgressUs(true)) {
+          @Override
+          protected @Capabilities int supportsFormat(
+              MediaCodecSelector mediaCodecSelector, Format format) {
+            return RendererCapabilities.create(C.FORMAT_HANDLED);
+          }
+
+          @Override
+          protected void onOutputFormatChanged(Format format, @Nullable MediaFormat mediaFormat) {
+            super.onOutputFormatChanged(format, mediaFormat);
+            currentOutputFormat = format;
+          }
+        };
+    mediaCodecVideoRenderer.init(/* index= */ 0, PlayerId.UNSET, fakeClock);
+    surface = new Surface(new SurfaceTexture(/* texName= */ 0));
+    mediaCodecVideoRenderer.handleMessage(Renderer.MSG_SET_VIDEO_OUTPUT, surface);
+    FakeSampleStream fakeSampleStream =
+        new FakeSampleStream(
+            new DefaultAllocator(/* trimOnReset= */ true, /* individualAllocationSize= */ 1024),
+            /* mediaSourceEventDispatcher= */ null,
+            DrmSessionManager.DRM_UNSUPPORTED,
+            new DrmSessionEventListener.EventDispatcher(),
+            /* initialFormat= */ VIDEO_H264,
+            ImmutableList.of(
+                oneByteSample(/* timeUs= */ 0, C.BUFFER_FLAG_KEY_FRAME), // First buffer.
+                oneByteSample(/* timeUs= */ 75_000),
+                oneByteSample(/* timeUs= */ 100_000), // Last buffer.
+                END_OF_STREAM_ITEM));
+    fakeSampleStream.writeData(/* startPositionUs= */ 0);
+    mediaCodecVideoRenderer.enable(
+        RendererConfiguration.DEFAULT,
+        new Format[] {VIDEO_H264},
+        fakeSampleStream,
+        /* positionUs= */ 0,
+        /* joining= */ false,
+        /* mayRenderStartOfStream= */ true,
+        /* startPositionUs= */ 0,
+        /* offsetUs= */ 0,
+        /* mediaPeriodId= */ new MediaSource.MediaPeriodId(new Object()));
+    mediaCodecVideoRenderer.start();
+    for (int i = 0; i < 6; i++) {
+      // Render first frame and process up to second frame.
+      mediaCodecVideoRenderer.render(0, fakeClock.elapsedRealtime() * 1000);
+      codecAdapterFactory.idleQueueingAndCallbackThreads();
+    }
+
+    // Simulate playback progressing between render() and getDurationToProgressUs call
+    long rendererPositionElapsedRealtimeUs = fakeClock.elapsedRealtime() * 1000;
+    fakeClock.advanceTime(/* timeDiffMs= */ 10);
+    long durationToProgressUs =
+        mediaCodecVideoRenderer.getDurationToProgressUs(
+            /* positionUs= */ 10_000,
+            rendererPositionElapsedRealtimeUs,
+            /* isOnBufferAvailableListenerRegistered= */ true);
+
+    assertThat(durationToProgressUs).isEqualTo(40_000L);
+  }
+
+  @Test
+  public void
+      getDurationToProgressUs_withWaitingOutputBufferWhenNotStarted_returnsDefaultIdleDuration()
+          throws Exception {
+    FakeSampleStream fakeSampleStream =
+        new FakeSampleStream(
+            new DefaultAllocator(/* trimOnReset= */ true, /* individualAllocationSize= */ 1024),
+            /* mediaSourceEventDispatcher= */ null,
+            DrmSessionManager.DRM_UNSUPPORTED,
+            new DrmSessionEventListener.EventDispatcher(),
+            /* initialFormat= */ VIDEO_H264,
+            ImmutableList.of(
+                oneByteSample(/* timeUs= */ 0, C.BUFFER_FLAG_KEY_FRAME), // First buffer.
+                oneByteSample(/* timeUs= */ 75_000),
+                oneByteSample(/* timeUs= */ 100_000), // Last buffer.
+                END_OF_STREAM_ITEM));
+    fakeSampleStream.writeData(/* startPositionUs= */ 0);
+    mediaCodecVideoRenderer.enable(
+        RendererConfiguration.DEFAULT,
+        new Format[] {VIDEO_H264},
+        fakeSampleStream,
+        /* positionUs= */ 0,
+        /* joining= */ false,
+        /* mayRenderStartOfStream= */ true,
+        /* startPositionUs= */ 0,
+        /* offsetUs= */ 0,
+        /* mediaPeriodId= */ new MediaSource.MediaPeriodId(new Object()));
+    for (int i = 0; i < 6; i++) {
+      // Render first frame and process up to second frame.
+      mediaCodecVideoRenderer.render(0, SystemClock.elapsedRealtime() * 1000);
+      codecAdapterFactory.idleQueueingAndCallbackThreads();
+    }
+
+    long durationToProgressUs =
+        mediaCodecVideoRenderer.getDurationToProgressUs(
+            /* positionUs= */ 10_000,
+            SystemClock.elapsedRealtime() * 1000,
+            /* isOnBufferAvailableListenerRegistered= */ true);
+
+    assertThat(durationToProgressUs).isEqualTo(1_000_000L);
+  }
+
+  @Test
+  public void getDurationToProgressUs_afterRenderToEndOfStream_returnsCalculatedDuration()
+      throws Exception {
+    FakeSampleStream fakeSampleStream =
+        new FakeSampleStream(
+            new DefaultAllocator(/* trimOnReset= */ true, /* individualAllocationSize= */ 1024),
+            /* mediaSourceEventDispatcher= */ null,
+            DrmSessionManager.DRM_UNSUPPORTED,
+            new DrmSessionEventListener.EventDispatcher(),
+            /* initialFormat= */ VIDEO_H264,
+            ImmutableList.of(
+                oneByteSample(/* timeUs= */ 0, C.BUFFER_FLAG_KEY_FRAME), // First buffer.
+                oneByteSample(/* timeUs= */ 75_000),
+                oneByteSample(/* timeUs= */ 100_000), // Last buffer.
+                END_OF_STREAM_ITEM));
+    fakeSampleStream.writeData(/* startPositionUs= */ 0);
+    mediaCodecVideoRenderer.enable(
+        RendererConfiguration.DEFAULT,
+        new Format[] {VIDEO_H264},
+        fakeSampleStream,
+        /* positionUs= */ 0,
+        /* joining= */ false,
+        /* mayRenderStartOfStream= */ true,
+        /* startPositionUs= */ 0,
+        /* offsetUs= */ 0,
+        /* mediaPeriodId= */ new MediaSource.MediaPeriodId(new Object()));
+    mediaCodecVideoRenderer.start();
+    mediaCodecVideoRenderer.setCurrentStreamFinal();
+
+    for (int i = 0; i < 3; i++) {
+      // Render first frame and process up to second frame.
+      // Need to call with initial position to set VideoFrameReleaseControl up for position
+      // progression.
+      mediaCodecVideoRenderer.render(0, SystemClock.elapsedRealtime() * 1000);
+      codecAdapterFactory.idleQueueingAndCallbackThreads();
+    }
+    while (!mediaCodecVideoRenderer.isEnded()) {
+      // Render to end of stream.
+      mediaCodecVideoRenderer.render(50_000, SystemClock.elapsedRealtime() * 1000);
+      codecAdapterFactory.idleQueueingAndCallbackThreads();
+    }
+
+    long durationToProgressUs =
+        mediaCodecVideoRenderer.getDurationToProgressUs(
+            /* positionUs= */ 50_000,
+            SystemClock.elapsedRealtime() * 1000,
+            /* isOnBufferAvailableListenerRegistered= */ true);
+
+    assertThat(durationToProgressUs).isEqualTo(25_000L);
+  }
+
+  @Test
+  public void
+      getDurationToProgressUs_afterRenderToEndOfStreamAndWithDoubleSpeed_returnsCalculatedDuration()
+          throws Exception {
+    FakeSampleStream fakeSampleStream =
+        new FakeSampleStream(
+            new DefaultAllocator(/* trimOnReset= */ true, /* individualAllocationSize= */ 1024),
+            /* mediaSourceEventDispatcher= */ null,
+            DrmSessionManager.DRM_UNSUPPORTED,
+            new DrmSessionEventListener.EventDispatcher(),
+            /* initialFormat= */ VIDEO_H264,
+            ImmutableList.of(
+                oneByteSample(/* timeUs= */ 0, C.BUFFER_FLAG_KEY_FRAME), // First buffer.
+                oneByteSample(/* timeUs= */ 75_000),
+                oneByteSample(/* timeUs= */ 100_000), // Last buffer.
+                END_OF_STREAM_ITEM));
+    fakeSampleStream.writeData(/* startPositionUs= */ 0);
+    mediaCodecVideoRenderer.enable(
+        RendererConfiguration.DEFAULT,
+        new Format[] {VIDEO_H264},
+        fakeSampleStream,
+        /* positionUs= */ 0,
+        /* joining= */ false,
+        /* mayRenderStartOfStream= */ true,
+        /* startPositionUs= */ 0,
+        /* offsetUs= */ 0,
+        /* mediaPeriodId= */ new MediaSource.MediaPeriodId(new Object()));
+    mediaCodecVideoRenderer.setPlaybackSpeed(2.0f, 2.0f);
+    mediaCodecVideoRenderer.start();
+    mediaCodecVideoRenderer.setCurrentStreamFinal();
+
+    for (int i = 0; i < 3; i++) {
+      // Render first frame and process up to second frame.
+      // Need to call with initial position to set VideoFrameReleaseControl up for position
+      // progression.
+      mediaCodecVideoRenderer.render(0, SystemClock.elapsedRealtime() * 1000);
+      codecAdapterFactory.idleQueueingAndCallbackThreads();
+    }
+    while (!mediaCodecVideoRenderer.isEnded()) {
+      // Render to end of stream.
+      mediaCodecVideoRenderer.render(50_000, SystemClock.elapsedRealtime() * 1000);
+      codecAdapterFactory.idleQueueingAndCallbackThreads();
+    }
+
+    long durationToProgressUs =
+        mediaCodecVideoRenderer.getDurationToProgressUs(
+            /* positionUs= */ 50_000,
+            SystemClock.elapsedRealtime() * 1000,
+            /* isOnBufferAvailableListenerRegistered= */ true);
+
+    assertThat(durationToProgressUs).isEqualTo(12_500L);
+  }
+
+  @Test
+  public void
+      getDurationToProgressUs_afterRenderToEndOfStreamAndPlaybackAdvancement_returnsCalculatedDuration()
+          throws Exception {
+    FakeClock fakeClock = new FakeClock(/* initialTimeMs= */ 100, /* isAutoAdvancing= */ true);
+    mediaCodecVideoRenderer =
+        new MediaCodecVideoRenderer(
+            new MediaCodecVideoRenderer.Builder(ApplicationProvider.getApplicationContext())
+                .setCodecAdapterFactory(codecAdapterFactory)
+                .setMediaCodecSelector(mediaCodecSelector)
+                .setAllowedJoiningTimeMs(0)
+                .setEnableDecoderFallback(false)
+                .setEventHandler(new Handler(testMainLooper))
+                .setEventListener(eventListener)
+                .setMaxDroppedFramesToNotify(1)
+                .setEnableDurationToProgressUs(true)) {
+          @Override
+          protected @Capabilities int supportsFormat(
+              MediaCodecSelector mediaCodecSelector, Format format) {
+            return RendererCapabilities.create(C.FORMAT_HANDLED);
+          }
+
+          @Override
+          protected void onOutputFormatChanged(Format format, @Nullable MediaFormat mediaFormat) {
+            super.onOutputFormatChanged(format, mediaFormat);
+            currentOutputFormat = format;
+          }
+        };
+    mediaCodecVideoRenderer.init(/* index= */ 0, PlayerId.UNSET, fakeClock);
+    surface = new Surface(new SurfaceTexture(/* texName= */ 0));
+    mediaCodecVideoRenderer.handleMessage(Renderer.MSG_SET_VIDEO_OUTPUT, surface);
+    FakeSampleStream fakeSampleStream =
+        new FakeSampleStream(
+            new DefaultAllocator(/* trimOnReset= */ true, /* individualAllocationSize= */ 1024),
+            /* mediaSourceEventDispatcher= */ null,
+            DrmSessionManager.DRM_UNSUPPORTED,
+            new DrmSessionEventListener.EventDispatcher(),
+            /* initialFormat= */ VIDEO_H264,
+            ImmutableList.of(
+                oneByteSample(/* timeUs= */ 0, C.BUFFER_FLAG_KEY_FRAME), // First buffer.
+                oneByteSample(/* timeUs= */ 75_000),
+                oneByteSample(/* timeUs= */ 100_000), // Last buffer.
+                END_OF_STREAM_ITEM));
+    fakeSampleStream.writeData(/* startPositionUs= */ 0);
+    mediaCodecVideoRenderer.enable(
+        RendererConfiguration.DEFAULT,
+        new Format[] {VIDEO_H264},
+        fakeSampleStream,
+        /* positionUs= */ 0,
+        /* joining= */ false,
+        /* mayRenderStartOfStream= */ true,
+        /* startPositionUs= */ 0,
+        /* offsetUs= */ 0,
+        /* mediaPeriodId= */ new MediaSource.MediaPeriodId(new Object()));
+    mediaCodecVideoRenderer.start();
+    mediaCodecVideoRenderer.setCurrentStreamFinal();
+
+    for (int i = 0; i < 3; i++) {
+      // Render first frame and process up to second frame.
+      // Need to call with initial position to set VideoFrameReleaseControl up for position
+      // progression.
+      mediaCodecVideoRenderer.render(0, fakeClock.elapsedRealtime() * 1000);
+      codecAdapterFactory.idleQueueingAndCallbackThreads();
+    }
+    while (!mediaCodecVideoRenderer.isEnded()) {
+      // Render to end of stream.
+      mediaCodecVideoRenderer.render(50_000, fakeClock.elapsedRealtime() * 1000);
+      codecAdapterFactory.idleQueueingAndCallbackThreads();
+    }
+
+    // Simulate playback progressing between render() and getDurationToProgressUs call
+    long rendererPositionElapsedRealtimeUs = fakeClock.elapsedRealtime() * 1000;
+    fakeClock.advanceTime(/* timeDiffMs= */ 10);
+    long durationToProgressUs =
+        mediaCodecVideoRenderer.getDurationToProgressUs(
+            /* positionUs= */ 50_000,
+            rendererPositionElapsedRealtimeUs,
+            /* isOnBufferAvailableListenerRegistered= */ true);
+
+    assertThat(durationToProgressUs).isEqualTo(25_000L);
+  }
+
+  @Test
+  public void
+      getDurationToProgressUs_afterRenderToEndOfStreamWithPositionAfterLastFrame_returnsDefaultDuration()
+          throws Exception {
+    FakeSampleStream fakeSampleStream =
+        new FakeSampleStream(
+            new DefaultAllocator(/* trimOnReset= */ true, /* individualAllocationSize= */ 1024),
+            /* mediaSourceEventDispatcher= */ null,
+            DrmSessionManager.DRM_UNSUPPORTED,
+            new DrmSessionEventListener.EventDispatcher(),
+            /* initialFormat= */ VIDEO_H264,
+            ImmutableList.of(
+                oneByteSample(/* timeUs= */ 0, C.BUFFER_FLAG_KEY_FRAME), // First buffer.
+                oneByteSample(/* timeUs= */ 75_000),
+                oneByteSample(/* timeUs= */ 100_000), // Last buffer.
+                END_OF_STREAM_ITEM));
+    fakeSampleStream.writeData(/* startPositionUs= */ 0);
+    mediaCodecVideoRenderer.enable(
+        RendererConfiguration.DEFAULT,
+        new Format[] {VIDEO_H264},
+        fakeSampleStream,
+        /* positionUs= */ 0,
+        /* joining= */ false,
+        /* mayRenderStartOfStream= */ true,
+        /* startPositionUs= */ 0,
+        /* offsetUs= */ 0,
+        /* mediaPeriodId= */ new MediaSource.MediaPeriodId(new Object()));
+    mediaCodecVideoRenderer.start();
+    mediaCodecVideoRenderer.setCurrentStreamFinal();
+
+    for (int i = 0; i < 3; i++) {
+      // Render first frame and process up to second frame.
+      // Need to call with initial position to set VideoFrameReleaseControl up for position
+      // progression.
+      mediaCodecVideoRenderer.render(0, SystemClock.elapsedRealtime() * 1000);
+      codecAdapterFactory.idleQueueingAndCallbackThreads();
+    }
+    while (!mediaCodecVideoRenderer.isEnded()) {
+      // Render to end of stream.
+      mediaCodecVideoRenderer.render(50_000, SystemClock.elapsedRealtime() * 1000);
+      codecAdapterFactory.idleQueueingAndCallbackThreads();
+    }
+
+    long durationToProgressUs =
+        mediaCodecVideoRenderer.getDurationToProgressUs(
+            /* positionUs= */ 110_000,
+            SystemClock.elapsedRealtime() * 1000,
+            /* isOnBufferAvailableListenerRegistered= */ true);
+
+    assertThat(durationToProgressUs).isEqualTo(10_000L);
+  }
+
+  @Test
+  public void getDurationToProgressUs_withStopAfterRenderToEndOfStream_returnsDefaultIdleDuration()
+      throws Exception {
+    FakeSampleStream fakeSampleStream =
+        new FakeSampleStream(
+            new DefaultAllocator(/* trimOnReset= */ true, /* individualAllocationSize= */ 1024),
+            /* mediaSourceEventDispatcher= */ null,
+            DrmSessionManager.DRM_UNSUPPORTED,
+            new DrmSessionEventListener.EventDispatcher(),
+            /* initialFormat= */ VIDEO_H264,
+            ImmutableList.of(
+                oneByteSample(/* timeUs= */ 0, C.BUFFER_FLAG_KEY_FRAME), // First buffer.
+                oneByteSample(/* timeUs= */ 75_000),
+                oneByteSample(/* timeUs= */ 100_000), // Last buffer.
+                END_OF_STREAM_ITEM));
+    fakeSampleStream.writeData(/* startPositionUs= */ 0);
+    mediaCodecVideoRenderer.enable(
+        RendererConfiguration.DEFAULT,
+        new Format[] {VIDEO_H264},
+        fakeSampleStream,
+        /* positionUs= */ 0,
+        /* joining= */ false,
+        /* mayRenderStartOfStream= */ true,
+        /* startPositionUs= */ 0,
+        /* offsetUs= */ 0,
+        /* mediaPeriodId= */ new MediaSource.MediaPeriodId(new Object()));
+    mediaCodecVideoRenderer.start();
+    mediaCodecVideoRenderer.setCurrentStreamFinal();
+    for (int i = 0; i < 3; i++) {
+      // Render first frame and process up to second frame.
+      // Need to call with initial position to set VideoFrameReleaseControl up for position
+      // progression.
+      mediaCodecVideoRenderer.render(0, SystemClock.elapsedRealtime() * 1000);
+      codecAdapterFactory.idleQueueingAndCallbackThreads();
+    }
+    while (!mediaCodecVideoRenderer.isEnded()) {
+      // Render to end of stream.
+      mediaCodecVideoRenderer.render(50_000, SystemClock.elapsedRealtime() * 1000);
+      codecAdapterFactory.idleQueueingAndCallbackThreads();
+    }
+
+    mediaCodecVideoRenderer.stop();
+
+    long durationToProgressUs =
+        mediaCodecVideoRenderer.getDurationToProgressUs(
+            /* positionUs= */ 50_000,
+            SystemClock.elapsedRealtime() * 1000,
+            /* isOnBufferAvailableListenerRegistered= */ true);
+
+    shadowOf(testMainLooper).idle();
+    assertThat(durationToProgressUs).isEqualTo(1_000_000L);
+  }
+
+  @Test
+  public void
+      getDurationToProgressUs_withDropToKeyFrameWithoutOutputSurface_returnsDefaultDuration()
+          throws Exception {
+    // Remove surface from MediaCodecVideoRenderer.
+    mediaCodecVideoRenderer.handleMessage(Renderer.MSG_SET_VIDEO_OUTPUT, null);
+    FakeSampleStream fakeSampleStream =
+        new FakeSampleStream(
+            new DefaultAllocator(/* trimOnReset= */ true, /* individualAllocationSize= */ 1024),
+            /* mediaSourceEventDispatcher= */ null,
+            DrmSessionManager.DRM_UNSUPPORTED,
+            new DrmSessionEventListener.EventDispatcher(),
+            /* initialFormat= */ VIDEO_H264,
+            ImmutableList.of(
+                oneByteSample(/* timeUs= */ 0, C.BUFFER_FLAG_KEY_FRAME), // First buffer.
+                oneByteSample(/* timeUs= */ 100_000),
+                oneByteSample(/* timeUs= */ 200_000),
+                oneByteSample(/* timeUs= */ 300_000),
+                oneByteSample(/* timeUs= */ 400_000, C.BUFFER_FLAG_KEY_FRAME), // First buffer.
+                oneByteSample(/* timeUs= */ 500_000),
+                oneByteSample(/* timeUs= */ 600_000), // Last buffer.
+                END_OF_STREAM_ITEM));
+    fakeSampleStream.writeData(/* startPositionUs= */ 0);
+    mediaCodecVideoRenderer.enable(
+        RendererConfiguration.DEFAULT,
+        new Format[] {VIDEO_H264},
+        fakeSampleStream,
+        /* positionUs= */ 0,
+        /* joining= */ false,
+        /* mayRenderStartOfStream= */ true,
+        /* startPositionUs= */ 0,
+        /* offsetUs= */ 0,
+        /* mediaPeriodId= */ new MediaSource.MediaPeriodId(new Object()));
+    mediaCodecVideoRenderer.start();
+    shadowOf(testMainLooper).idle();
+    ArgumentCaptor<DecoderCounters> argumentDecoderCounters =
+        ArgumentCaptor.forClass(DecoderCounters.class);
+    verify(eventListener).onVideoEnabled(argumentDecoderCounters.capture());
+    DecoderCounters decoderCounters = argumentDecoderCounters.getValue();
+
+    while (decoderCounters.skippedInputBufferCount < 3) {
+      // Drop to second keyframe as first frame is very late.
+      mediaCodecVideoRenderer.render(500_001, SystemClock.elapsedRealtime() * 1000);
+      codecAdapterFactory.idleQueueingAndCallbackThreads();
+      shadowOf(testMainLooper).idle();
+    }
+
+    long durationToProgressUs =
+        mediaCodecVideoRenderer.getDurationToProgressUs(
+            /* positionUs= */ 500_001,
+            SystemClock.elapsedRealtime() * 1000,
+            /* isOnBufferAvailableListenerRegistered= */ true);
+
+    assertThat(durationToProgressUs).isEqualTo(10_000L);
+  }
+
+  @Test
+  public void getDurationToProgressUs_withDropToKeyFrame_returnsDefaultDuration() throws Exception {
+    FakeSampleStream fakeSampleStream =
+        new FakeSampleStream(
+            new DefaultAllocator(/* trimOnReset= */ true, /* individualAllocationSize= */ 1024),
+            /* mediaSourceEventDispatcher= */ null,
+            DrmSessionManager.DRM_UNSUPPORTED,
+            new DrmSessionEventListener.EventDispatcher(),
+            /* initialFormat= */ VIDEO_H264,
+            ImmutableList.of(
+                oneByteSample(/* timeUs= */ 0, C.BUFFER_FLAG_KEY_FRAME), // First buffer.
+                oneByteSample(/* timeUs= */ 100_000),
+                oneByteSample(/* timeUs= */ 200_000),
+                oneByteSample(/* timeUs= */ 300_000),
+                oneByteSample(/* timeUs= */ 400_000, C.BUFFER_FLAG_KEY_FRAME), // First buffer.
+                oneByteSample(/* timeUs= */ 500_000),
+                oneByteSample(/* timeUs= */ 600_000),
+                oneByteSample(/* timeUs= */ 700_000), // Last buffer.
+                END_OF_STREAM_ITEM));
+    fakeSampleStream.writeData(/* startPositionUs= */ 0);
+    mediaCodecVideoRenderer.enable(
+        RendererConfiguration.DEFAULT,
+        new Format[] {VIDEO_H264},
+        fakeSampleStream,
+        /* positionUs= */ 0,
+        /* joining= */ false,
+        /* mayRenderStartOfStream= */ true,
+        /* startPositionUs= */ 0,
+        /* offsetUs= */ 0,
+        /* mediaPeriodId= */ new MediaSource.MediaPeriodId(new Object()));
+    mediaCodecVideoRenderer.start();
+    for (int i = 0; i < 6; i++) {
+      // Render first frame and process to second.
+      mediaCodecVideoRenderer.render(0, SystemClock.elapsedRealtime() * 1000);
+      codecAdapterFactory.idleQueueingAndCallbackThreads();
+    }
+
+    // Invocation should drop to keyframe as current output buffer is very, very late.
+    long durationToProgressIncurringDropUs =
+        mediaCodecVideoRenderer.getDurationToProgressUs(
+            /* positionUs= */ 600_001,
+            SystemClock.elapsedRealtime() * 1000,
+            /* isOnBufferAvailableListenerRegistered= */ true);
+
+    long durationToProgressPostDropUs =
+        mediaCodecVideoRenderer.getDurationToProgressUs(
+            /* positionUs= */ 600_001,
+            SystemClock.elapsedRealtime() * 1000,
+            /* isOnBufferAvailableListenerRegistered= */ true);
+
+    shadowOf(testMainLooper).idle();
+    ArgumentCaptor<DecoderCounters> argumentDecoderCounters =
+        ArgumentCaptor.forClass(DecoderCounters.class);
+    verify(eventListener).onVideoEnabled(argumentDecoderCounters.capture());
+    DecoderCounters decoderCounters = argumentDecoderCounters.getValue();
+    assertThat(decoderCounters.droppedBufferCount).isEqualTo(3);
+    assertThat(durationToProgressIncurringDropUs).isEqualTo(0);
+    assertThat(durationToProgressPostDropUs).isEqualTo(10_000);
+  }
+
+  @Test
+  public void getDurationToProgressUs_afterSkippedFrame_returnsDefaultDuration() throws Exception {
+    FakeSampleStream fakeSampleStream =
+        new FakeSampleStream(
+            new DefaultAllocator(/* trimOnReset= */ true, /* individualAllocationSize= */ 1024),
+            /* mediaSourceEventDispatcher= */ null,
+            DrmSessionManager.DRM_UNSUPPORTED,
+            new DrmSessionEventListener.EventDispatcher(),
+            /* initialFormat= */ VIDEO_H264,
+            ImmutableList.of(
+                oneByteSample(/* timeUs= */ 0, C.BUFFER_FLAG_KEY_FRAME), // First buffer.
+                oneByteSample(/* timeUs= */ 75_000),
+                oneByteSample(/* timeUs= */ 150_000), // Last buffer.
+                END_OF_STREAM_ITEM));
+    fakeSampleStream.writeData(/* startPositionUs= */ 0);
+    mediaCodecVideoRenderer.enable(
+        RendererConfiguration.DEFAULT,
+        new Format[] {VIDEO_H264},
+        fakeSampleStream,
+        /* positionUs= */ 0,
+        /* joining= */ false,
+        /* mayRenderStartOfStream= */ true,
+        /* startPositionUs= */ 0,
+        /* offsetUs= */ 0,
+        /* mediaPeriodId= */ new MediaSource.MediaPeriodId(new Object()));
+
+    mediaCodecVideoRenderer.start();
+    for (int i = 0; i < 6; i++) {
+      // Render first frame and process up to second frame.
+      mediaCodecVideoRenderer.render(0, SystemClock.elapsedRealtime() * 1000);
+      codecAdapterFactory.idleQueueingAndCallbackThreads();
+    }
+
+    long preSkipDurationToProgressUs =
+        mediaCodecVideoRenderer.getDurationToProgressUs(
+            /* positionUs= */ 10_000,
+            SystemClock.elapsedRealtime() * 1000,
+            /* isOnBufferAvailableListenerRegistered= */ true);
+
+    // Skip second frame.
+    mediaCodecVideoRenderer.render(105_001, SystemClock.elapsedRealtime() * 1000);
+
+    long postSkipDurationToProgressUs =
+        mediaCodecVideoRenderer.getDurationToProgressUs(
+            /* positionUs= */ 105_001,
+            SystemClock.elapsedRealtime() * 1000,
+            /* isOnBufferAvailableListenerRegistered= */ true);
+
+    shadowOf(testMainLooper).idle();
+    verify(eventListener).onDroppedFrames(eq(1), anyLong());
+    assertThat(preSkipDurationToProgressUs).isEqualTo(40_000L);
+    assertThat(postSkipDurationToProgressUs).isEqualTo(10_000L);
+  }
+
+  @Test
+  public void getDurationToProgressUs_afterResetPosition_returnsDefaultDuration() throws Exception {
+    FakeSampleStream fakeSampleStream =
+        new FakeSampleStream(
+            new DefaultAllocator(/* trimOnReset= */ true, /* individualAllocationSize= */ 1024),
+            /* mediaSourceEventDispatcher= */ null,
+            DrmSessionManager.DRM_UNSUPPORTED,
+            new DrmSessionEventListener.EventDispatcher(),
+            /* initialFormat= */ VIDEO_H264,
+            ImmutableList.of(
+                oneByteSample(/* timeUs= */ 0, C.BUFFER_FLAG_KEY_FRAME), // First buffer.
+                oneByteSample(/* timeUs= */ 75_000),
+                oneByteSample(/* timeUs= */ 150_000), // Last buffer.
+                END_OF_STREAM_ITEM));
+    fakeSampleStream.writeData(/* startPositionUs= */ 0);
+    mediaCodecVideoRenderer.enable(
+        RendererConfiguration.DEFAULT,
+        new Format[] {VIDEO_H264},
+        fakeSampleStream,
+        /* positionUs= */ 0,
+        /* joining= */ false,
+        /* mayRenderStartOfStream= */ true,
+        /* startPositionUs= */ 0,
+        /* offsetUs= */ 0,
+        /* mediaPeriodId= */ new MediaSource.MediaPeriodId(new Object()));
+    mediaCodecVideoRenderer.start();
+
+    for (int i = 0; i < 6; i++) {
+      // Render first frame and process up to second frame.
+      mediaCodecVideoRenderer.render(0, SystemClock.elapsedRealtime() * 1000);
+      codecAdapterFactory.idleQueueingAndCallbackThreads();
+    }
+
+    // Simulate a seek through resetPosition which should flush the decoder.
+    mediaCodecVideoRenderer.stop();
+    mediaCodecVideoRenderer.resetPosition(
+        /* positionUs= */ 0, /* sampleStreamIsResetToKeyFrame= */ true);
+
+    long durationToProgressUs =
+        mediaCodecVideoRenderer.getDurationToProgressUs(
+            /* positionUs= */ 10_000,
+            SystemClock.elapsedRealtime() * 1000,
+            /* isOnBufferAvailableListenerRegistered= */ true);
+
+    shadowOf(testMainLooper).idle();
+    assertThat(durationToProgressUs).isEqualTo(10_000L);
+  }
+
+  @Test
+  public void getDurationToProgressUs_afterDisable_returnsDefaultDuration() throws Exception {
+    FakeSampleStream fakeSampleStream =
+        new FakeSampleStream(
+            new DefaultAllocator(/* trimOnReset= */ true, /* individualAllocationSize= */ 1024),
+            /* mediaSourceEventDispatcher= */ null,
+            DrmSessionManager.DRM_UNSUPPORTED,
+            new DrmSessionEventListener.EventDispatcher(),
+            /* initialFormat= */ VIDEO_H264,
+            ImmutableList.of(
+                oneByteSample(/* timeUs= */ 0, C.BUFFER_FLAG_KEY_FRAME), // First buffer.
+                oneByteSample(/* timeUs= */ 75_000),
+                oneByteSample(/* timeUs= */ 150_000), // Last buffer.
+                END_OF_STREAM_ITEM));
+    fakeSampleStream.writeData(/* startPositionUs= */ 0);
+    mediaCodecVideoRenderer.enable(
+        RendererConfiguration.DEFAULT,
+        new Format[] {VIDEO_H264},
+        fakeSampleStream,
+        /* positionUs= */ 0,
+        /* joining= */ false,
+        /* mayRenderStartOfStream= */ true,
+        /* startPositionUs= */ 0,
+        /* offsetUs= */ 0,
+        /* mediaPeriodId= */ new MediaSource.MediaPeriodId(new Object()));
+    mediaCodecVideoRenderer.start();
+
+    for (int i = 0; i < 6; i++) {
+      // Render first frame and process up to second frame.
+      mediaCodecVideoRenderer.render(0, SystemClock.elapsedRealtime() * 1000);
+      codecAdapterFactory.idleQueueingAndCallbackThreads();
+    }
+
+    // Simulate a track reselection forcing a disable which should flush the decoder.
+    mediaCodecVideoRenderer.stop();
+    mediaCodecVideoRenderer.disable();
+
+    long durationToProgressUs =
+        mediaCodecVideoRenderer.getDurationToProgressUs(
+            /* positionUs= */ 10_000,
+            SystemClock.elapsedRealtime() * 1000,
+            /* isOnBufferAvailableListenerRegistered= */ true);
+
+    shadowOf(testMainLooper).idle();
+    assertThat(durationToProgressUs).isEqualTo(10_000L);
   }
 
   private static MediaCodecInfo createMediaCodecInfo(String mimeType) {

@@ -11,7 +11,8 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-apply from: "$gradle.ext.androidxMediaSettingsDir/common_library_config.gradle"
+apply plugin: 'com.android.library'
+apply from: "$gradle.ext.androidxMediaSettingsDir/common_config.gradle"
 
 android {
     namespace 'androidx.media3.exoplayer.ima'
@@ -31,7 +32,7 @@ android {
 
 dependencies {
     coreLibraryDesugaring "com.android.tools:desugar_jdk_libs:" + desugarJdkLibsVersion
-    api ('com.google.ads.interactivemedia.v3:interactivemedia:3.38.0') {
+    api ('com.google.ads.interactivemedia.v3:interactivemedia:3.39.0') {
         exclude group: 'androidx.media3', module: 'media3-common'
     }
     api project(modulePrefix + 'lib-exoplayer')

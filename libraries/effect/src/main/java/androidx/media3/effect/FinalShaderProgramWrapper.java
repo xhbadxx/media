@@ -287,8 +287,10 @@ import org.checkerframework.checker.nullness.qual.MonotonicNonNull;
 
     // Signal flush upstream.
     inputListener.onFlush();
-    for (int i = 0; i < getInputCapacity(); i++) {
-      inputListener.onReadyToAcceptInputFrame();
+    if (textureOutputListener == null) {
+      for (int i = 0; i < getInputCapacity(); i++) {
+        inputListener.onReadyToAcceptInputFrame();
+      }
     }
   }
 
@@ -305,6 +307,8 @@ import org.checkerframework.checker.nullness.qual.MonotonicNonNull;
       GlUtil.checkGlError();
     } catch (GlUtil.GlException e) {
       throw new VideoFrameProcessingException(e);
+    } finally {
+      outputEglSurface = null;
     }
   }
 
@@ -324,6 +328,9 @@ import org.checkerframework.checker.nullness.qual.MonotonicNonNull;
       outputTexturePool.freeAllTextures();
       outputTextureTimestamps.clear();
       syncObjects.clear();
+      for (int i = 0; i < getInputCapacity(); i++) {
+        inputListener.onReadyToAcceptInputFrame();
+      }
       try {
         textureOutputListener.flush();
       } catch (VideoFrameProcessingException e) {
@@ -607,8 +614,6 @@ import org.checkerframework.checker.nullness.qual.MonotonicNonNull;
         && (outputSurfaceInfoChanged || inputSizeChanged || matrixTransformationsChanged)) {
       defaultShaderProgram.release();
       defaultShaderProgram = null;
-      outputSurfaceInfoChanged = false;
-      matrixTransformationsChanged = false;
     }
 
     if (defaultShaderProgram == null) {
@@ -618,6 +623,7 @@ import org.checkerframework.checker.nullness.qual.MonotonicNonNull;
               outputWidth,
               outputHeight);
       outputSurfaceInfoChanged = false;
+      matrixTransformationsChanged = false;
     }
     return true;
   }

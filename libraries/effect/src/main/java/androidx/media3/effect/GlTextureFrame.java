@@ -15,17 +15,31 @@
  */
 package androidx.media3.effect;
 
+import static com.google.common.util.concurrent.MoreExecutors.directExecutor;
+
+import androidx.annotation.Nullable;
 import androidx.media3.common.C;
 import androidx.media3.common.Format;
 import androidx.media3.common.GlTextureInfo;
 import androidx.media3.common.util.Consumer;
 import androidx.media3.common.util.ExperimentalApi;
+import androidx.media3.common.util.GlUtil;
+import androidx.media3.common.util.Log;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import java.util.concurrent.Executor;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /** A {@link Frame} implementation that wraps a {@link GlTextureInfo}. */
-@ExperimentalApi
+@ExperimentalApi // TODO: b/449956776 - Remove once FrameConsumer API is finalized.
 public class GlTextureFrame implements Frame {
+  public static final GlTextureFrame END_OF_STREAM_FRAME =
+      new Builder(
+              new GlTextureInfo(
+                  C.INDEX_UNSET, C.INDEX_UNSET, C.INDEX_UNSET, C.LENGTH_UNSET, C.LENGTH_UNSET),
+              directExecutor(),
+              textureInfo -> {})
+          .build();
+  private static final String TAG = "GlTextureFrame";
 
   /** The {@link GlTextureInfo}. */
   public final GlTextureInfo glTextureInfo;
@@ -47,6 +61,26 @@ public class GlTextureFrame implements Frame {
   /** The {@link Consumer} to call to release the texture. */
   public final Consumer<GlTextureInfo> releaseTextureCallback;
 
+  /**
+   * The OpenGL fence sync object (a {@link GlUtil#createGlSyncFence()} handle) associated with this
+   * frame. See <a
+   * href="https://registry.khronos.org/OpenGL-Refpages/es3.0/html/glFenceSync.xhtml"></a>
+   *
+   * <p>If this texture is read in an OpenGL context different to the one it was written to, call
+   * {@link GlUtil#awaitSyncObject } on this fence before reading the {@link #glTextureInfo}, to
+   * ensure the contents have been fully written to.
+   *
+   * <p>Callers must *not* {@linkplain GlUtil#deleteSyncObject delete} this fence, as it may be
+   * reused up until this frame is {@linkplain #release(SyncFenceCompat) released}.
+   *
+   * <p>The value is {@link GlUtil#GL_FENCE_SYNC_UNSET} if no fence has been created for this
+   * texture, as it is only expected to be produced and consumed within the same GL command stream.
+   */
+  public final long fenceSync;
+
+  /** The number of active references to this frame. */
+  private final AtomicInteger referenceCount;
+
   /** A builder for {@link GlTextureFrame} instances. */
   public static final class Builder {
     private final GlTextureInfo glTextureInfo;
@@ -57,6 +91,7 @@ public class GlTextureFrame implements Frame {
     private Format format;
     private long releaseTimeNs;
     private Metadata metadata;
+    private long fenceSync;
 
     /**
      * Creates a new {@link Builder}.
@@ -77,6 +112,16 @@ public class GlTextureFrame implements Frame {
       presentationTimeUs = C.TIME_UNSET;
       format = new Format.Builder().build();
       releaseTimeNs = C.TIME_UNSET;
+      fenceSync = GlUtil.GL_FENCE_SYNC_UNSET;
+    }
+
+    private Builder(GlTextureFrame frame) {
+      this(frame.glTextureInfo, frame.releaseTextureExecutor, frame.releaseTextureCallback);
+      this.metadata = frame.metadata;
+      this.presentationTimeUs = frame.presentationTimeUs;
+      this.format = frame.format;
+      this.releaseTimeNs = frame.releaseTimeNs;
+      this.fenceSync = frame.fenceSync;
     }
 
     /** Sets the {@link GlTextureFrame#presentationTimeUs}. */
@@ -107,6 +152,23 @@ public class GlTextureFrame implements Frame {
       return this;
     }
 
+    /**
+     * Sets the {@link GlTextureFrame#fenceSync}.
+     *
+     * <p>The default value is {@link GlUtil#GL_FENCE_SYNC_UNSET}.
+     *
+     * <p>The consumer of the frame is expected to wait on this fence (e.g. using {@code glWaitSync}
+     * or {@code glClientWaitSync}) to ensure the texture content is fully written before reading
+     * it.
+     *
+     * @param fenceSync The OpenGL fence sync object.
+     */
+    @CanIgnoreReturnValue
+    public Builder setFenceSync(long fenceSync) {
+      this.fenceSync = fenceSync;
+      return this;
+    }
+
     /** Builds the {@link GlTextureFrame} instance. */
     public GlTextureFrame build() {
       return new GlTextureFrame(this);
@@ -121,6 +183,13 @@ public class GlTextureFrame implements Frame {
     this.metadata = builder.metadata;
     this.releaseTextureExecutor = builder.releaseTextureExecutor;
     this.releaseTextureCallback = builder.releaseTextureCallback;
+    this.fenceSync = builder.fenceSync;
+    this.referenceCount = new AtomicInteger(1);
+  }
+
+  /** Returns a {@link Builder} initialized with the values of this instance. */
+  public Builder buildUpon() {
+    return new Builder(this);
   }
 
   @Override
@@ -128,8 +197,42 @@ public class GlTextureFrame implements Frame {
     return metadata;
   }
 
+  /**
+   * {@inheritDoc}
+   *
+   * <p>This implementation is idempotent if called after the frame has already been released. It
+   * will strictly release the underlying resources only when the count transitions from 1 to 0.
+   */
   @Override
-  public void release() {
-    releaseTextureExecutor.execute(() -> releaseTextureCallback.accept(glTextureInfo));
+  public void release(@Nullable SyncFenceCompat releaseFence) {
+    while (true) {
+      int currentCount = referenceCount.get();
+      if (currentCount == 0) {
+        Log.d(TAG, "release() called on an already released frame.");
+        return;
+      }
+      if (referenceCount.compareAndSet(currentCount, currentCount - 1)) {
+        if (currentCount == 1) {
+          releaseTextureExecutor.execute(() -> releaseTextureCallback.accept(glTextureInfo));
+        }
+        return;
+      }
+    }
+  }
+
+  /**
+   * Increases the reference count of this frame. For every call to this method there must be an
+   * extra {@link #release} call before this frame is released.
+   *
+   * @throws IllegalStateException if called after the frame has been released.
+   */
+  public void retain() {
+    int currentCount;
+    do {
+      currentCount = referenceCount.get();
+      if (currentCount <= 0) {
+        throw new IllegalStateException("Cannot retain a frame that has already been released.");
+      }
+    } while (!referenceCount.compareAndSet(currentCount, currentCount + 1));
   }
 }

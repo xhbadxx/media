@@ -19,6 +19,7 @@ import static androidx.media3.common.Player.STATE_BUFFERING;
 import static androidx.media3.common.Player.STATE_ENDED;
 import static androidx.media3.common.Player.STATE_IDLE;
 import static androidx.media3.common.Player.STATE_READY;
+import static androidx.media3.common.util.Util.usToMs;
 import static androidx.media3.test.utils.TestUtil.createByteCountingAudioProcessor;
 import static androidx.media3.test.utils.TestUtil.getCommandsAsList;
 import static androidx.media3.test.utils.robolectric.RobolectricUtil.runMainLooperUntil;
@@ -28,10 +29,14 @@ import static androidx.media3.transformer.EditedMediaItemSequence.withAudioFrom;
 import static androidx.media3.transformer.TestUtil.ASSET_URI_PREFIX;
 import static androidx.media3.transformer.TestUtil.FILE_AUDIO_RAW;
 import static androidx.media3.transformer.TestUtil.FILE_AUDIO_RAW_STEREO_48000KHZ;
+import static androidx.media3.transformer.TestUtil.FILE_PNG;
 import static androidx.media3.transformer.TestUtil.createTestCompositionPlayer;
 import static androidx.media3.transformer.TestUtil.createTestCompositionPlayerBuilder;
 import static androidx.test.core.app.ApplicationProvider.getApplicationContext;
+import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.truth.Truth.assertThat;
+import static com.google.common.util.concurrent.MoreExecutors.directExecutor;
+import static java.util.concurrent.TimeUnit.MILLISECONDS;
 import static org.junit.Assert.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.argThat;
@@ -60,6 +65,7 @@ import androidx.media3.common.util.ConditionVariable;
 import androidx.media3.common.util.Log;
 import androidx.media3.common.util.NullableType;
 import androidx.media3.effect.AlphaScale;
+import androidx.media3.effect.HardwareBufferFrame;
 import androidx.media3.effect.SpeedChangeEffect;
 import androidx.media3.effect.TimestampAdjustment;
 import androidx.media3.exoplayer.DefaultLoadControl;
@@ -68,24 +74,31 @@ import androidx.media3.exoplayer.audio.AudioSink;
 import androidx.media3.exoplayer.audio.DefaultAudioSink;
 import androidx.media3.exoplayer.audio.ForwardingAudioSink;
 import androidx.media3.exoplayer.audio.TrimmingAudioProcessor;
+import androidx.media3.test.utils.RecordingPacketConsumer;
 import androidx.media3.test.utils.TestSpeedProvider;
 import androidx.media3.test.utils.robolectric.TestPlayerRunHelper;
-import androidx.test.ext.junit.runners.AndroidJUnit4;
+import com.google.common.base.Supplier;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
+import com.google.testing.junit.testparameterinjector.TestParameter;
+import com.google.testing.junit.testparameterinjector.TestParameterValuesProvider;
+import java.util.Iterator;
 import java.util.List;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.stream.IntStream;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.InOrder;
 import org.mockito.Mockito;
+import org.robolectric.RobolectricTestParameterInjector;
 import org.robolectric.shadows.ShadowLooper;
 
 /** Unit tests for {@link CompositionPlayer}. */
-@RunWith(AndroidJUnit4.class)
+@RunWith(RobolectricTestParameterInjector.class)
 public class CompositionPlayerTest {
   private static final long TEST_TIMEOUT_MS = 1_000;
 
@@ -101,6 +114,281 @@ public class CompositionPlayerTest {
           return C.TIME_UNSET;
         }
       };
+  private static final SpeedProvider DOUBLE_SPEED_PROVIDER =
+      new SpeedProvider() {
+        @Override
+        public float getSpeed(long timeUs) {
+          return 2f;
+        }
+
+        @Override
+        public long getNextSpeedChangeTimeUs(long timeUs) {
+          return C.TIME_UNSET;
+        }
+      };
+
+  private static final SpeedProvider HALF_SPEED_PROVIDER =
+      new SpeedProvider() {
+        @Override
+        public float getSpeed(long timeUs) {
+          return 0.5f;
+        }
+
+        @Override
+        public long getNextSpeedChangeTimeUs(long timeUs) {
+          return C.TIME_UNSET;
+        }
+      };
+  private static final Input TWO_AUDIO_ITEMS =
+      new Input(
+          CompositionPlayerTest::buildComposition,
+          /* expectedDurationMs= */ 1_348,
+          "TWO_AUDIO_ITEMS");
+  private static final Input TWO_AUDIO_ITEMS_WITH_SET_SPEED =
+      new Input(
+          () -> {
+            EditedMediaItem item1 =
+                new EditedMediaItem.Builder(MediaItem.fromUri(ASSET_URI_PREFIX + FILE_AUDIO_RAW))
+                    .setDurationUs(1_000_000L)
+                    .setSpeed(HALF_SPEED_PROVIDER)
+                    .build();
+            EditedMediaItem item2 =
+                new EditedMediaItem.Builder(
+                        MediaItem.fromUri(ASSET_URI_PREFIX + FILE_AUDIO_RAW_STEREO_48000KHZ))
+                    .setDurationUs(348_000L)
+                    .setSpeed(DOUBLE_SPEED_PROVIDER)
+                    .build();
+            return new Composition.Builder(withAudioFrom(ImmutableList.of(item1, item2))).build();
+          },
+          /* expectedDurationMs= */ 2_174,
+          "TWO_AUDIO_ITEMS_WITH_SET_SPEED");
+  private static final Input AUDIO_ITEM_WITH_SET_DOUBLE_SPEED =
+      new Input(
+          () -> {
+            EditedMediaItem item =
+                new EditedMediaItem.Builder(MediaItem.fromUri(ASSET_URI_PREFIX + FILE_AUDIO_RAW))
+                    .setDurationUs(1_000_000L)
+                    .setSpeed(DOUBLE_SPEED_PROVIDER)
+                    .build();
+            return new Composition.Builder(withAudioFrom(ImmutableList.of(item))).build();
+          },
+          /* expectedDurationMs= */ 500,
+          "AUDIO_ITEM_WITH_SET_DOUBLE_SPEED");
+  private static final Input AUDIO_ITEM_WITH_CLIPPED_START =
+      new Input(
+          () -> {
+            MediaItem mediaItem =
+                new MediaItem.Builder()
+                    .setUri(ASSET_URI_PREFIX + FILE_AUDIO_RAW)
+                    .setClippingConfiguration(
+                        new MediaItem.ClippingConfiguration.Builder()
+                            .setStartPositionUs(200_000)
+                            .build())
+                    .build();
+            EditedMediaItem editedMediaItem =
+                new EditedMediaItem.Builder(mediaItem).setDurationUs(1_000_000L).build();
+            return new Composition.Builder(withAudioFrom(ImmutableList.of(editedMediaItem)))
+                .build();
+          },
+          /* expectedDurationMs= */ 800,
+          "AUDIO_ITEM_WITH_CLIPPED_START");
+  private static final Input AUDIO_ITEM_WITH_CLIPPED_START_GREATER_THAN_HALF_DURATION =
+      new Input(
+          () -> {
+            // This test covers cases where the clipped duration exceeds half the original duration.
+            // It is needed to make sure no problems arise from clipping in this case. This would
+            // catch removing ClippingConfiguration wrapping SilenceMediaSource, because the problem
+            // only occurs when the clippedDuration exceeds half the original duration.
+            MediaItem mediaItem =
+                new MediaItem.Builder()
+                    .setUri(ASSET_URI_PREFIX + FILE_AUDIO_RAW)
+                    .setClippingConfiguration(
+                        new MediaItem.ClippingConfiguration.Builder()
+                            .setStartPositionUs(600_000)
+                            .build())
+                    .build();
+            EditedMediaItem editedMediaItem =
+                new EditedMediaItem.Builder(mediaItem).setDurationUs(1_000_000L).build();
+            return new Composition.Builder(withAudioFrom(ImmutableList.of(editedMediaItem)))
+                .build();
+          },
+          /* expectedDurationMs= */ 400,
+          "AUDIO_ITEM_WITH_CLIPPED_START_GREATER_THAN_HALF_DURATION");
+  private static final Input AUDIO_ITEM_WITH_CLIPPED_END =
+      new Input(
+          () -> {
+            MediaItem mediaItem =
+                new MediaItem.Builder()
+                    .setUri(ASSET_URI_PREFIX + FILE_AUDIO_RAW)
+                    .setClippingConfiguration(
+                        new MediaItem.ClippingConfiguration.Builder()
+                            .setEndPositionUs(600_000)
+                            .build())
+                    .build();
+            EditedMediaItem editedMediaItem =
+                new EditedMediaItem.Builder(mediaItem).setDurationUs(1_000_000L).build();
+            return new Composition.Builder(withAudioFrom(ImmutableList.of(editedMediaItem)))
+                .build();
+          },
+          /* expectedDurationMs= */ 600,
+          "AUDIO_ITEM_WITH_CLIPPED_END");
+  private static final Input AUDIO_ITEM_WITH_CLIPPED_START_AND_END =
+      new Input(
+          () -> {
+            MediaItem mediaItem =
+                new MediaItem.Builder()
+                    .setUri(ASSET_URI_PREFIX + FILE_AUDIO_RAW)
+                    .setClippingConfiguration(
+                        new MediaItem.ClippingConfiguration.Builder()
+                            .setStartPositionUs(100_000)
+                            .setEndPositionUs(550_000)
+                            .build())
+                    .build();
+            EditedMediaItem editedMediaItem =
+                new EditedMediaItem.Builder(mediaItem).setDurationUs(1_000_000L).build();
+            return new Composition.Builder(withAudioFrom(ImmutableList.of(editedMediaItem)))
+                .build();
+          },
+          /* expectedDurationMs= */ 450,
+          "AUDIO_ITEM_WITH_CLIPPED_START_AND_END");
+  private static final Input AUDIO_ITEM_WITH_CLIPPED_START_AND_DOUBLE_SPEED_EFFECT =
+      new Input(
+          () -> {
+            MediaItem mediaItem =
+                new MediaItem.Builder()
+                    .setUri(ASSET_URI_PREFIX + FILE_AUDIO_RAW)
+                    .setClippingConfiguration(
+                        new MediaItem.ClippingConfiguration.Builder()
+                            .setStartPositionUs(200_000)
+                            .build())
+                    .build();
+            // Video must be removed because Composition presentation time assumes there is audio
+            // and video.
+            // TODO: b/469706967 - Remove setRemoveVideo() call when EditedMediaItems consider
+            // sequence types.
+            EditedMediaItem editedMediaItem =
+                new EditedMediaItem.Builder(mediaItem)
+                    .setRemoveVideo(true)
+                    .setDurationUs(1_000_000L)
+                    .setEffects(toEffects(new SpeedChangingAudioProcessor(DOUBLE_SPEED_PROVIDER)))
+                    .build();
+            return new Composition.Builder(withAudioFrom(ImmutableList.of(editedMediaItem)))
+                .build();
+          },
+          /* expectedDurationMs= */ 400,
+          "AUDIO_ITEM_WITH_CLIPPED_START_AND_DOUBLE_SPEED_EFFECT");
+  private static final Input AUDIO_ITEM_WITH_CLIPPED_START_AND_SET_DOUBLE_SPEED =
+      new Input(
+          () -> {
+            MediaItem mediaItem =
+                new MediaItem.Builder()
+                    .setUri(ASSET_URI_PREFIX + FILE_AUDIO_RAW)
+                    .setClippingConfiguration(
+                        new MediaItem.ClippingConfiguration.Builder()
+                            .setStartPositionUs(200_000)
+                            .build())
+                    .build();
+            EditedMediaItem editedMediaItem =
+                new EditedMediaItem.Builder(mediaItem)
+                    .setDurationUs(1_000_000L)
+                    .setSpeed(DOUBLE_SPEED_PROVIDER)
+                    .build();
+            return new Composition.Builder(withAudioFrom(ImmutableList.of(editedMediaItem)))
+                .build();
+          },
+          /* expectedDurationMs= */ 400,
+          "AUDIO_ITEM_WITH_CLIPPED_START_AND_SET_DOUBLE_SPEED");
+  private static final Input AUDIO_ITEM_WITH_CLIPPED_END_AND_DOUBLE_SPEED_EFFECT =
+      new Input(
+          () -> {
+            MediaItem mediaItem =
+                new MediaItem.Builder()
+                    .setUri(ASSET_URI_PREFIX + FILE_AUDIO_RAW)
+                    .setClippingConfiguration(
+                        new MediaItem.ClippingConfiguration.Builder()
+                            .setEndPositionUs(600_000)
+                            .build())
+                    .build();
+            // Video must be removed because Composition presentation time assumes there is audio
+            // and video.
+            // TODO: b/469706967 - Remove setRemoveVideo() call when EditedMediaItems consider
+            // sequence types.
+            EditedMediaItem editedMediaItem =
+                new EditedMediaItem.Builder(mediaItem)
+                    .setRemoveVideo(true)
+                    .setDurationUs(1_000_000L)
+                    .setEffects(toEffects(new SpeedChangingAudioProcessor(DOUBLE_SPEED_PROVIDER)))
+                    .build();
+            return new Composition.Builder(withAudioFrom(ImmutableList.of(editedMediaItem)))
+                .build();
+          },
+          /* expectedDurationMs= */ 300,
+          "AUDIO_ITEM_WITH_CLIPPED_END_AND_DOUBLE_SPEED_EFFECT");
+  private static final Input AUDIO_ITEM_WITH_CLIPPED_END_AND_SET_DOUBLE_SPEED =
+      new Input(
+          () -> {
+            MediaItem mediaItem =
+                new MediaItem.Builder()
+                    .setUri(ASSET_URI_PREFIX + FILE_AUDIO_RAW)
+                    .setClippingConfiguration(
+                        new MediaItem.ClippingConfiguration.Builder()
+                            .setEndPositionUs(600_000)
+                            .build())
+                    .build();
+            EditedMediaItem editedMediaItem =
+                new EditedMediaItem.Builder(mediaItem)
+                    .setDurationUs(1_000_000L)
+                    .setSpeed(DOUBLE_SPEED_PROVIDER)
+                    .build();
+            return new Composition.Builder(withAudioFrom(ImmutableList.of(editedMediaItem)))
+                .build();
+          },
+          /* expectedDurationMs= */ 300,
+          "AUDIO_ITEM_WITH_CLIPPED_END_AND_SET_DOUBLE_SPEED");
+  private static final Input AUDIO_ITEM_WITH_CLIPPED_START_AND_END_WITH_HALF_SPEED_EFFECT =
+      new Input(
+          () -> {
+            MediaItem mediaItem =
+                new MediaItem.Builder()
+                    .setUri(ASSET_URI_PREFIX + FILE_AUDIO_RAW)
+                    .setClippingConfiguration(
+                        new MediaItem.ClippingConfiguration.Builder()
+                            .setStartPositionUs(100_000)
+                            .setEndPositionUs(550_000)
+                            .build())
+                    .build();
+            EditedMediaItem editedMediaItem =
+                new EditedMediaItem.Builder(mediaItem)
+                    .setDurationUs(1_000_000L)
+                    .setEffects(toEffects(new SpeedChangingAudioProcessor(HALF_SPEED_PROVIDER)))
+                    .build();
+            EditedMediaItemSequence sequence = withAudioFrom(ImmutableList.of(editedMediaItem));
+            return new Composition.Builder(sequence).build();
+          },
+          /* expectedDurationMs= */ 900,
+          "AUDIO_ITEM_WITH_CLIPPED_START_AND_END_WITH_HALF_SPEED_EFFECT");
+  private static final Input AUDIO_ITEM_WITH_CLIPPED_START_AND_END_WITH_SET_HALF_SPEED =
+      new Input(
+          () -> {
+            MediaItem mediaItem =
+                new MediaItem.Builder()
+                    .setUri(ASSET_URI_PREFIX + FILE_AUDIO_RAW)
+                    .setClippingConfiguration(
+                        new MediaItem.ClippingConfiguration.Builder()
+                            .setStartPositionUs(100_000)
+                            .setEndPositionUs(550_000)
+                            .build())
+                    .build();
+            EditedMediaItem editedMediaItem =
+                new EditedMediaItem.Builder(mediaItem)
+                    .setDurationUs(1_000_000L)
+                    .setSpeed(HALF_SPEED_PROVIDER)
+                    .build();
+            EditedMediaItemSequence sequence = withAudioFrom(ImmutableList.of(editedMediaItem));
+            return new Composition.Builder(sequence).build();
+          },
+          /* expectedDurationMs= */ 900,
+          "AUDIO_ITEM_WITH_CLIPPED_START_AND_END_WITH_SET_HALF_SPEED");
 
   @Test
   public void builder_buildCalledTwice_throws() {
@@ -454,216 +742,15 @@ public class CompositionPlayerTest {
   }
 
   @Test
-  public void getDuration_withComposition_returnsDuration() throws Exception {
-    CompositionPlayer player = createTestCompositionPlayer();
-    Composition composition = buildComposition();
-
-    player.setComposition(composition);
-    player.prepare();
-    TestPlayerRunHelper.runUntilPlaybackState(player, STATE_READY);
-
-    // Refer to the durations in buildComposition().
-    assertThat(player.getDuration()).isEqualTo(1_348);
-
-    player.release();
-  }
-
-  @Test
-  public void getDuration_withClippedStart_returnsCorrectDuration() throws Exception {
-    CompositionPlayer player = createTestCompositionPlayer();
-    MediaItem mediaItem =
-        new MediaItem.Builder()
-            .setUri(ASSET_URI_PREFIX + FILE_AUDIO_RAW)
-            .setClippingConfiguration(
-                new MediaItem.ClippingConfiguration.Builder().setStartPositionUs(200_000).build())
-            .build();
-    EditedMediaItem editedMediaItem1 =
-        new EditedMediaItem.Builder(mediaItem).setDurationUs(1_000_000L).build();
-    EditedMediaItemSequence sequence = withAudioFrom(ImmutableList.of(editedMediaItem1));
-    Composition composition = new Composition.Builder(sequence).build();
-
-    player.setComposition(composition);
-    player.prepare();
-    TestPlayerRunHelper.runUntilPlaybackState(player, STATE_READY);
-
-    assertThat(player.getDuration()).isEqualTo(800);
-
-    player.release();
-  }
-
-  @Test
-  public void getDuration_withClippedStartGreaterThanHalfDuration_returnsCorrectDuration()
-      throws Exception {
-    // This test covers cases where the clipped duration exceeds half the original duration.
-    // It is needed to make sure no problems arise from clipping in this case. This would catch
-    // removing ClippingConfiguration wrapping SilenceMediaSource, because the problem only occurs
-    // when the clippedDuration exceeds half the original duration.
-    CompositionPlayer player = createTestCompositionPlayer();
-    MediaItem mediaItem =
-        new MediaItem.Builder()
-            .setUri(ASSET_URI_PREFIX + FILE_AUDIO_RAW)
-            .setClippingConfiguration(
-                new MediaItem.ClippingConfiguration.Builder().setStartPositionUs(600_000).build())
-            .build();
-    EditedMediaItem editedMediaItem1 =
-        new EditedMediaItem.Builder(mediaItem).setDurationUs(1_000_000L).build();
-    EditedMediaItemSequence sequence = withAudioFrom(ImmutableList.of(editedMediaItem1));
-    Composition composition = new Composition.Builder(sequence).build();
-
-    player.setComposition(composition);
-    player.prepare();
-    TestPlayerRunHelper.runUntilPlaybackState(player, STATE_READY);
-
-    assertThat(player.getDuration()).isEqualTo(400);
-
-    player.release();
-  }
-
-  @Test
-  public void getDuration_withClippedEnd_returnsCorrectDuration() throws Exception {
-    CompositionPlayer player = createTestCompositionPlayer();
-    MediaItem mediaItem =
-        new MediaItem.Builder()
-            .setUri(ASSET_URI_PREFIX + FILE_AUDIO_RAW)
-            .setClippingConfiguration(
-                new MediaItem.ClippingConfiguration.Builder().setEndPositionUs(600_000).build())
-            .build();
-    EditedMediaItem editedMediaItem1 =
-        new EditedMediaItem.Builder(mediaItem).setDurationUs(1_000_000L).build();
-    EditedMediaItemSequence sequence = withAudioFrom(ImmutableList.of(editedMediaItem1));
-    Composition composition = new Composition.Builder(sequence).build();
-
-    player.setComposition(composition);
-    player.prepare();
-    TestPlayerRunHelper.runUntilPlaybackState(player, STATE_READY);
-
-    assertThat(player.getDuration()).isEqualTo(600);
-
-    player.release();
-  }
-
-  @Test
-  public void getDuration_withClippedStartEnd_returnsCorrectDuration() throws Exception {
-    CompositionPlayer player = createTestCompositionPlayer();
-    MediaItem mediaItem =
-        new MediaItem.Builder()
-            .setUri(ASSET_URI_PREFIX + FILE_AUDIO_RAW)
-            .setClippingConfiguration(
-                new MediaItem.ClippingConfiguration.Builder()
-                    .setStartPositionUs(100_000)
-                    .setEndPositionUs(550_000)
-                    .build())
-            .build();
-    EditedMediaItem editedMediaItem1 =
-        new EditedMediaItem.Builder(mediaItem).setDurationUs(1_000_000L).build();
-    EditedMediaItemSequence sequence = withAudioFrom(ImmutableList.of(editedMediaItem1));
-    Composition composition = new Composition.Builder(sequence).build();
-
-    player.setComposition(composition);
-    player.prepare();
-    TestPlayerRunHelper.runUntilPlaybackState(player, STATE_READY);
-
-    assertThat(player.getDuration()).isEqualTo(450);
-
-    player.release();
-  }
-
-  @Test
-  public void getDuration_withDurationAdjustingEffectsAndClippedStart_returnsCorrectDuration()
+  public void getDuration_returnsExpectedDuration(
+      @TestParameter(valuesProvider = DurationTestCasesProvider.class) Input input)
       throws Exception {
     CompositionPlayer player = createTestCompositionPlayer();
-    ImmutableList<AudioProcessor> audioProcessors =
-        ImmutableList.of(
-            new SpeedChangingAudioProcessor(
-                TestSpeedProvider.createWithStartTimes(new long[] {0L}, new float[] {2f})));
-    MediaItem mediaItem =
-        new MediaItem.Builder()
-            .setUri(ASSET_URI_PREFIX + FILE_AUDIO_RAW)
-            .setClippingConfiguration(
-                new MediaItem.ClippingConfiguration.Builder().setStartPositionUs(200_000).build())
-            .build();
-    // Video must be removed because Composition presentation time assumes there is audio and video.
-    EditedMediaItem editedMediaItem1 =
-        new EditedMediaItem.Builder(mediaItem)
-            .setRemoveVideo(true)
-            .setDurationUs(1_000_000L)
-            .setEffects(new Effects(audioProcessors, /* videoEffects= */ ImmutableList.of()))
-            .build();
-    EditedMediaItemSequence sequence = withAudioFrom(ImmutableList.of(editedMediaItem1));
-    Composition composition = new Composition.Builder(sequence).build();
-
-    player.setComposition(composition);
+    player.setComposition(input.composition.get());
     player.prepare();
-    TestPlayerRunHelper.runUntilPlaybackState(player, STATE_READY);
+    advance(player).untilState(STATE_READY);
 
-    assertThat(player.getDuration()).isEqualTo(400);
-
-    player.release();
-  }
-
-  @Test
-  public void getDuration_withDurationAdjustingEffectsAndClippedEnd_returnsCorrectDuration()
-      throws Exception {
-    CompositionPlayer player = createTestCompositionPlayer();
-    ImmutableList<AudioProcessor> audioProcessors =
-        ImmutableList.of(
-            new SpeedChangingAudioProcessor(
-                TestSpeedProvider.createWithStartTimes(new long[] {0L}, new float[] {2f})));
-    MediaItem mediaItem =
-        new MediaItem.Builder()
-            .setUri(ASSET_URI_PREFIX + FILE_AUDIO_RAW)
-            .setClippingConfiguration(
-                new MediaItem.ClippingConfiguration.Builder().setEndPositionUs(600_000).build())
-            .build();
-    // Video must be removed because Composition presentation time assumes there is audio and video.
-    EditedMediaItem editedMediaItem1 =
-        new EditedMediaItem.Builder(mediaItem)
-            .setRemoveVideo(true)
-            .setDurationUs(1_000_000L)
-            .setEffects(new Effects(audioProcessors, /* videoEffects= */ ImmutableList.of()))
-            .build();
-    EditedMediaItemSequence sequence = withAudioFrom(ImmutableList.of(editedMediaItem1));
-    Composition composition = new Composition.Builder(sequence).build();
-
-    player.setComposition(composition);
-    player.prepare();
-    TestPlayerRunHelper.runUntilPlaybackState(player, STATE_READY);
-
-    assertThat(player.getDuration()).isEqualTo(300);
-
-    player.release();
-  }
-
-  @Test
-  public void getDuration_withDurationAdjustingEffectsAndClippedStartEnd_returnsCorrectDuration()
-      throws Exception {
-    CompositionPlayer player = createTestCompositionPlayer();
-    ImmutableList<AudioProcessor> audioProcessors =
-        ImmutableList.of(
-            new SpeedChangingAudioProcessor(
-                TestSpeedProvider.createWithStartTimes(new long[] {0L}, new float[] {0.5f})));
-    MediaItem mediaItem =
-        new MediaItem.Builder()
-            .setUri(ASSET_URI_PREFIX + FILE_AUDIO_RAW)
-            .setClippingConfiguration(
-                new MediaItem.ClippingConfiguration.Builder()
-                    .setStartPositionUs(100_000)
-                    .setEndPositionUs(550_000)
-                    .build())
-            .build();
-    EditedMediaItem editedMediaItem1 =
-        new EditedMediaItem.Builder(mediaItem)
-            .setDurationUs(1_000_000L)
-            .setEffects(new Effects(audioProcessors, /* videoEffects= */ ImmutableList.of()))
-            .build();
-    EditedMediaItemSequence sequence = withAudioFrom(ImmutableList.of(editedMediaItem1));
-    Composition composition = new Composition.Builder(sequence).build();
-
-    player.setComposition(composition);
-    player.prepare();
-    TestPlayerRunHelper.runUntilPlaybackState(player, STATE_READY);
-
-    assertThat(player.getDuration()).isEqualTo(900);
+    assertThat(player.getDuration()).isEqualTo(input.expectedDurationMs);
 
     player.release();
   }
@@ -1122,9 +1209,10 @@ public class CompositionPlayerTest {
         item.buildUpon()
             .setSpeed(TestSpeedProvider.createWithStartTimes(new long[] {0L}, new float[] {0.5f}))
             .build();
-    EditedMediaItemSequence primarySequence = new EditedMediaItemSequence.Builder(item).build();
+    EditedMediaItemSequence primarySequence =
+        EditedMediaItemSequence.withAudioFrom(ImmutableList.of(item));
     EditedMediaItemSequence secondarySequence =
-        new EditedMediaItemSequence.Builder(speedAdjustedItem).build();
+        EditedMediaItemSequence.withAudioFrom(ImmutableList.of(speedAdjustedItem));
     player.setComposition(
         new Composition.Builder(primarySequence, secondarySequence)
             .setEffects(new Effects(ImmutableList.of(processor), ImmutableList.of()))
@@ -1134,6 +1222,184 @@ public class CompositionPlayerTest {
     play(player).untilState(STATE_ENDED);
 
     assertThat(bytes.get() / 2).isEqualTo(88200);
+  }
+
+  @Test
+  public void packetConsumer_imagePlayback_completesWithExpectedNumberOfFrames() throws Exception {
+    CountDownLatch allExpectedPacketsQueued = new CountDownLatch(1);
+    RecordingPacketConsumer<ImmutableList<HardwareBufferFrame>> packetConsumer =
+        new RecordingPacketConsumer<>();
+    packetConsumer.setOnQueue(
+        (frames) -> {
+          for (HardwareBufferFrame frame : frames) {
+            frame.release(/* releaseFence= */ null);
+          }
+          if (packetConsumer.getQueuedPackets().size() == 30) {
+            allExpectedPacketsQueued.countDown();
+          }
+          return null;
+        });
+    Composition composition =
+        new Composition.Builder(
+                EditedMediaItemSequence.withVideoFrom(ImmutableList.of(getImageItem())))
+            .build();
+    CompositionPlayer player =
+        createTestCompositionPlayerBuilder()
+            .setPacketConsumerFactory(() -> packetConsumer)
+            .experimentalSetLateThresholdToDropInputUs(C.TIME_UNSET)
+            .build();
+
+    player.setComposition(composition);
+    player.prepare();
+
+    play(player).untilState(STATE_ENDED);
+
+    assertThat(allExpectedPacketsQueued.await(TEST_TIMEOUT_MS, MILLISECONDS)).isTrue();
+  }
+
+  @Test
+  public void packetConsumer_imagePlayback_seekToMiddle_completesWithExpectedNumberOfFrames()
+      throws Exception {
+    CountDownLatch allExpectedPacketsQueued = new CountDownLatch(1);
+    RecordingPacketConsumer<ImmutableList<HardwareBufferFrame>> packetConsumer =
+        new RecordingPacketConsumer<>();
+    packetConsumer.setOnQueue(
+        (frames) -> {
+          for (HardwareBufferFrame frame : frames) {
+            frame.release(/* releaseFence= */ null);
+          }
+          if (packetConsumer.getQueuedPackets().size() == 15) {
+            allExpectedPacketsQueued.countDown();
+          }
+          return null;
+        });
+    Composition composition =
+        new Composition.Builder(
+                EditedMediaItemSequence.withVideoFrom(ImmutableList.of(getImageItem())))
+            .build();
+    CompositionPlayer player =
+        createTestCompositionPlayerBuilder()
+            .setPacketConsumerFactory(() -> packetConsumer)
+            .experimentalSetLateThresholdToDropInputUs(C.TIME_UNSET)
+            .build();
+    player.setComposition(composition);
+    player.prepare();
+    player.setPlayWhenReady(false);
+    advance(player).untilState(STATE_READY);
+
+    player.seekTo(/* positionMs= */ 500);
+    play(player).untilState(STATE_ENDED);
+
+    assertThat(allExpectedPacketsQueued.await(TEST_TIMEOUT_MS, MILLISECONDS)).isTrue();
+  }
+
+  @Test
+  public void hardwareBufferPostProcessor_processesAllFrames() throws Exception {
+    int frameCount = 30;
+    CountDownLatch frameProcessedLatch = new CountDownLatch(frameCount);
+    RecordingPacketConsumer<ImmutableList<HardwareBufferFrame>> packetConsumer =
+        new RecordingPacketConsumer<>();
+    packetConsumer.setOnQueue(
+        (unused) -> {
+          frameProcessedLatch.countDown();
+          return null;
+        });
+    // Create the frames that will be output by the post processor.
+    ImmutableList<HardwareBufferFrame> expectedFrames =
+        IntStream.range(0, frameCount)
+            .mapToObj(
+                i ->
+                    new HardwareBufferFrame.Builder(null, directExecutor(), u -> {})
+                        .setInternalFrame(new Object())
+                        .setPresentationTimeUs(i)
+                        .build())
+            .collect(toImmutableList());
+    Iterator<HardwareBufferFrame> iterator = expectedFrames.iterator();
+    HardwareBufferFrameProcessor postProcessor =
+        new HardwareBufferFrameProcessor() {
+          @Override
+          public HardwareBufferFrame process(HardwareBufferFrame inputFrame) {
+            inputFrame.release(null);
+            return iterator.next();
+          }
+
+          @Override
+          public void close() {}
+        };
+    CompositionPlayer player =
+        createTestCompositionPlayerBuilder()
+            .setPacketConsumerFactory(() -> packetConsumer)
+            .setHardwareBufferPostProcessor(postProcessor)
+            .experimentalSetLateThresholdToDropInputUs(C.TIME_UNSET)
+            .build();
+    player.setComposition(
+        new Composition.Builder(
+                EditedMediaItemSequence.withVideoFrom(ImmutableList.of(getImageItem())))
+            .build());
+    player.prepare();
+
+    play(player).untilState(STATE_ENDED);
+    assertThat(frameProcessedLatch.await(TEST_TIMEOUT_MS, MILLISECONDS)).isTrue();
+
+    ImmutableList<Long> actualTimestamps =
+        packetConsumer.getQueuedPayloads().stream()
+            .flatMap(List::stream)
+            .map(f -> f.presentationTimeUs)
+            .collect(toImmutableList());
+    ImmutableList<Long> expectedTimestamps =
+        expectedFrames.stream().map(f -> f.presentationTimeUs).collect(toImmutableList());
+    assertThat(actualTimestamps).containsExactlyElementsIn(expectedTimestamps).inOrder();
+  }
+
+  @Test
+  public void hardwareBufferPostProcessor_closedWhenPlayerReleased() throws Exception {
+    RecordingPacketConsumer<ImmutableList<HardwareBufferFrame>> packetConsumer =
+        new RecordingPacketConsumer<>();
+    packetConsumer.setOnQueue(
+        frames -> {
+          frames.get(0).release(null);
+          return null;
+        });
+    CountDownLatch processorClosed = new CountDownLatch(1);
+    HardwareBufferFrameProcessor postProcessor =
+        new HardwareBufferFrameProcessor() {
+          @Override
+          public HardwareBufferFrame process(HardwareBufferFrame inputFrame) {
+            return inputFrame;
+          }
+
+          @Override
+          public void close() {
+            processorClosed.countDown();
+          }
+        };
+    CompositionPlayer player =
+        createTestCompositionPlayerBuilder()
+            .setPacketConsumerFactory(() -> packetConsumer)
+            .setHardwareBufferPostProcessor(postProcessor)
+            .experimentalSetLateThresholdToDropInputUs(C.TIME_UNSET)
+            .build();
+    player.setComposition(
+        new Composition.Builder(
+                EditedMediaItemSequence.withVideoFrom(ImmutableList.of(getImageItem())))
+            .build());
+    player.prepare();
+    play(player).untilState(STATE_ENDED);
+
+    player.release();
+
+    assertThat(processorClosed.await(TEST_TIMEOUT_MS, MILLISECONDS)).isTrue();
+  }
+
+  private static EditedMediaItem getImageItem() {
+    return new EditedMediaItem.Builder(
+            new MediaItem.Builder()
+                .setUri(ASSET_URI_PREFIX + FILE_PNG)
+                .setImageDurationMs(usToMs(/* timeUs= */ 1_000_000L))
+                .build())
+        .setDurationUs(1_000_000L)
+        .setFrameRate(30)
+        .build();
   }
 
   private static Composition buildComposition() {
@@ -1159,6 +1425,49 @@ public class CompositionPlayerTest {
     public void onPrepared(PlayerId playerId) {
       prepared = true;
       super.onPrepared(playerId);
+    }
+  }
+
+  private static Effects toEffects(AudioProcessor processor) {
+    return new Effects(ImmutableList.of(processor), /* videoEffects= */ ImmutableList.of());
+  }
+
+  private static final class DurationTestCasesProvider extends TestParameterValuesProvider {
+    @Override
+    protected List<Input> provideValues(TestParameterValuesProvider.Context context) {
+      return ImmutableList.of(
+          TWO_AUDIO_ITEMS,
+          TWO_AUDIO_ITEMS_WITH_SET_SPEED,
+          AUDIO_ITEM_WITH_SET_DOUBLE_SPEED,
+          AUDIO_ITEM_WITH_CLIPPED_START,
+          AUDIO_ITEM_WITH_CLIPPED_START_GREATER_THAN_HALF_DURATION,
+          AUDIO_ITEM_WITH_CLIPPED_END,
+          AUDIO_ITEM_WITH_CLIPPED_START_AND_END,
+          AUDIO_ITEM_WITH_CLIPPED_START_AND_DOUBLE_SPEED_EFFECT,
+          AUDIO_ITEM_WITH_CLIPPED_START_AND_SET_DOUBLE_SPEED,
+          AUDIO_ITEM_WITH_CLIPPED_END_AND_DOUBLE_SPEED_EFFECT,
+          AUDIO_ITEM_WITH_CLIPPED_END_AND_SET_DOUBLE_SPEED,
+          AUDIO_ITEM_WITH_CLIPPED_START_AND_END_WITH_HALF_SPEED_EFFECT,
+          AUDIO_ITEM_WITH_CLIPPED_START_AND_END_WITH_SET_HALF_SPEED);
+    }
+  }
+
+  private static final class Input {
+    // Use a Supplier because Robolectric mocking is not configured at this point and will make
+    // Android API calls crash.
+    private final Supplier<Composition> composition;
+    private final int expectedDurationMs;
+    private final String name;
+
+    private Input(Supplier<Composition> composition, int expectedDurationMs, String name) {
+      this.composition = composition;
+      this.expectedDurationMs = expectedDurationMs;
+      this.name = name;
+    }
+
+    @Override
+    public String toString() {
+      return name;
     }
   }
 }

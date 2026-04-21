@@ -17,6 +17,9 @@
 package androidx.media3.ui.compose.state
 
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.MutableState
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.media3.common.Player
 import androidx.media3.common.SimpleBasePlayer.MediaItemData
@@ -25,10 +28,13 @@ import androidx.media3.test.utils.robolectric.TestPlayerRunHelper.advance
 import androidx.media3.ui.compose.testutils.createReadyPlayerWithTwoItems
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.google.common.truth.Truth.assertThat
-import org.junit.Assert.assertThrows
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
+import org.mockito.AdditionalAnswers.delegatesTo
+import org.mockito.Mockito.mock
+import org.mockito.Mockito.never
+import org.mockito.Mockito.verify
 
 /** Unit test for [PlayPauseButtonState]. */
 @RunWith(AndroidJUnit4::class)
@@ -67,39 +73,129 @@ class PlayPauseButtonStateTest {
   }
 
   @Test
-  fun onClick_whenCommandNotAvailable_throwsIllegalStateException() {
+  fun noMediaToPlay_buttonStateIsDisabled() {
+    val player = FakePlayer()
+    val state = PlayPauseButtonState(player)
+
+    assertThat(state.isEnabled).isFalse()
+  }
+
+  @Test
+  fun noPlayPauseCommand_buttonStateIsDisabled() {
     val player = createReadyPlayerWithTwoItems()
     player.removeCommands(Player.COMMAND_PLAY_PAUSE)
     val state = PlayPauseButtonState(player)
 
     assertThat(state.isEnabled).isFalse()
-    assertThrows(IllegalStateException::class.java) { state.onClick() }
   }
 
   @Test
-  fun onClick_stateBecomesDisabled_throwsException() {
+  fun stateEnded_noSeekToDefaultCommand_buttonStateIsEnabled() {
+    val player =
+      FakePlayer(
+        playbackState = Player.STATE_ENDED,
+        playWhenReady = true,
+        playlist = listOf(MediaItemData.Builder("item").build()),
+      )
+    // We can't seek, but we can still call player.play()
+    player.removeCommands(Player.COMMAND_SEEK_TO_DEFAULT_POSITION)
+
+    val state = PlayPauseButtonState(player)
+
+    assertThat(state.isEnabled).isTrue()
+  }
+
+  @Test
+  fun stateEnded_noPlayPauseOrPrepareCommand_buttonStateIsEnabled() {
+    val player =
+      FakePlayer(
+        playbackState = Player.STATE_ENDED,
+        playWhenReady = true,
+        playlist = listOf(MediaItemData.Builder("item").build()),
+      )
+    player.removeCommands(Player.COMMAND_PLAY_PAUSE)
+    player.removeCommands(Player.COMMAND_PREPARE)
+
+    val state = PlayPauseButtonState(player)
+
+    assertThat(state.isEnabled).isTrue() // clicking will player.seekToDefault
+  }
+
+  @Test
+  fun stateIdle_noPrepareCommand_buttonStateIsEnabled() {
+    val player =
+      FakePlayer(
+        playbackState = Player.STATE_IDLE,
+        playWhenReady = true,
+        playlist = listOf(MediaItemData.Builder("item").build()),
+      )
+    // We can't prepare, but we can still call player.play()
+    player.removeCommands(Player.COMMAND_PREPARE)
+
+    val state = PlayPauseButtonState(player)
+
+    assertThat(state.isEnabled).isTrue()
+  }
+
+  @Test
+  fun stateIdle_noPlayPauseOrSeekToDefaultCommand_buttonStateIsEnabled() {
+    val player =
+      FakePlayer(
+        playbackState = Player.STATE_IDLE,
+        playWhenReady = true,
+        playlist = listOf(MediaItemData.Builder("item").build()),
+      )
+    player.removeCommands(Player.COMMAND_PLAY_PAUSE)
+    player.removeCommands(Player.COMMAND_SEEK_TO_DEFAULT_POSITION)
+
+    val state = PlayPauseButtonState(player)
+
+    assertThat(state.isEnabled).isTrue()
+  }
+
+  @Test
+  fun onClick_whenCommandNotAvailable_isNoOp() {
     val player = createReadyPlayerWithTwoItems()
+    player.removeCommands(Player.COMMAND_PLAY_PAUSE)
+    val spyPlayer = mock(Player::class.java, delegatesTo<Player>(player))
+    val state = PlayPauseButtonState(spyPlayer)
+    check(!state.isEnabled)
+
+    state.onClick()
+
+    verify(spyPlayer, never()).play()
+    verify(spyPlayer, never()).pause()
+  }
+
+  @Test
+  fun onClick_stateBecomesDisabled_isNoOp() {
+    val player = createReadyPlayerWithTwoItems()
+    val spyPlayer = mock(Player::class.java, delegatesTo<Player>(player))
     lateinit var state: PlayPauseButtonState
-    composeTestRule.setContent { state = rememberPlayPauseButtonState(player) }
+    composeTestRule.setContent { state = rememberPlayPauseButtonState(spyPlayer) }
 
     player.removeCommands(Player.COMMAND_PLAY_PAUSE)
     composeTestRule.waitForIdle()
+    state.onClick()
 
-    assertThrows(IllegalStateException::class.java) { state.onClick() }
+    verify(spyPlayer, never()).play()
+    verify(spyPlayer, never()).pause()
   }
 
   @Test
   fun onClick_justAfterCommandRemovedWhileStillEnabled_isNoOp() {
     val player = createReadyPlayerWithTwoItems()
+    val spyPlayer = mock(Player::class.java, delegatesTo<Player>(player))
     lateinit var state: PlayPauseButtonState
-    composeTestRule.setContent { state = rememberPlayPauseButtonState(player) }
+    composeTestRule.setContent { state = rememberPlayPauseButtonState(spyPlayer) }
 
     // Simulate command becoming disabled without yet receiving the event callback
     player.removeCommands(Player.COMMAND_PLAY_PAUSE)
     check(state.isEnabled)
     state.onClick()
 
-    assertThat(player.playWhenReady).isTrue()
+    verify(spyPlayer, never()).play()
+    verify(spyPlayer, never()).pause()
   }
 
   @Test
@@ -185,5 +281,44 @@ class PlayPauseButtonStateTest {
     // UI catches up with the fact that player.play() happened because observe() started by getting
     // the most recent values
     assertThat(state.showPlay).isFalse()
+  }
+
+  @Test
+  fun nullPlayer_buttonStateIsDisabled() {
+    lateinit var state: PlayPauseButtonState
+    composeTestRule.setContent { state = rememberPlayPauseButtonState(player = null) }
+
+    assertThat(state.isEnabled).isFalse()
+  }
+
+  @Test
+  fun nullPlayer_onClick_isNoOp() {
+    val state = PlayPauseButtonState(player = null)
+
+    assertThat(state.isEnabled).isFalse()
+    state.onClick()
+  }
+
+  @Test
+  fun playerBecomesNullRoundTrip_buttonStateBecomesDisabledAndEnabled() {
+    val player = createReadyPlayerWithTwoItems()
+
+    lateinit var state: PlayPauseButtonState
+    lateinit var isPlayerNull: MutableState<Boolean>
+    composeTestRule.setContent {
+      isPlayerNull = remember { mutableStateOf(false) }
+      state = rememberPlayPauseButtonState(player = if (isPlayerNull.value) null else player)
+    }
+    assertThat(state.isEnabled).isTrue()
+
+    isPlayerNull.value = true
+    composeTestRule.waitForIdle()
+
+    assertThat(state.isEnabled).isFalse()
+
+    isPlayerNull.value = false
+    composeTestRule.waitForIdle()
+
+    assertThat(state.isEnabled).isTrue()
   }
 }

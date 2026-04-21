@@ -34,7 +34,6 @@ import androidx.media3.common.Format;
 import androidx.media3.common.MimeTypes;
 import androidx.media3.common.util.CodecSpecificDataUtil;
 import androidx.media3.common.util.Log;
-import androidx.media3.common.util.ParsableByteArray;
 import androidx.media3.common.util.Util;
 import androidx.media3.container.MdtaMetadataEntry;
 import androidx.media3.container.Mp4LocationData;
@@ -223,7 +222,7 @@ import org.checkerframework.checker.nullness.qual.PolyNull;
           handlerType = "meta";
           handlerName = "MetaHandle";
           mhdBox = nmhd();
-          sampleEntryBox = textMetaDataSampleEntry(format);
+          sampleEntryBox = getMetadataSampleEntry(format);
           stsdBox = stsd(sampleEntryBox);
           stblBox = stbl(stsdBox, stts, stsz, stsc, chunkOffsetBox);
           break;
@@ -458,16 +457,44 @@ import org.checkerframework.checker.nullness.qual.PolyNull;
     return BoxUtils.wrapIntoBox("nmhd", contents);
   }
 
+  /** Returns the metadata sample entry box. */
+  public static ByteBuffer getMetadataSampleEntry(Format format) {
+    return MimeTypes.APPLICATION_ITUT_T35.equals(format.sampleMimeType)
+        ? t35MetadataSampleEntry(format)
+        : textMetadataSampleEntry(format);
+  }
+
+  private static ByteBuffer t35MetadataSampleEntry(Format format) {
+    checkArgument(format.initializationData.size() == 1);
+    ByteBuffer contents = ByteBuffer.allocate(MAX_FIXED_LEAF_BOX_SIZE);
+
+    // SampleEntry fields
+    contents.putInt(0); // reserved
+    contents.putShort((short) 0); // reserved
+    contents.putShort((short) 1); // data_reference_index
+
+    // it35 specific fields
+    contents.put((byte) 0x0); // description
+    contents.put(format.initializationData.get(0)); // itu_t_t35_data_prefix
+    contents.flip();
+    return BoxUtils.wrapIntoBox("it35", contents);
+  }
+
   /**
    * Returns a text metadata sample entry box as per ISO/IEC 14496-12: 8.5.2.2.
    *
    * <p>This contains the sample entry (to be placed within the sample description box) for the text
    * metadata tracks.
    */
-  public static ByteBuffer textMetaDataSampleEntry(Format format) {
+  private static ByteBuffer textMetadataSampleEntry(Format format) {
     ByteBuffer contents = ByteBuffer.allocate(MAX_FIXED_LEAF_BOX_SIZE);
     String mimeType = checkNotNull(format.sampleMimeType);
     byte[] mimeBytes = Util.getUtf8Bytes(mimeType);
+
+    contents.putInt(0); // reserved
+    contents.putShort((short) 0); // reserved
+    contents.putShort((short) 1); // data_reference_index
+
     contents.put(mimeBytes); // content_encoding
     contents.put((byte) 0x0);
     contents.put(mimeBytes); // mime_format
@@ -904,8 +931,11 @@ import org.checkerframework.checker.nullness.qual.PolyNull;
     long currentSampleTimeUs = presentationTimestampsUs.get(0);
     for (int nextSampleId = 1; nextSampleId < presentationTimestampsUs.size(); nextSampleId++) {
       long nextSampleTimeUs = presentationTimestampsUs.get(nextSampleId);
+      // Convert timestamps in microseconds to VU first and then calculate the duration in VU to
+      // avoid error accumulation.
       long currentSampleDurationVu =
-          vuFromUs(nextSampleTimeUs - currentSampleTimeUs, videoUnitTimescale);
+          vuFromUs(nextSampleTimeUs, videoUnitTimescale)
+              - vuFromUs(currentSampleTimeUs, videoUnitTimescale);
       checkState(
           currentSampleDurationVu <= Integer.MAX_VALUE, "Only 32-bit sample duration is allowed");
       durationsVu.add((int) currentSampleDurationVu);
@@ -1891,15 +1921,25 @@ import org.checkerframework.checker.nullness.qual.PolyNull;
     checkArgument(
         !format.initializationData.isEmpty(), "csd-0 not found in the format for dOps box.");
 
-    int opusHeaderLength = 8;
-    byte[] csd0 = format.initializationData.get(0);
-    checkArgument(
-        csd0.length >= opusHeaderLength,
-        "As csd0 contains 'OpusHead' in first 8 bytes, csd0 length should be greater than 8");
+    int opusHeadSignatureLength = 8;
+    byte[] csd0 = CodecSpecificDataUtil.getOpusInitializationData(format);
+    // As csd0 contains 'OpusHead' in first 8 bytes, csd0 length should be greater than 8.
+    checkArgument(csd0.length >= opusHeadSignatureLength);
     ByteBuffer contents = ByteBuffer.allocate(csd0.length);
     // Skip 8 bytes containing "OpusHead".
     contents.put(
-        /* src */ csd0, /* offset */ opusHeaderLength, /* length */ csd0.length - opusHeaderLength);
+        /* src */ csd0,
+        /* offset */ opusHeadSignatureLength,
+        /* length */ csd0.length - opusHeadSignatureLength);
+
+    // For encapsulation of OPUS in MP4, the version byte (byte 0) in dOps box should be 0.
+    // (See https://opus-codec.org/docs/opus_in_isobmff.html, Section 4.3.2 Opus Specific Box).
+    // And for Ogg containers, the version byte is
+    // expected to be 1 (See https://www.rfc-editor.org/rfc/rfc7845#section-5.1, Section 5.1.2).
+    // The contents are otherwise identical.
+    checkState(contents.get(0) == 0 || contents.get(0) == 1);
+    contents.put(0, (byte) 0);
+
     contents.flip();
 
     return BoxUtils.wrapIntoBox("dOps", contents);

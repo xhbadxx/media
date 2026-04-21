@@ -18,8 +18,9 @@ package androidx.media3.demo.composition
 import android.app.Application
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.os.Build.VERSION.SDK_INT
 import android.os.SystemClock
-import android.view.Surface
+import android.view.SurfaceView
 import androidx.annotation.OptIn
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -31,8 +32,8 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import androidx.media3.common.AudioAttributes
+import androidx.media3.common.C
 import androidx.media3.common.Effect
-import androidx.media3.common.GlObjectsProvider
 import androidx.media3.common.MediaItem
 import androidx.media3.common.OverlaySettings
 import androidx.media3.common.PlaybackException
@@ -54,10 +55,10 @@ import androidx.media3.demo.composition.data.OverlayAsset
 import androidx.media3.demo.composition.data.OverlayState
 import androidx.media3.demo.composition.data.PlacedOverlay
 import androidx.media3.demo.composition.data.PlacementState
-import androidx.media3.demo.composition.effect.DemoRenderingPacketConsumer
 import androidx.media3.demo.composition.effect.LottieEffectFactory
 import androidx.media3.effect.BitmapOverlay
 import androidx.media3.effect.DebugTraceUtil
+import androidx.media3.effect.DefaultHardwareBufferEffectsPipeline
 import androidx.media3.effect.LanczosResample
 import androidx.media3.effect.MultipleInputVideoGraph
 import androidx.media3.effect.OverlayEffect
@@ -103,22 +104,9 @@ class CompositionPreviewViewModel(application: Application) : AndroidViewModel(a
   var compositionPlayer by mutableStateOf(createCompositionPlayer())
   val EXPORT_ERROR_MESSAGE = application.resources.getString(R.string.export_error)
   val EXPORT_STARTED_MESSAGE = application.resources.getString(R.string.export_started)
-  internal var frameConsumerEnabled: Boolean = false
-  internal var outputSurface: Surface? = null
-  internal val packetConsumerFactory: DemoRenderingPacketConsumer.Factory by lazy {
-    DemoRenderingPacketConsumer.Factory(
-      glExecutorService,
-      errorListener = { e ->
-        Log.e(TAG, "FrameConsumer error", e)
-        _uiState.update { it.copy(snackbarMessage = "Preview error: $e") }
-      },
-    )
-  }
+  internal var surfaceView: SurfaceView? = null
   private val glExecutorService: ExecutorService by lazy {
     Util.newSingleThreadExecutor("CompositionDemo::GlThread")
-  }
-  private val glObjectsProvider: GlObjectsProvider by lazy {
-    DemoRenderingPacketConsumer.SingleContextGlObjectsProvider()
   }
   private var transformer: Transformer? = null
   private var outputFile: File? = null
@@ -218,13 +206,6 @@ class CompositionPreviewViewModel(application: Application) : AndroidViewModel(a
   fun enableDebugTracing(enable: Boolean) {
     _uiState.update { it.copy(isDebugTracingEnabled = enable) }
     DebugTraceUtil.enableTracing = enable
-  }
-
-  fun onFrameConsumerEnabledChanged(isEnabled: Boolean) {
-    _uiState.update {
-      it.copy(outputSettingsState = it.outputSettingsState.copy(frameConsumerEnabled = isEnabled))
-    }
-    previewComposition()
   }
 
   fun onIncludeBackgroundAudioChanged(isEnabled: Boolean) {
@@ -437,16 +418,11 @@ class CompositionPreviewViewModel(application: Application) : AndroidViewModel(a
     compositionPlayer.prepare()
   }
 
-  fun addItem(index: Int, showSnackbarMessage: Boolean = true) {
+  fun addItem(index: Int) {
     _uiState.update { currentState ->
       val itemToAdd = currentState.mediaState.availableItems[index].copy()
       val newSelectedItems = currentState.mediaState.selectedItems + itemToAdd
-      currentState.copy(
-        mediaState = currentState.mediaState.copy(selectedItems = newSelectedItems),
-        snackbarMessage =
-          if (showSnackbarMessage) "Added item: ${itemToAdd.title}"
-          else currentState.snackbarMessage,
-      )
+      currentState.copy(mediaState = currentState.mediaState.copy(selectedItems = newSelectedItems))
     }
   }
 
@@ -501,7 +477,6 @@ class CompositionPreviewViewModel(application: Application) : AndroidViewModel(a
     val filePath = outputFile!!.absolutePath
 
     val transformerBuilder = Transformer.Builder(/* context= */ getApplication())
-
     if (SAME_AS_INPUT_OPTION != settings.audioMimeType) {
       transformerBuilder.setAudioMimeType(settings.audioMimeType)
     }
@@ -618,7 +593,7 @@ class CompositionPreviewViewModel(application: Application) : AndroidViewModel(a
           .setEffects(
             Effects(/* audioProcessors= */ emptyList(), /* videoEffects= */ finalVideoEffects)
           )
-          // For image inputs. Automatically ignored if input is audio/video.
+          // Required for image inputs. For video inputs, it sets the target FPS.
           .setFrameRate(DEFAULT_FRAME_RATE_FPS)
           // Setting duration explicitly is only required for preview with CompositionPlayer, and
           // is not needed for export with Transformer.
@@ -632,7 +607,10 @@ class CompositionPreviewViewModel(application: Application) : AndroidViewModel(a
         else -> 1 // Sequence
       }
     // TODO(b/417365294): Improve how sequences are built
-    val videoSequenceBuilders = MutableList(numSequences) { EditedMediaItemSequence.Builder() }
+    val videoSequenceBuilders =
+      MutableList(numSequences) {
+        EditedMediaItemSequence.Builder(setOf(C.TRACK_TYPE_AUDIO, C.TRACK_TYPE_VIDEO))
+      }
     val videoSequences = mutableListOf<EditedMediaItemSequence>()
     for (sequenceIndex in 0 until numSequences) {
       var hasItem = false
@@ -769,13 +747,7 @@ class CompositionPreviewViewModel(application: Application) : AndroidViewModel(a
 
   private fun createCompositionPlayer(): CompositionPlayer {
     val playerBuilder = CompositionPlayer.Builder(getApplication())
-    frameConsumerEnabled = uiState.value.outputSettingsState.frameConsumerEnabled
-    if (uiState.value.outputSettingsState.frameConsumerEnabled) {
-      packetConsumerFactory.setOutputSurface(outputSurface)
-      playerBuilder.setPacketConsumerFactory(packetConsumerFactory)
-      playerBuilder.setGlThreadExecutorService(glExecutorService)
-      playerBuilder.setGlObjectsProvider(glObjectsProvider)
-    } else if (uiState.value.compositionLayout != COMPOSITION_LAYOUT[0]) {
+    if (uiState.value.compositionLayout != COMPOSITION_LAYOUT[0]) {
       playerBuilder.setVideoGraphFactory(MultipleInputVideoGraph.Factory())
     }
     playerBuilder.setAudioAttributes(AudioAttributes.DEFAULT, /* handleAudioFocus= */ true)
@@ -853,7 +825,10 @@ class CompositionPreviewViewModel(application: Application) : AndroidViewModel(a
     fun getAudioBackgroundSequence(): EditedMediaItemSequence {
       val audioMediaItem: MediaItem = MediaItem.Builder().setUri(AUDIO_URI).build()
       val audioItem = EditedMediaItem.Builder(audioMediaItem).setDurationUs(59_000_000).build()
-      return EditedMediaItemSequence.Builder(audioItem).setIsLooping(true).build()
+      return EditedMediaItemSequence.Builder(setOf(C.TRACK_TYPE_AUDIO))
+        .addItem(audioItem)
+        .setIsLooping(true)
+        .build()
     }
   }
 }

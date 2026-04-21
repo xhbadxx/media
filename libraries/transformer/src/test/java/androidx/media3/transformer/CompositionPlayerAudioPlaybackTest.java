@@ -16,6 +16,13 @@
 package androidx.media3.transformer;
 
 import static androidx.media3.common.C.TRACK_TYPE_AUDIO;
+import static androidx.media3.common.Player.STATE_READY;
+import static androidx.media3.test.utils.AssetInfo.WAV_24LE_PCM_ASSET;
+import static androidx.media3.test.utils.AssetInfo.WAV_32LE_PCM_ASSET;
+import static androidx.media3.test.utils.AssetInfo.WAV_ASSET;
+import static androidx.media3.test.utils.TestUtil.createByteCountingAudioProcessor;
+import static androidx.media3.test.utils.robolectric.TestPlayerRunHelper.advance;
+import static androidx.media3.test.utils.robolectric.TestPlayerRunHelper.play;
 import static androidx.media3.transformer.EditedMediaItemSequence.withAudioFrom;
 import static androidx.media3.transformer.TestUtil.ASSET_URI_PREFIX;
 import static androidx.media3.transformer.TestUtil.FILE_AUDIO_RAW;
@@ -23,26 +30,35 @@ import static androidx.media3.transformer.TestUtil.FILE_AUDIO_RAW_STEREO_48000KH
 import static androidx.media3.transformer.TestUtil.createAudioEffects;
 import static androidx.media3.transformer.TestUtil.createChannelCountChangingAudioProcessor;
 import static androidx.media3.transformer.TestUtil.createSampleRateChangingAudioProcessor;
+import static androidx.media3.transformer.TestUtil.createTestCompositionPlayer;
 import static androidx.media3.transformer.TestUtil.createVolumeScalingAudioProcessor;
 import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.truth.Truth.assertThat;
 
 import android.content.Context;
+import androidx.media3.common.C;
 import androidx.media3.common.MediaItem;
+import androidx.media3.common.MediaItem.ClippingConfiguration;
 import androidx.media3.common.Player;
 import androidx.media3.common.audio.AudioProcessor;
+import androidx.media3.common.audio.SpeedProvider;
 import androidx.media3.exoplayer.audio.AudioSink;
 import androidx.media3.test.utils.CapturingAudioSink;
 import androidx.media3.test.utils.DumpFileAsserts;
 import androidx.media3.test.utils.FakeClock;
+import androidx.media3.test.utils.PassthroughAudioProcessor;
 import androidx.media3.test.utils.robolectric.TestPlayerRunHelper;
+import androidx.media3.transformer.TestUtil.FormatCapturingAudioProcessor;
 import androidx.test.core.app.ApplicationProvider;
 import androidx.test.ext.junit.runners.AndroidJUnit4;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
 import java.io.IOException;
 import java.nio.ByteBuffer;
+import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import org.junit.Before;
 import org.junit.Test;
@@ -57,13 +73,44 @@ import org.junit.runner.RunWith;
 public final class CompositionPlayerAudioPlaybackTest {
 
   private static final String PREVIEW_DUMP_FILE_EXTENSION = "audiosinkdumps/";
+  private static final SpeedProvider SPEED_PROVIDER_2X =
+      new SpeedProvider() {
+        @Override
+        public float getSpeed(long timeUs) {
+          return 2f;
+        }
+
+        @Override
+        public long getNextSpeedChangeTimeUs(long timeUs) {
+          return C.TIME_UNSET;
+        }
+      };
+
+  private static final SpeedProvider SPEED_PROVIDER_MULTIPLE_SPEEDS =
+      new SpeedProvider() {
+        @Override
+        public float getSpeed(long timeUs) {
+          if (timeUs >= 500_000) {
+            return 0.5f;
+          }
+          return 2f;
+        }
+
+        @Override
+        public long getNextSpeedChangeTimeUs(long timeUs) {
+          if (timeUs < 500_000) {
+            return 500_000;
+          }
+          return C.TIME_UNSET;
+        }
+      };
 
   private final Context context = ApplicationProvider.getApplicationContext();
   private CapturingAudioSink capturingAudioSink;
 
   @Before
-  public void setUp() throws Exception {
-    capturingAudioSink = CapturingAudioSink.create();
+  public void setUp() {
+    capturingAudioSink = CapturingAudioSink.createForSampleCapturing();
   }
 
   @Test
@@ -85,7 +132,7 @@ public final class CompositionPlayerAudioPlaybackTest {
     player.setComposition(composition);
     player.prepare();
     player.play();
-    TestPlayerRunHelper.advance(player).untilState(Player.STATE_ENDED);
+    advance(player).untilState(Player.STATE_ENDED);
     player.release();
 
     DumpFileAsserts.assertOutput(
@@ -115,7 +162,7 @@ public final class CompositionPlayerAudioPlaybackTest {
     player.setComposition(composition);
     player.prepare();
     player.play();
-    TestPlayerRunHelper.advance(player).untilState(Player.STATE_ENDED);
+    advance(player).untilState(Player.STATE_ENDED);
     player.release();
 
     DumpFileAsserts.assertOutput(
@@ -141,7 +188,7 @@ public final class CompositionPlayerAudioPlaybackTest {
     player.setComposition(composition);
     player.prepare();
     player.play();
-    TestPlayerRunHelper.advance(player).untilState(Player.STATE_ENDED);
+    advance(player).untilState(Player.STATE_ENDED);
     player.release();
 
     DumpFileAsserts.assertOutput(
@@ -166,7 +213,7 @@ public final class CompositionPlayerAudioPlaybackTest {
     player.setComposition(composition);
     player.prepare();
     player.play();
-    TestPlayerRunHelper.advance(player).untilState(Player.STATE_ENDED);
+    advance(player).untilState(Player.STATE_ENDED);
     player.release();
 
     DumpFileAsserts.assertOutput(
@@ -207,7 +254,7 @@ public final class CompositionPlayerAudioPlaybackTest {
     player.setComposition(composition);
     player.prepare();
     player.play();
-    TestPlayerRunHelper.advance(player).untilState(Player.STATE_ENDED);
+    advance(player).untilState(Player.STATE_ENDED);
     player.release();
 
     DumpFileAsserts.assertOutput(
@@ -576,6 +623,41 @@ public final class CompositionPlayerAudioPlaybackTest {
   }
 
   @Test
+  public void play_itemsWithNon16BitPcm_inputIsConvertedTo16BitPcm() throws Exception {
+    FormatCapturingAudioProcessor firstProcessor = new FormatCapturingAudioProcessor();
+    FormatCapturingAudioProcessor secondProcessor = new FormatCapturingAudioProcessor();
+    EditedMediaItem firstItem =
+        new EditedMediaItem.Builder(MediaItem.fromUri(WAV_32LE_PCM_ASSET.uri))
+            .setDurationUs(WAV_32LE_PCM_ASSET.audioDurationUs)
+            .setEffects(createAudioEffects(firstProcessor))
+            .build();
+    EditedMediaItem secondItem =
+        new EditedMediaItem.Builder(MediaItem.fromUri(WAV_24LE_PCM_ASSET.uri))
+            .setDurationUs(WAV_24LE_PCM_ASSET.audioDurationUs)
+            .setEffects(createAudioEffects(secondProcessor))
+            .build();
+    Composition composition =
+        new Composition.Builder(
+                EditedMediaItemSequence.withAudioFrom(ImmutableList.of(firstItem, secondItem)))
+            .build();
+    CompositionPlayer player = createTestCompositionPlayer();
+
+    player.setComposition(composition);
+    player.prepare();
+    play(player).untilState(Player.STATE_ENDED);
+
+    // Channel mixing happens after user-provided processors, so we can still see the original
+    // sample rate and channel count of each input file.
+    assertThat(firstProcessor.inputFormat.get().encoding).isEqualTo(C.ENCODING_PCM_16BIT);
+    assertThat(firstProcessor.inputFormat.get().sampleRate).isEqualTo(48000);
+    assertThat(firstProcessor.inputFormat.get().channelCount).isEqualTo(2);
+
+    assertThat(secondProcessor.inputFormat.get().encoding).isEqualTo(C.ENCODING_PCM_16BIT);
+    assertThat(secondProcessor.inputFormat.get().sampleRate).isEqualTo(44100);
+    assertThat(secondProcessor.inputFormat.get().channelCount).isEqualTo(1);
+  }
+
+  @Test
   public void seekTo_singleSequence_outputsCorrectSamples() throws Exception {
     CompositionPlayer player = createCompositionPlayer(context, capturingAudioSink);
     EditedMediaItem editedMediaItem =
@@ -589,7 +671,7 @@ public final class CompositionPlayerAudioPlaybackTest {
     player.seekTo(/* positionMs= */ 500);
     player.prepare();
     player.play();
-    TestPlayerRunHelper.advance(player).untilState(Player.STATE_ENDED);
+    advance(player).untilState(Player.STATE_ENDED);
     player.release();
 
     DumpFileAsserts.assertOutput(
@@ -618,7 +700,7 @@ public final class CompositionPlayerAudioPlaybackTest {
     player.seekTo(/* positionMs= */ 1200);
     player.prepare();
     player.play();
-    TestPlayerRunHelper.advance(player).untilState(Player.STATE_ENDED);
+    advance(player).untilState(Player.STATE_ENDED);
     player.release();
 
     DumpFileAsserts.assertOutput(
@@ -650,7 +732,7 @@ public final class CompositionPlayerAudioPlaybackTest {
     player.seekTo(/* positionMs= */ 500);
     player.prepare();
     player.play();
-    TestPlayerRunHelper.advance(player).untilState(Player.STATE_ENDED);
+    advance(player).untilState(Player.STATE_ENDED);
     player.release();
 
     DumpFileAsserts.assertOutput(
@@ -692,7 +774,7 @@ public final class CompositionPlayerAudioPlaybackTest {
     player.seekTo(/* positionMs= */ 800);
     player.prepare();
     player.play();
-    TestPlayerRunHelper.advance(player).untilState(Player.STATE_ENDED);
+    advance(player).untilState(Player.STATE_ENDED);
     player.release();
 
     DumpFileAsserts.assertOutput(
@@ -717,11 +799,11 @@ public final class CompositionPlayerAudioPlaybackTest {
     player.prepare();
     // First Play
     player.play();
-    TestPlayerRunHelper.advance(player).untilState(Player.STATE_ENDED);
+    advance(player).untilState(Player.STATE_ENDED);
     // Second Play
     player.seekToDefaultPosition();
     player.play();
-    TestPlayerRunHelper.advance(player).untilState(Player.STATE_ENDED);
+    advance(player).untilState(Player.STATE_ENDED);
     player.release();
 
     DumpFileAsserts.assertOutput(
@@ -758,11 +840,310 @@ public final class CompositionPlayerAudioPlaybackTest {
     player.setComposition(composition);
     player.prepare();
     player.play();
-    TestPlayerRunHelper.advance(player).untilState(Player.STATE_ENDED);
+    advance(player).untilState(Player.STATE_ENDED);
     player.release();
 
     // Expect 1 second of single-channel, 44_100Hz, 2 bytes per sample.
     assertThat(bytesMixed.get()).isEqualTo(88_200);
+  }
+
+  @Test
+  public void playback_withRawAudioStream_signalsPositionOffsetOfZero() throws Exception {
+    PositionOffsetRecorder processor = new PositionOffsetRecorder();
+    EditedMediaItem item =
+        new EditedMediaItem.Builder(MediaItem.fromUri(WAV_ASSET.uri))
+            .setDurationUs(1_000_000)
+            .setEffects(new Effects(ImmutableList.of(processor), ImmutableList.of()))
+            .build();
+    Composition composition =
+        new Composition.Builder(EditedMediaItemSequence.withAudioFrom(ImmutableList.of(item, item)))
+            .build();
+
+    CompositionPlayer player = createTestCompositionPlayer();
+    player.setComposition(composition);
+    player.prepare();
+    play(player).untilState(Player.STATE_ENDED);
+
+    // The audio pipeline calls an additional flush with a position offset of 0 before it knows the
+    // actual position offset.
+    assertThat(processor.positionOffsetsUs).containsExactly(0L, 0L, 0L);
+  }
+
+  @Test
+  public void playback_withClippedRawAudioStream_signalsPositionOffsetOfZero() throws Exception {
+    PositionOffsetRecorder processor = new PositionOffsetRecorder();
+    EditedMediaItem item =
+        new EditedMediaItem.Builder(
+                MediaItem.fromUri(WAV_ASSET.uri)
+                    .buildUpon()
+                    .setClippingConfiguration(
+                        new ClippingConfiguration.Builder().setStartPositionMs(500).build())
+                    .build())
+            .setDurationUs(1_000_000)
+            .setEffects(new Effects(ImmutableList.of(processor), ImmutableList.of()))
+            .build();
+    Composition composition =
+        new Composition.Builder(EditedMediaItemSequence.withAudioFrom(ImmutableList.of(item, item)))
+            .build();
+
+    CompositionPlayer player = createTestCompositionPlayer();
+    player.setComposition(composition);
+    player.prepare();
+    play(player).untilState(Player.STATE_ENDED);
+
+    // The audio pipeline calls an additional flush with a position offset of 0 before it knows the
+    // actual position offset.
+    assertThat(processor.positionOffsetsUs).containsExactly(0L, 0L, 0L);
+  }
+
+  @Test
+  public void playback_withSpeedAdjustedRawAudioStream_signalsPositionOffsetOfZero()
+      throws Exception {
+    PositionOffsetRecorder processor = new PositionOffsetRecorder();
+    EditedMediaItem item =
+        new EditedMediaItem.Builder(MediaItem.fromUri(WAV_ASSET.uri))
+            .setDurationUs(1_000_000)
+            .setEffects(new Effects(ImmutableList.of(processor), ImmutableList.of()))
+            .setSpeed(SPEED_PROVIDER_2X)
+            .build();
+    Composition composition =
+        new Composition.Builder(EditedMediaItemSequence.withAudioFrom(ImmutableList.of(item, item)))
+            .build();
+
+    CompositionPlayer player = createTestCompositionPlayer();
+    player.setComposition(composition);
+    player.prepare();
+    play(player).untilState(Player.STATE_ENDED);
+
+    // The audio pipeline calls an additional flush with a position offset of 0 before it knows the
+    // actual position offset.
+    assertThat(processor.positionOffsetsUs).containsExactly(0L, 0L, 0L);
+  }
+
+  @Test
+  public void playback_withSpeedAdjustedAndClippedRawAudioStream_signalsPositionOffsetOfZero()
+      throws Exception {
+    PositionOffsetRecorder processor = new PositionOffsetRecorder();
+    EditedMediaItem item =
+        new EditedMediaItem.Builder(
+                MediaItem.fromUri(WAV_ASSET.uri)
+                    .buildUpon()
+                    .setClippingConfiguration(
+                        new ClippingConfiguration.Builder().setStartPositionMs(500).build())
+                    .build())
+            .setDurationUs(1_000_000)
+            .setEffects(new Effects(ImmutableList.of(processor), ImmutableList.of()))
+            .setSpeed(SPEED_PROVIDER_2X)
+            .build();
+    Composition composition =
+        new Composition.Builder(EditedMediaItemSequence.withAudioFrom(ImmutableList.of(item, item)))
+            .build();
+
+    CompositionPlayer player = createTestCompositionPlayer();
+    player.setComposition(composition);
+    player.prepare();
+    play(player).untilState(Player.STATE_ENDED);
+
+    // The audio pipeline calls an additional flush with a position offset of 0 before it knows the
+    // actual position offset.
+    assertThat(processor.positionOffsetsUs).containsExactly(0L, 0L, 0L);
+  }
+
+  @Test
+  public void seek_withRawAudioStream_signalsNextFrameAsPositionOffset() throws Exception {
+    PositionOffsetRecorder processor = new PositionOffsetRecorder();
+    EditedMediaItem item =
+        new EditedMediaItem.Builder(MediaItem.fromUri(WAV_ASSET.uri))
+            .setDurationUs(1_000_000)
+            .setEffects(new Effects(ImmutableList.of(processor), ImmutableList.of()))
+            .build();
+    Composition composition =
+        new Composition.Builder(EditedMediaItemSequence.withAudioFrom(ImmutableList.of(item, item)))
+            .build();
+
+    CompositionPlayer player = createTestCompositionPlayer();
+    player.setComposition(composition);
+    player.prepare();
+    advance(player).untilState(STATE_READY);
+    player.seekTo(250);
+    play(player).untilState(Player.STATE_ENDED);
+
+    // The audio processor receives 3 additional flushes before the position offset is known: one
+    // when creating the AudioGraphInput, then when configuring the new EditedMediaItem, and finally
+    // when starting the seek from PlaybackAudioGraphWrapper.
+    // The wav extractor pretends that the file has frames of 100ms for seeking. The next audio
+    // frame after seek of 250ms is 300ms (b/458654879).
+    assertThat(processor.positionOffsetsUs).containsExactly(0L, 0L, 0L, 300_000L, 0L).inOrder();
+  }
+
+  @Test
+  public void seek_withClippedRawAudioStream_signalsSeekPositionAsPositionOffset()
+      throws Exception {
+    PositionOffsetRecorder processor = new PositionOffsetRecorder();
+    EditedMediaItem item =
+        new EditedMediaItem.Builder(
+                MediaItem.fromUri(WAV_ASSET.uri)
+                    .buildUpon()
+                    .setClippingConfiguration(
+                        new ClippingConfiguration.Builder().setStartPositionMs(500).build())
+                    .build())
+            .setDurationUs(1_000_000)
+            .setEffects(new Effects(ImmutableList.of(processor), ImmutableList.of()))
+            .build();
+    Composition composition =
+        new Composition.Builder(EditedMediaItemSequence.withAudioFrom(ImmutableList.of(item)))
+            .build();
+
+    CompositionPlayer player = createTestCompositionPlayer();
+    player.setComposition(composition);
+    player.prepare();
+    advance(player).untilState(STATE_READY);
+    player.seekTo(250);
+    play(player).untilState(Player.STATE_ENDED);
+
+    // The audio processor receives 3 additional flushes before the position offset is known: one
+    // when creating the AudioGraphInput, then when configuring the new EditedMediaItem, and finally
+    // when starting the seek from PlaybackAudioGraphWrapper.
+    // The wav extractor pretends that the file has frames of 100ms for seeking. The next audio
+    // frame after seek of 250ms is 300ms (b/458654879).
+    assertThat(processor.positionOffsetsUs).containsExactly(0L, 0L, 0L, 300000L).inOrder();
+  }
+
+  @Test
+  public void seek_withSpeedAdjustedRawAudioStream_signalsSeekPositionAsPositionOffset()
+      throws Exception {
+    PositionOffsetRecorder processor = new PositionOffsetRecorder();
+    EditedMediaItem item =
+        new EditedMediaItem.Builder(MediaItem.fromUri(WAV_ASSET.uri))
+            .setDurationUs(1_000_000)
+            .setEffects(new Effects(ImmutableList.of(processor), ImmutableList.of()))
+            .setSpeed(SPEED_PROVIDER_2X)
+            .build();
+    Composition composition =
+        new Composition.Builder(EditedMediaItemSequence.withAudioFrom(ImmutableList.of(item, item)))
+            .build();
+
+    CompositionPlayer player = createTestCompositionPlayer();
+    player.setComposition(composition);
+    player.prepare();
+    player.seekTo(250);
+    play(player).untilState(Player.STATE_ENDED);
+
+    // The audio pipeline calls an additional flush with a position offset of 0 before it knows the
+    // actual position offset.
+    assertThat(processor.positionOffsetsUs).containsExactly(0L, 250_000L, 0L).inOrder();
+  }
+
+  @Test
+  public void seek_withSpeedAdjustedRawAudioStream_appliesCorrectSpeedRegion() throws Exception {
+    PositionOffsetRecorder processor = new PositionOffsetRecorder();
+    AtomicInteger bytesRead = new AtomicInteger();
+    AudioProcessor byteCountingAudioProcessor = createByteCountingAudioProcessor(bytesRead);
+    EditedMediaItem normalSpeedItem =
+        new EditedMediaItem.Builder(MediaItem.fromUri(WAV_ASSET.uri))
+            .setDurationUs(1_000_000)
+            .build();
+    EditedMediaItem item =
+        normalSpeedItem
+            .buildUpon()
+            .setEffects(createAudioEffects(processor, byteCountingAudioProcessor))
+            .setSpeed(SPEED_PROVIDER_MULTIPLE_SPEEDS)
+            .build();
+    Composition composition =
+        new Composition.Builder(
+                EditedMediaItemSequence.withAudioFrom(ImmutableList.of(normalSpeedItem, item)))
+            .build();
+
+    CompositionPlayer player = createCompositionPlayer(context, capturingAudioSink);
+    player.setComposition(composition);
+    player.prepare();
+    player.seekTo(/* positionMs= */ 1250);
+    play(player).untilState(Player.STATE_ENDED);
+
+    // The audio pipeline calls an additional flush with a position offset of 0 before it knows the
+    // actual position offset. Seek position 1250ms maps to speed adjusted position 250ms within the
+    // second item.
+    assertThat(processor.positionOffsetsUs).containsExactly(0L, 250_000L).inOrder();
+    assertThat(bytesRead.get() / 2).isEqualTo(44100);
+    DumpFileAsserts.assertOutput(
+        context,
+        capturingAudioSink,
+        PREVIEW_DUMP_FILE_EXTENSION
+            + "seek_withSpeedAdjustedRawAudioStream_appliesCorrectSpeedRegion.dump");
+  }
+
+  @Test
+  public void seek_withClippedSpeedAdjustedRawAudioStream_appliesCorrectSpeedRegion()
+      throws Exception {
+    PositionOffsetRecorder processor = new PositionOffsetRecorder();
+    AtomicInteger bytesRead = new AtomicInteger();
+    AudioProcessor byteCountingAudioProcessor = createByteCountingAudioProcessor(bytesRead);
+    EditedMediaItem normalSpeedItem =
+        new EditedMediaItem.Builder(MediaItem.fromUri(WAV_ASSET.uri))
+            .setDurationUs(1_000_000)
+            .build();
+    EditedMediaItem item =
+        new EditedMediaItem.Builder(
+                new MediaItem.Builder()
+                    .setUri(WAV_ASSET.uri)
+                    .setClippingConfiguration(
+                        new ClippingConfiguration.Builder().setStartPositionMs(100).build())
+                    .build())
+            .setDurationUs(1_000_000)
+            .setEffects(createAudioEffects(processor, byteCountingAudioProcessor))
+            .setSpeed(SPEED_PROVIDER_MULTIPLE_SPEEDS)
+            .build();
+    Composition composition =
+        new Composition.Builder(
+                EditedMediaItemSequence.withAudioFrom(ImmutableList.of(normalSpeedItem, item)))
+            .build();
+
+    CompositionPlayer player = createCompositionPlayer(context, capturingAudioSink);
+    player.setComposition(composition);
+    player.prepare();
+    player.seekTo(/* positionMs= */ 1100);
+    play(player).untilState(Player.STATE_ENDED);
+
+    // The audio pipeline calls an additional flush with a position offset of 0 before it knows the
+    // actual position offset. Seek position 1100ms maps to speed adjusted and clipped position
+    // 100ms within the second item.
+    assertThat(processor.positionOffsetsUs).containsExactly(0L, 100_000L).inOrder();
+    assertThat(bytesRead.get() / 2).isWithin(1).of(41895);
+    DumpFileAsserts.assertOutput(
+        context,
+        capturingAudioSink,
+        PREVIEW_DUMP_FILE_EXTENSION
+            + "seek_withClippedSpeedAdjustedRawAudioStream_appliesCorrectSpeedRegion.dump");
+  }
+
+  @Test
+  public void seek_withSpeedAdjustedAndClippedRawAudioStream_signalsSeekPositionAsPositionOffset()
+      throws Exception {
+    PositionOffsetRecorder processor = new PositionOffsetRecorder();
+    EditedMediaItem item =
+        new EditedMediaItem.Builder(
+                MediaItem.fromUri(WAV_ASSET.uri)
+                    .buildUpon()
+                    .setClippingConfiguration(
+                        new ClippingConfiguration.Builder().setStartPositionMs(500).build())
+                    .build())
+            .setDurationUs(1_000_000)
+            .setEffects(new Effects(ImmutableList.of(processor), ImmutableList.of()))
+            .setSpeed(SPEED_PROVIDER_2X)
+            .build();
+    Composition composition =
+        new Composition.Builder(EditedMediaItemSequence.withAudioFrom(ImmutableList.of(item, item)))
+            .build();
+
+    CompositionPlayer player = createTestCompositionPlayer();
+    player.setComposition(composition);
+    player.prepare();
+    player.seekTo(100);
+    play(player).untilState(Player.STATE_ENDED);
+
+    // The audio pipeline calls an additional flush with a position offset of 0 before it knows the
+    // actual position offset.
+    assertThat(processor.positionOffsetsUs).containsExactly(0L, 100_000L, 0L).inOrder();
   }
 
   private static class ForwardingAudioMixer implements AudioMixer {
@@ -837,5 +1218,14 @@ public final class CompositionPlayerAudioPlaybackTest {
         .setClock(new FakeClock(/* isAutoAdvancing= */ true))
         .setAudioSink(audioSink)
         .build();
+  }
+
+  private static class PositionOffsetRecorder extends PassthroughAudioProcessor {
+    private final List<Long> positionOffsetsUs = new CopyOnWriteArrayList<>();
+
+    @Override
+    protected void onFlush(StreamMetadata streamMetadata) {
+      positionOffsetsUs.add(streamMetadata.positionOffsetUs);
+    }
   }
 }
