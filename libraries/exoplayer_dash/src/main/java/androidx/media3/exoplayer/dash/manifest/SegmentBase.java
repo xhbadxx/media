@@ -16,6 +16,7 @@
 package androidx.media3.exoplayer.dash.manifest;
 
 import static androidx.media3.exoplayer.dash.DashSegmentIndex.INDEX_UNBOUNDED;
+import static androidx.media3.exoplayer.util.Utils.IS_LOW_LATENCY;
 import static java.lang.Math.max;
 import static java.lang.Math.min;
 
@@ -231,7 +232,7 @@ public abstract class SegmentBase {
      * via chunked transfer encoding.
      */
     public final boolean isLowLatency() {
-      return availabilityTimeOffsetUs != C.TIME_UNSET;
+      return (availabilityTimeOffsetUs != C.TIME_UNSET && availabilityTimeOffsetUs > 0) && IS_LOW_LATENCY;
     }
 
     /** See {@link DashSegmentIndex#getSegmentNum(long, long)}. */

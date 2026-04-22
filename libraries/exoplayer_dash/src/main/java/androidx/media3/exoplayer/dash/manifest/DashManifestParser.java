@@ -18,6 +18,7 @@ package androidx.media3.exoplayer.dash.manifest;
 import static androidx.media3.exoplayer.dash.manifest.BaseUrl.DEFAULT_DVB_PRIORITY;
 import static androidx.media3.exoplayer.dash.manifest.BaseUrl.DEFAULT_WEIGHT;
 import static androidx.media3.exoplayer.dash.manifest.BaseUrl.PRIORITY_UNSET;
+import static androidx.media3.exoplayer.util.Utils.IS_LOW_LATENCY;
 import static com.google.common.base.Preconditions.checkState;
 
 import android.net.Uri;
@@ -406,6 +407,10 @@ public class DashManifestParser extends DefaultHandler
     // sides so LL logic never runs on non-LL paths.
     long peerMaxCount = 0L;
     boolean anyLowLatency = false;
+    // LL-Core: Capture first-seen availabilityTimeOffset for diagnostic log. Helps
+    // dev distinguish "aTO=0 (flag only, not actual LL)" vs "aTO=unset (no attribute)"
+    // vs "aTO=1680ms (true LL)" when isLowLatency() returns false.
+    long periodAto = C.TIME_UNSET;
     // LL-Core: Collect AdaptationSet stats into a LinkedHashMap keyed by "type=size"
     // so entries with the same type AND same size are merged. Output:
     //   tracks=[A=8(×2), V=8(×5)]                   when all in sync
@@ -420,6 +425,9 @@ public class DashManifestParser extends DefaultHandler
         if (r instanceof Representation.MultiSegmentRepresentation) {
           SegmentBase.MultiSegmentBase multi =
               ((Representation.MultiSegmentRepresentation) r).segmentBase;
+          if (periodAto == C.TIME_UNSET) {
+            periodAto = multi.availabilityTimeOffsetUs;
+          }
           if (multi instanceof SegmentTemplate) {
             SegmentTemplate st = (SegmentTemplate) multi;
             if (st.segmentTimeline != null && st.isLowLatency()) {
@@ -462,6 +470,10 @@ public class DashManifestParser extends DefaultHandler
           "PeerMax",
           "Period parsed: anyLL="
               + anyLowLatency
+              + " aTO="
+              + (periodAto == C.TIME_UNSET ? "unset" : (periodAto / 1000) + "ms")
+              + " flag="
+              + IS_LOW_LATENCY
               + " max="
               + peerMaxCount
               + " tracks=["
