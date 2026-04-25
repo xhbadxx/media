@@ -13,19 +13,19 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package androidx.media3.exoplayer.qoe.observer;
+package androidx.media3.exoplayer.qos.observer;
 
 import androidx.media3.common.util.UnstableApi;
-import androidx.media3.exoplayer.qoe.model.QoeInfo;
+import androidx.media3.exoplayer.qos.model.QoSInfo;
 import java.util.List;
 
 /**
- * Observer for {@link androidx.media3.exoplayer.qoe.QoeMonitor} state changes.
- * Called after each new {@link QoeInfo} is recorded. Runs on the thread that
+ * Observer for {@link androidx.media3.exoplayer.qos.QoSMonitor} state changes.
+ * Called after each new {@link QoSInfo} is recorded. Runs on the thread that
  * invoked {@code recordInfo} — dispatch to UI thread if needed.
  */
 @UnstableApi
-public interface QoeObserver {
+public interface QoSObserver {
   /** Called after a new entry is recorded. Snapshot contains all current entries. */
-  void onEntriesChanged(List<QoeInfo> entries);
+  void onEntriesChanged(List<QoSInfo> entries);
 }

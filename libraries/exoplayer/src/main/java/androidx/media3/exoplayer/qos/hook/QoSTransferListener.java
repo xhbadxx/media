@@ -13,7 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package androidx.media3.exoplayer.qoe.hook;
+package androidx.media3.exoplayer.qos.hook;
 
 import android.net.Uri;
 import android.os.SystemClock;
@@ -28,7 +28,7 @@ import java.util.concurrent.ConcurrentMap;
 /**
  * Captures TTFB (time-to-first-byte) per network load. Keyed by composite
  * {@code uri@position:length} string for uniqueness across range requests on the
- * same URI. Designed to be queried from {@link QoeAnalyticsHook} at
+ * same URI. Designed to be queried from {@link QoSAnalyticsHook} at
  * {@code onLoadCompleted} time via {@link #takeTtfb(Uri, long, long)}.
  *
  * <p>Thread-safe: {@code onTransferInitializing}/{@code onTransferStart} fire on
@@ -39,11 +39,11 @@ import java.util.concurrent.ConcurrentMap;
  *
  * <p>Usage (consumer side):
  * <pre>{@code
- *   QoeTransferListener qoeTransfer = new QoeTransferListener();
+ *   QoSTransferListener qosTransfer = new QoSTransferListener();
  *
  *   DataSource.Factory http = new DefaultHttpDataSource.Factory();
  *   DataSource.Factory ds = new DefaultDataSource.Factory(context, http)
- *       .setTransferListener(qoeTransfer);
+ *       .setTransferListener(qosTransfer);
  *
  *   ExoPlayer player = new ExoPlayer.Builder(context)
  *       .setMediaSourceFactory(new DefaultMediaSourceFactory(ds))
@@ -51,11 +51,11 @@ import java.util.concurrent.ConcurrentMap;
  *       .build();
  *
  *   player.addAnalyticsListener(
- *       new QoeAnalyticsHook(player, bandwidthMeter, qoeTransfer));
+ *       new QoSAnalyticsHook(player, bandwidthMeter, qosTransfer));
  * }</pre>
  */
 @UnstableApi
-public final class QoeTransferListener implements TransferListener {
+public final class QoSTransferListener implements TransferListener {
 
   /** Cap to avoid unbounded growth if onTransferStart never fires for some loads. */
   private static final int MAX_PENDING = 128;
@@ -63,7 +63,7 @@ public final class QoeTransferListener implements TransferListener {
   /** Active loads: composite key → onTransferInitializing timestamp (elapsedRealtimeMs). */
   private final ConcurrentMap<String, Long> initStartMs = new ConcurrentHashMap<>();
 
-  /** Completed TTFBs ready to be consumed by {@link QoeAnalyticsHook}. */
+  /** Completed TTFBs ready to be consumed by {@link QoSAnalyticsHook}. */
   private final ConcurrentMap<String, Integer> readyTtfbMs = new ConcurrentHashMap<>();
 
   @Override

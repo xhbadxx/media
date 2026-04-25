@@ -13,7 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package androidx.media3.exoplayer.qoe.hook;
+package androidx.media3.exoplayer.qos.hook;
 
 import androidx.annotation.Nullable;
 import androidx.media3.common.C;
@@ -21,8 +21,8 @@ import androidx.media3.common.Format;
 import androidx.media3.common.Player;
 import androidx.media3.common.util.UnstableApi;
 import androidx.media3.exoplayer.analytics.AnalyticsListener;
-import androidx.media3.exoplayer.qoe.QoeMonitor;
-import androidx.media3.exoplayer.qoe.model.QoeInfo;
+import androidx.media3.exoplayer.qos.QoSMonitor;
+import androidx.media3.exoplayer.qos.model.QoSInfo;
 import androidx.media3.exoplayer.source.LoadEventInfo;
 import androidx.media3.exoplayer.source.MediaLoadData;
 import androidx.media3.exoplayer.upstream.BandwidthMeter;
@@ -33,7 +33,7 @@ import java.util.Locale;
 import java.util.Map;
 
 /**
- * Listens to Media3 load events and records a {@link QoeInfo} per completed load.
+ * Listens to Media3 load events and records a {@link QoSInfo} per completed load.
  *
  * <p>Captures {@code bl} (buffer length) and {@code mtp} (measured throughput) at
  * LOAD START time — when the loader scheduled the request — so the values reflect
@@ -51,15 +51,15 @@ import java.util.Map;
  *   ExoPlayer player = new ExoPlayer.Builder(context)
  *       .setBandwidthMeter(bandwidthMeter)
  *       .build();
- *   player.addAnalyticsListener(new QoeAnalyticsHook(player, bandwidthMeter));
+ *   player.addAnalyticsListener(new QoSAnalyticsHook(player, bandwidthMeter));
  * }</pre>
  */
 @UnstableApi
-public final class QoeAnalyticsHook implements AnalyticsListener {
+public final class QoSAnalyticsHook implements AnalyticsListener {
 
   @Nullable private final Player player;
   @Nullable private final BandwidthMeter bandwidthMeter;
-  @Nullable private final QoeTransferListener transferListener;
+  @Nullable private final QoSTransferListener transferListener;
 
   /**
    * Cached latest bandwidth estimate (bps) from {@link #onBandwidthEstimate}.
@@ -74,22 +74,22 @@ public final class QoeAnalyticsHook implements AnalyticsListener {
    */
   private final Map<Long, LoadStartSnapshot> startSnapshots = new HashMap<>();
 
-  public QoeAnalyticsHook() {
+  public QoSAnalyticsHook() {
     this(null, null, null);
   }
 
-  public QoeAnalyticsHook(@Nullable Player player) {
+  public QoSAnalyticsHook(@Nullable Player player) {
     this(player, null, null);
   }
 
-  public QoeAnalyticsHook(@Nullable Player player, @Nullable BandwidthMeter bandwidthMeter) {
+  public QoSAnalyticsHook(@Nullable Player player, @Nullable BandwidthMeter bandwidthMeter) {
     this(player, bandwidthMeter, null);
   }
 
-  public QoeAnalyticsHook(
+  public QoSAnalyticsHook(
       @Nullable Player player,
       @Nullable BandwidthMeter bandwidthMeter,
-      @Nullable QoeTransferListener transferListener) {
+      @Nullable QoSTransferListener transferListener) {
     this.player = player;
     this.bandwidthMeter = bandwidthMeter;
     this.transferListener = transferListener;
@@ -121,8 +121,8 @@ public final class QoeAnalyticsHook implements AnalyticsListener {
   @Override
   public void onLoadCompleted(
       EventTime eventTime, LoadEventInfo loadEventInfo, MediaLoadData mediaLoadData) {
-    QoeMonitor monitor = QoeMonitor.getInstance();
-    QoeInfo.Builder b = buildBaseInfo(loadEventInfo, mediaLoadData)
+    QoSMonitor monitor = QoSMonitor.getInstance();
+    QoSInfo.Builder b = buildBaseInfo(loadEventInfo, mediaLoadData)
         .setBufferStarvationFlag(monitor.consumePendingBufferStarvation(mediaLoadData.trackType));
     monitor.recordInfo(b.build());
   }
@@ -146,24 +146,24 @@ public final class QoeAnalyticsHook implements AnalyticsListener {
       discardTtfb(loadEventInfo);
       return;
     }
-    QoeInfo info = buildBaseInfo(loadEventInfo, mediaLoadData)
-        .setStatus(QoeInfo.LoadStatus.ERROR)
+    QoSInfo info = buildBaseInfo(loadEventInfo, mediaLoadData)
+        .setStatus(QoSInfo.LoadStatus.ERROR)
         .setErrorMessage(error.getMessage())
         .build();
-    QoeMonitor.getInstance().recordInfo(info);
+    QoSMonitor.getInstance().recordInfo(info);
   }
 
 
   /**
-   * Builds a {@link QoeInfo.Builder} with all fields common to completed/errored loads:
+   * Builds a {@link QoSInfo.Builder} with all fields common to completed/errored loads:
    * timestamp, url, bytes/duration, trackType, snapshot lookup (and removes from map),
    * format, chunk duration. Does NOT set {@code bufferStarvationFlag} (caller decides
    * whether to consume the pending bs flag) and does NOT set status (defaults to
-   * {@link QoeInfo.LoadStatus#COMPLETED}).
+   * {@link QoSInfo.LoadStatus#COMPLETED}).
    */
-  private QoeInfo.Builder buildBaseInfo(
+  private QoSInfo.Builder buildBaseInfo(
       LoadEventInfo loadEventInfo, MediaLoadData mediaLoadData) {
-    QoeInfo.Builder b = new QoeInfo.Builder()
+    QoSInfo.Builder b = new QoSInfo.Builder()
         .setTimestampMs(System.currentTimeMillis())
         .setUrl(loadEventInfo.uri.toString())
         .setBytesLoaded(loadEventInfo.bytesLoaded)
@@ -259,7 +259,7 @@ public final class QoeAnalyticsHook implements AnalyticsListener {
 
   /**
    * Discards any pending TTFB entry for this load (the load is being dropped, not
-   * recorded). Prevents memory leak in {@link QoeTransferListener#takeTtfb}'s storage.
+   * recorded). Prevents memory leak in {@link QoSTransferListener#takeTtfb}'s storage.
    */
   private void discardTtfb(LoadEventInfo loadEventInfo) {
     if (transferListener != null) {

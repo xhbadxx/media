@@ -13,14 +13,14 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package androidx.media3.exoplayer.qoe.hook;
+package androidx.media3.exoplayer.qos.hook;
 
 import androidx.media3.common.Player;
 import androidx.media3.common.util.UnstableApi;
-import androidx.media3.exoplayer.qoe.QoeMonitor;
+import androidx.media3.exoplayer.qos.QoSMonitor;
 
 /**
- * Listens to {@link Player} state changes and signals {@link QoeMonitor} on every
+ * Listens to {@link Player} state changes and signals {@link QoSMonitor} on every
  * rebuffer event. Rebuffer is detected as a {@link Player#STATE_READY} →
  * {@link Player#STATE_BUFFERING} transition.
  *
@@ -32,18 +32,18 @@ import androidx.media3.exoplayer.qoe.QoeMonitor;
  *
  * <p>Usage (consumer side):
  * <pre>{@code
- *   exoPlayer.addListener(new QoePlayerHook());
+ *   exoPlayer.addListener(new QoSPlayerHook());
  * }</pre>
  */
 @UnstableApi
-public final class QoePlayerHook implements Player.Listener {
+public final class QoSPlayerHook implements Player.Listener {
 
   private int previousState = Player.STATE_IDLE;
 
   @Override
   public void onPlaybackStateChanged(int playbackState) {
     if (playbackState == Player.STATE_BUFFERING && previousState == Player.STATE_READY) {
-      QoeMonitor.getInstance().markPendingBufferStarvation();
+      QoSMonitor.getInstance().markPendingBufferStarvation();
     }
     previousState = playbackState;
   }

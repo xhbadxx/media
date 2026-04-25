@@ -13,9 +13,10 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package androidx.media3.exoplayer.qoe.model;
+package androidx.media3.exoplayer.qos.model;
 
 import androidx.annotation.Nullable;
+import androidx.media3.common.C;
 import androidx.media3.common.util.UnstableApi;
 
 /**
@@ -32,7 +33,7 @@ import androidx.media3.common.util.UnstableApi;
  * request) for diagnostic accuracy.
  */
 @UnstableApi
-public final class QoeInfo {
+public final class QoSInfo {
 
   /** Outcome of the load — {@link #COMPLETED} for success, {@link #ERROR} for failures. */
   public enum LoadStatus {
@@ -60,7 +61,43 @@ public final class QoeInfo {
   @Nullable public final String cacheStatus;
   @Nullable public final String cdnProvider;
 
-  private QoeInfo(Builder b) {
+  /**
+   * Compact one-line representation suitable for logcat — skips fields holding
+   * sentinel/unknown values to keep output readable. Shared across all
+   * {@code xxxQoSMonitor} wrappers so log format stays consistent.
+   *
+   * <p>Format: {@code <V|A|T|?> <bitrate>kbps bs=true ttfb=N mtp=N bl=N dur=Nms
+   * bytes=N retry=N <cache> <cdn> ERROR=msg url=...}
+   */
+  public String toLogString() {
+    StringBuilder sb = new StringBuilder(160);
+    sb.append(trackTypeLabel(trackType));
+    if (bitrateKbps > 0) sb.append(' ').append(bitrateKbps).append("kbps");
+    if (bufferStarvationFlag) sb.append(" bs=true");
+    if (ttfbMs >= 0) sb.append(" ttfb=").append(ttfbMs);
+    if (measuredThroughputKbps > 0) sb.append(" mtp=").append(measuredThroughputKbps);
+    if (bufferedDurationMs >= 0) sb.append(" bl=").append(bufferedDurationMs);
+    if (loadDurationMs > 0) sb.append(" dur=").append(loadDurationMs).append("ms");
+    if (bytesLoaded > 0) sb.append(" bytes=").append(bytesLoaded);
+    if (retryCount > 0) sb.append(" retry=").append(retryCount);
+    if (cacheStatus != null) sb.append(' ').append(cacheStatus);
+    if (cdnProvider != null) sb.append(' ').append(cdnProvider);
+    if (status == LoadStatus.ERROR) {
+      sb.append(" ERROR");
+      if (errorMessage != null) sb.append('=').append(errorMessage);
+    }
+    sb.append(" url=").append(url);
+    return sb.toString();
+  }
+
+  private static String trackTypeLabel(int trackType) {
+    if (trackType == C.TRACK_TYPE_VIDEO) return "V";
+    if (trackType == C.TRACK_TYPE_AUDIO) return "A";
+    if (trackType == C.TRACK_TYPE_TEXT) return "T";
+    return "?";
+  }
+
+  private QoSInfo(Builder b) {
     this.timestampMs = b.timestampMs;
     this.url = b.url;
     this.bytesLoaded = b.bytesLoaded;
@@ -124,6 +161,6 @@ public final class QoeInfo {
     public Builder setCacheStatus(@Nullable String v) { cacheStatus = v; return this; }
     public Builder setCdnProvider(@Nullable String v) { cdnProvider = v; return this; }
 
-    public QoeInfo build() { return new QoeInfo(this); }
+    public QoSInfo build() { return new QoSInfo(this); }
   }
 }

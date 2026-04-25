@@ -13,12 +13,12 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package androidx.media3.exoplayer.qoe;
+package androidx.media3.exoplayer.qos;
 
 import androidx.media3.common.C;
 import androidx.media3.common.util.UnstableApi;
-import androidx.media3.exoplayer.qoe.model.QoeInfo;
-import androidx.media3.exoplayer.qoe.observer.QoeObserver;
+import androidx.media3.exoplayer.qos.model.QoSInfo;
+import androidx.media3.exoplayer.qos.observer.QoSObserver;
 import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -33,25 +33,25 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * {@code 1 🎯 Projects/FPlay/CMCD/Decision - QoE Ring Buffer Size.md}.
  */
 @UnstableApi
-public final class QoeMonitor {
+public final class QoSMonitor {
 
   private static final int MAX_ENTRIES = 200;
 
-  private static volatile QoeMonitor instance;
+  private static volatile QoSMonitor instance;
 
-  public static QoeMonitor getInstance() {
-    QoeMonitor r = instance;
+  public static QoSMonitor getInstance() {
+    QoSMonitor r = instance;
     if (r == null) {
-      synchronized (QoeMonitor.class) {
+      synchronized (QoSMonitor.class) {
         r = instance;
-        if (r == null) instance = r = new QoeMonitor();
+        if (r == null) instance = r = new QoSMonitor();
       }
     }
     return r;
   }
 
-  private final List<QoeInfo> entries = new CopyOnWriteArrayList<>();
-  private final List<QoeObserver> observers = new CopyOnWriteArrayList<>();
+  private final List<QoSInfo> entries = new CopyOnWriteArrayList<>();
+  private final List<QoSObserver> observers = new CopyOnWriteArrayList<>();
 
   /**
    * Pending CMCD {@code bs} flags — separate per track type so that audio and video
@@ -64,15 +64,15 @@ public final class QoeMonitor {
 
   private final AtomicBoolean pendingBsVideo = new AtomicBoolean(false);
 
-  private QoeMonitor() {}
+  private QoSMonitor() {}
 
-  public void recordInfo(QoeInfo info) {
+  public void recordInfo(QoSInfo info) {
     entries.add(info);
     while (entries.size() > MAX_ENTRIES) {
       entries.remove(0);
     }
-    List<QoeInfo> snapshot = Collections.unmodifiableList(entries);
-    for (QoeObserver o : observers) {
+    List<QoSInfo> snapshot = Collections.unmodifiableList(entries);
+    for (QoSObserver o : observers) {
       o.onEntriesChanged(snapshot);
     }
   }
@@ -80,21 +80,21 @@ public final class QoeMonitor {
   /** Resets the entry buffer. Observers are notified with an empty snapshot. */
   public void clear() {
     entries.clear();
-    List<QoeInfo> snapshot = Collections.unmodifiableList(entries);
-    for (QoeObserver o : observers) {
+    List<QoSInfo> snapshot = Collections.unmodifiableList(entries);
+    for (QoSObserver o : observers) {
       o.onEntriesChanged(snapshot);
     }
   }
 
-  public List<QoeInfo> getEntries() {
+  public List<QoSInfo> getEntries() {
     return Collections.unmodifiableList(entries);
   }
 
-  public void addObserver(QoeObserver observer) {
+  public void addObserver(QoSObserver observer) {
     observers.add(observer);
   }
 
-  public void removeObserver(QoeObserver observer) {
+  public void removeObserver(QoSObserver observer) {
     observers.remove(observer);
   }
 
@@ -118,5 +118,15 @@ public final class QoeMonitor {
     if (trackType == C.TRACK_TYPE_AUDIO) return pendingBsAudio.getAndSet(false);
     if (trackType == C.TRACK_TYPE_VIDEO) return pendingBsVideo.getAndSet(false);
     return false;
+  }
+
+  /**
+   * Full singleton wipe — clears entries, removes all observers, resets pending bs flags.
+   */
+  public void reset() {
+    entries.clear();
+    observers.clear();
+    pendingBsAudio.set(false);
+    pendingBsVideo.set(false);
   }
 }
