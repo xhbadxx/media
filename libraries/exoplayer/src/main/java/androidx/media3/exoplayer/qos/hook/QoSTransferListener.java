@@ -105,6 +105,16 @@ public final class QoSTransferListener implements TransferListener {
     return readyTtfbMs.remove(makeKey(uri, position, length));
   }
 
+  /**
+   * Clears all pending and ready TTFB entries. Used by {@link
+   * androidx.media3.exoplayer.qos.FPlayQoSMonitor#detach()} so re-attach starts fresh,
+   * preventing stale TTFB from a previous player session leaking into the new one.
+   */
+  public void clear() {
+    initStartMs.clear();
+    readyTtfbMs.clear();
+  }
+
   private static String makeKey(DataSpec dataSpec) {
     return makeKey(dataSpec.uri, dataSpec.position, dataSpec.length);
   }

@@ -15,6 +15,7 @@
  */
 package androidx.media3.exoplayer.qos.hook;
 
+import android.net.Uri;
 import androidx.annotation.Nullable;
 import androidx.media3.common.C;
 import androidx.media3.common.Format;
@@ -189,6 +190,7 @@ public final class QoSAnalyticsHook implements AnalyticsListener {
     if (cacheStatus != null) b.setCacheStatus(cacheStatus);
 
     String cdnProvider = parseCdnProvider(loadEventInfo.responseHeaders);
+    if (cdnProvider == null) cdnProvider = parseCdnFromHost(loadEventInfo.uri);
     if (cdnProvider != null) b.setCdnProvider(cdnProvider);
 
     if (transferListener != null) {
@@ -205,6 +207,21 @@ public final class QoSAnalyticsHook implements AnalyticsListener {
     }
 
     return b;
+  }
+
+  /**
+   * Fallback CDN identification by URL hostname. Used when {@link #parseCdnProvider}
+   * returns {@code null} (CDN not exposing recognised headers). Add hosts as needed.
+   */
+  @Nullable
+  private static String parseCdnFromHost(@Nullable Uri uri) {
+    if (uri == null) return null;
+    String host = uri.getHost();
+    if (host == null) return null;
+    String lower = host.toLowerCase(Locale.US);
+    if (lower.endsWith("fptplay.net") || lower.contains("fbox-livecdn")) return "fpt";
+    if (lower.endsWith("byteoversea.com") || lower.endsWith("byteplus.com")) return "byteplus";
+    return null;
   }
 
   /**

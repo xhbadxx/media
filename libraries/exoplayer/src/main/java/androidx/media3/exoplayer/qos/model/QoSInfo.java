@@ -63,38 +63,216 @@ public final class QoSInfo {
 
   /**
    * Compact one-line representation suitable for logcat — skips fields holding
-   * sentinel/unknown values to keep output readable. Shared across all
-   * {@code xxxQoSMonitor} wrappers so log format stays consistent.
+   * sentinel/unknown values, auto-scales numeric units, and truncates URL to last
+   * path segment for readability. Shared across all {@code xxxQoSMonitor} wrappers.
    *
-   * <p>Format: {@code <V|A|T|?> <bitrate>kbps bs=true ttfb=N mtp=N bl=N dur=Nms
-   * bytes=N retry=N <cache> <cdn> ERROR=msg url=...}
+   * <p>Track type label: {@code V}=video, {@code A}=audio, {@code T}=text,
+   * {@code M}=muxed/default (HLS .ts), {@code I}=image, {@code X}=metadata,
+   * {@code P}=playlist/manifest (URL-derived for {@code .m3u8}/{@code .mpd} when
+   * trackType is unknown), {@code ?}=unknown.
+   *
+   * <p>Two-section layout: {@code Player [...] [...]  ->  CDN [...] [...] [...]}.
+   * Each section prefixes its inner per-source groups with the subsystem name so
+   * the reader knows where each metric originated.
+   * <pre>{@code
+   *   Player [type, br=, res=, cdur=] [bl=, mtp=, retry=, *bs*]  ->  CDN [cache=, cdn=] [ttfb=, dur=, sz=] [ERROR] [<filename>] [url=]
+   *          ↑ track descriptor       ↑ runtime state at load     ↑ delivery        ↑ network result   ↑ err   ↑ id       ↑ full
+   * }</pre>
+   * Within a group, fields are comma-separated; groups separated by space; sections
+   * by {@code -> }. Empty groups are dropped.
+   *
+   * <p>Each group is built by a dedicated method ({@code trackInfoGroup()},
+   * {@code playerStateGroup()}, etc.) — easy field add/remove without affecting others.
+   * {@code bs=true} renders as {@code *bs*} (asterisks) — most critical field.
+   * {@link #timestampMs} is intentionally skipped (logcat already prefixes its own).
    */
   public String toLogString() {
-    StringBuilder sb = new StringBuilder(160);
-    sb.append(trackTypeLabel(trackType));
-    if (bitrateKbps > 0) sb.append(' ').append(bitrateKbps).append("kbps");
-    if (bufferStarvationFlag) sb.append(" bs=true");
-    if (ttfbMs >= 0) sb.append(" ttfb=").append(ttfbMs);
-    if (measuredThroughputKbps > 0) sb.append(" mtp=").append(measuredThroughputKbps);
-    if (bufferedDurationMs >= 0) sb.append(" bl=").append(bufferedDurationMs);
-    if (loadDurationMs > 0) sb.append(" dur=").append(loadDurationMs).append("ms");
-    if (bytesLoaded > 0) sb.append(" bytes=").append(bytesLoaded);
-    if (retryCount > 0) sb.append(" retry=").append(retryCount);
-    if (cacheStatus != null) sb.append(' ').append(cacheStatus);
-    if (cdnProvider != null) sb.append(' ').append(cdnProvider);
-    if (status == LoadStatus.ERROR) {
-      sb.append(" ERROR");
-      if (errorMessage != null) sb.append('=').append(errorMessage);
-    }
-    sb.append(" url=").append(url);
+    StringBuilder sb = new StringBuilder(220);
+
+    // Player section: groups derived from player internals (Format + runtime state)
+    sb.append("Player");
+    appendGroup(sb, trackInfoGroup());
+    appendGroup(sb, playerStateGroup());
+
+    // CDN section: groups derived from network response
+    sb.append(" -> CDN");
+    appendGroup(sb, deliveryGroup());
+    appendGroup(sb, netResultGroup());
+    appendGroup(sb, errorGroup());
+    appendGroup(sb, shortUrlGroup());
+    appendGroup(sb, fullUrlGroup());
     return sb.toString();
+  }
+
+  /** Player-side track descriptor: type, bitrate, resolution, chunk media duration. */
+  private StringBuilder trackInfoGroup() {
+    StringBuilder g = new StringBuilder();
+    g.append(displayType());
+    if (bitrateKbps > 0) addField(g, "br=" + formatKbps(bitrateKbps));
+    if (videoWidth > 0 && videoHeight > 0) addField(g, "res=" + videoWidth + "x" + videoHeight);
+    if (chunkDurationMs > 0) addField(g, "cdur=" + formatMs(chunkDurationMs));
+    return g;
+  }
+
+  /** Player runtime state at load start: buffer length, bandwidth estimate, retry, bs flag. */
+  private StringBuilder playerStateGroup() {
+    StringBuilder g = new StringBuilder();
+    if (bufferedDurationMs >= 0) addField(g, "bl=" + formatMs(bufferedDurationMs));
+    if (measuredThroughputKbps > 0) addField(g, "mtp=" + formatKbps(measuredThroughputKbps));
+    if (retryCount > 0) addField(g, "retry=" + retryCount);
+    if (bufferStarvationFlag) addField(g, "*bs*");
+    return g;
+  }
+
+  /** CDN-observed network result: TTFB, total load duration, bytes received. */
+  private StringBuilder netResultGroup() {
+    StringBuilder g = new StringBuilder();
+    if (ttfbMs >= 0) addField(g, "ttfb=" + ttfbMs + "ms");
+    if (loadDurationMs > 0) addField(g, "dur=" + loadDurationMs + "ms");
+    if (bytesLoaded > 0) addField(g, "sz=" + formatBytes(bytesLoaded));
+    return g;
+  }
+
+  /** CDN response delivery info: cache status, CDN provider (from response headers/host). */
+  private StringBuilder deliveryGroup() {
+    StringBuilder g = new StringBuilder();
+    if (cacheStatus != null) addField(g, "cache=" + cacheStatus);
+    if (cdnProvider != null) addField(g, "cdn=" + cdnProvider);
+    return g;
+  }
+
+  /** Error info — present only when load failed (status != COMPLETED). */
+  private StringBuilder errorGroup() {
+    StringBuilder g = new StringBuilder();
+    if (status == LoadStatus.ERROR) {
+      addField(g, errorMessage != null ? "ERROR=" + errorMessage : "ERROR");
+    }
+    return g;
+  }
+
+  /** Short filename for quick scan: last path segment or {@code seq=N} token. */
+  private StringBuilder shortUrlGroup() {
+    StringBuilder g = new StringBuilder();
+    addField(g, shortUrl(url));
+    return g;
+  }
+
+  /** Full URL — server endpoint inspection. */
+  private StringBuilder fullUrlGroup() {
+    StringBuilder g = new StringBuilder();
+    if (url != null && !url.isEmpty()) addField(g, "url=" + url);
+    return g;
+  }
+
+  private static void addField(StringBuilder group, String field) {
+    if (group.length() > 0) group.append(", ");
+    group.append(field);
+  }
+
+  private static void appendGroup(StringBuilder out, StringBuilder group) {
+    if (group.length() == 0) return;
+    if (out.length() > 0) out.append(' ');
+    out.append('[').append(group).append(']');
   }
 
   private static String trackTypeLabel(int trackType) {
     if (trackType == C.TRACK_TYPE_VIDEO) return "V";
     if (trackType == C.TRACK_TYPE_AUDIO) return "A";
     if (trackType == C.TRACK_TYPE_TEXT) return "T";
+    if (trackType == C.TRACK_TYPE_DEFAULT) return "M";
+    if (trackType == C.TRACK_TYPE_IMAGE) return "I";
+    if (trackType == C.TRACK_TYPE_METADATA) return "X";
     return "?";
+  }
+
+  /**
+   * URL- and codec-aware override of {@link #trackTypeLabel(int)}:
+   * <ul>
+   *   <li>{@link C#TRACK_TYPE_UNKNOWN} + URL ends {@code .m3u8}/{@code .mpd} →
+   *       {@code P} (playlist/manifest).
+   *   <li>{@link C#TRACK_TYPE_DEFAULT} (HLS muxed segment) refined via codec string:
+   *       {@code AV} if both video+audio codecs present, {@code V} if only video,
+   *       {@code A} if only audio, {@code M} if codec unknown.
+   *   <li>Otherwise track-type-derived label (V/A/T/I/X/?).
+   * </ul>
+   */
+  private String displayType() {
+    if (trackType == C.TRACK_TYPE_UNKNOWN && url != null) {
+      String lower = url.toLowerCase(java.util.Locale.US);
+      int q = lower.indexOf('?');
+      if (q > 0) lower = lower.substring(0, q);
+      if (lower.endsWith(".m3u8") || lower.endsWith(".mpd")) return "P";
+    }
+    if (trackType == C.TRACK_TYPE_DEFAULT && codec != null) {
+      boolean hasVideo = containsVideoCodec(codec);
+      boolean hasAudio = containsAudioCodec(codec);
+      if (hasVideo && hasAudio) return "AV";
+      if (hasVideo) return "V";
+      if (hasAudio) return "A";
+    }
+    return trackTypeLabel(trackType);
+  }
+
+  private static boolean containsVideoCodec(String codec) {
+    String lower = codec.toLowerCase(java.util.Locale.US);
+    return lower.contains("avc1") || lower.contains("hvc1") || lower.contains("hev1")
+        || lower.contains("vp09") || lower.contains("vp9") || lower.contains("av01");
+  }
+
+  private static boolean containsAudioCodec(String codec) {
+    String lower = codec.toLowerCase(java.util.Locale.US);
+    return lower.contains("mp4a") || lower.contains("opus") || lower.contains("aac")
+        || lower.contains("ac-3") || lower.contains("ec-3") || lower.contains("mp3");
+  }
+
+  /** {@code 4577} → {@code "4.6Mbps"}, {@code 850} → {@code "850kbps"}. Input in kbps. */
+  private static String formatKbps(int kbps) {
+    if (kbps < 1000) return kbps + "kbps";
+    return String.format(java.util.Locale.US, "%.1fMbps", kbps / 1000.0);
+  }
+
+  /** {@code 500} → {@code "500ms"}, {@code 16659} → {@code "16.7s"}. Input in ms. */
+  private static String formatMs(long ms) {
+    if (ms < 1000) return ms + "ms";
+    return String.format(java.util.Locale.US, "%.1fs", ms / 1000.0);
+  }
+
+  /** {@code 951} → {@code "951B"}, {@code 1804} → {@code "1.8KB"}, {@code 2066872} → {@code "2.0MB"}. */
+  private static String formatBytes(long bytes) {
+    if (bytes < 1024) return bytes + "B";
+    if (bytes < 1024 * 1024) return String.format(java.util.Locale.US, "%.1fKB", bytes / 1024.0);
+    return String.format(java.util.Locale.US, "%.1fMB", bytes / (1024.0 * 1024.0));
+  }
+
+  /** Maximum filename length before fallback truncate kicks in. */
+  private static final int MAX_FILENAME = 60;
+
+  /**
+   * Truncates URL to its most identifying token for log readability:
+   * <ol>
+   *   <li>Strip query string and host/path prefix → keep last path segment.
+   *   <li>If filename matches HLS-style {@code seq=N.ext}, keep just {@code seq=N.ext}
+   *       (drops the long bitrate/timing prefix shared by every segment of the stream).
+   *   <li>Otherwise, if remaining filename exceeds {@link #MAX_FILENAME} chars,
+   *       truncate from the head with {@code ...} prefix (suffix carries the unique part).
+   * </ol>
+   */
+  private static String shortUrl(@Nullable String url) {
+    if (url == null || url.isEmpty()) return "";
+    int qmark = url.indexOf('?');
+    String noQuery = qmark > 0 ? url.substring(0, qmark) : url;
+    int lastSlash = noQuery.lastIndexOf('/');
+    String filename = lastSlash >= 0 && lastSlash < noQuery.length() - 1
+        ? noQuery.substring(lastSlash + 1)
+        : noQuery;
+
+    int seqIdx = filename.indexOf("seq=");
+    if (seqIdx >= 0) return filename.substring(seqIdx);
+
+    if (filename.length() > MAX_FILENAME) {
+      return "..." + filename.substring(filename.length() - (MAX_FILENAME - 3));
+    }
+    return filename;
   }
 
   private QoSInfo(Builder b) {

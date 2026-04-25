@@ -18,6 +18,7 @@ package androidx.media3.exoplayer.qos;
 import android.util.Log;
 import androidx.annotation.Nullable;
 import androidx.media3.common.util.UnstableApi;
+import androidx.media3.datasource.DataSource;
 import androidx.media3.exoplayer.ExoPlayer;
 import androidx.media3.exoplayer.qos.hook.QoSAnalyticsHook;
 import androidx.media3.exoplayer.qos.hook.QoSPlayerHook;
@@ -27,47 +28,50 @@ import androidx.media3.exoplayer.upstream.BandwidthMeter;
 
 /**
  * FPlay-facing entry point for QoS monitoring. Hooks into an existing player and the
- * pieces the host app already uses ({@link BandwidthMeter}, {@link QoSTransferListener})
- * — does not own or create any of those dependencies.
+ * {@link BandwidthMeter} the host app already uses; owns its internal
+ * {@link QoSTransferListener} (QoS-only — host app has no other reason to create one).
  *
  * <p>Wiring split (because the player must already be built before listeners can register):
  * <ul>
- *   <li>App creates its own {@link BandwidthMeter} and {@link QoSTransferListener},
- *       wires them into {@code ExoPlayer.Builder.setBandwidthMeter(...)} and
- *       {@code DataSource.Factory.setTransferListener(...)} respectively.
- *   <li>After {@code player = builder.build()}, instantiate this class and call
- *       {@link #attach(ExoPlayer, BandwidthMeter, QoSTransferListener)} to register
- *       the QoS listeners.
+ *   <li>App creates this instance early (before building the player).
+ *   <li>App wraps every {@code DataSource.Factory} that the player will use via
+ *       {@link #wrapDataSourceFactory(DataSource.Factory)} BEFORE passing the factory
+ *       into {@code MediaSource.Factory} / {@code ExoPlayer.Builder}. The wrap adds
+ *       the QoS {@link QoSTransferListener} to every {@code DataSource} created from
+ *       it (additive — coexists with any other listener already attached).
+ *   <li>After {@code player = builder.build()}, call
+ *       {@link #attach(ExoPlayer, BandwidthMeter)} to register the analytics +
+ *       state listeners on the built player.
  *   <li>Before {@code player.release()}, call {@link #detach()} to remove the
- *       listeners and reset {@link QoSMonitor} singleton state.
+ *       listeners, reset {@link QoSMonitor} singleton state, and clear pending
+ *       TTFB so a re-attach starts fresh.
  * </ul>
  *
- * <p>Both {@code bandwidthMeter} and {@code transferListener} are optional. Pass the
- * same instances the player is using to enable accurate {@code mtp} (from load 1) and
- * {@code ttfbMs} respectively; pass {@code null} to skip those fields.
+ * <p>{@code bandwidthMeter} is optional. Pass the same instance the player is using
+ * to enable accurate {@code mtp} (from load 1); {@code null} falls back to the cached
+ * estimate from {@code onBandwidthEstimate} (unset until the first load completes).
  *
  * <p>A built-in debug observer logs every recorded entry to logcat under tag
  * {@code FPlayQoS} (filter with {@code adb logcat -s FPlayQoS}).
  *
- * <p>Single-player lifecycle assumed: instantiate → attach → use → detach → release →
- * (optional) re-attach with a new player. Concurrent multi-instance use is not
- * supported because {@link QoSMonitor} is a process-wide singleton — multiple
- * {@code FPlayQoSMonitor} instances would share entries/observers and collide.
+ * <p>Single-player lifecycle assumed: instantiate → wrap factories → attach → use →
+ * detach → release → (optional) re-attach with a new player. Concurrent multi-instance
+ * use is not supported because {@link QoSMonitor} is a process-wide singleton —
+ * multiple {@code FPlayQoSMonitor} instances would share entries/observers and collide.
  *
  * <p>Example:
  * <pre>{@code
+ *   FPlayQoSMonitor qos = new FPlayQoSMonitor();
+ *
+ *   DataSource.Factory ds = qos.wrapDataSourceFactory(appExistingDsFactory);
+ *
  *   BandwidthMeter meter = ...;                            // app's existing instance
- *   QoSTransferListener qosTransfer = new QoSTransferListener();
- *
- *   DataSource.Factory ds = appExistingDsFactory.setTransferListener(qosTransfer);
- *
  *   ExoPlayer player = new ExoPlayer.Builder(context)
  *       .setBandwidthMeter(meter)
  *       .setMediaSourceFactory(new DefaultMediaSourceFactory(ds))
  *       .build();
  *
- *   FPlayQoSMonitor qos = new FPlayQoSMonitor();
- *   qos.attach(player, meter, qosTransfer);
+ *   qos.attach(player, meter);
  *   // ... player.play() / use ...
  *   qos.detach();
  *   player.release();
@@ -77,6 +81,8 @@ import androidx.media3.exoplayer.upstream.BandwidthMeter;
 public final class FPlayQoSMonitor {
 
   private static final String TAG = "FPlayQoS";
+
+  private final QoSTransferListener transferListener = new QoSTransferListener();
 
   @Nullable private ExoPlayer activePlayer;
   @Nullable private QoSAnalyticsHook activeAnalyticsHook;
@@ -91,17 +97,36 @@ public final class FPlayQoSMonitor {
   public FPlayQoSMonitor() {}
 
   /**
+   * Returns a {@link DataSource.Factory} that adds the internal QoS
+   * {@link QoSTransferListener} to every {@link DataSource} created by {@code inner}.
+   *
+   * <p>Implementation-agnostic decorator — works for any {@code DataSource.Factory}
+   * (Default/Cronet/OkHttp/Cache/Quanteec/custom). Uses
+   * {@link DataSource#addTransferListener(androidx.media3.datasource.TransferListener)}
+   * which is additive: the QoS listener coexists with any other listener already
+   * wired to those data sources.
+   *
+   * <p>Call once per factory the player will use, BEFORE building the player.
+   * Caveat: if the underlying {@code DataSource} implementation does not call the
+   * {@code transferInitializing/Started/Ended} dispatch methods (custom impls that
+   * bypass {@code BaseDataSource}), TTFB will not populate for those loads.
+   */
+  public DataSource.Factory wrapDataSourceFactory(DataSource.Factory inner) {
+    return () -> {
+      DataSource ds = inner.createDataSource();
+      ds.addTransferListener(transferListener);
+      return ds;
+    };
+  }
+
+  /**
    * Attaches QoS analytics + state listeners to {@code player} and registers the
    * built-in debug observer. Call when the player is built, before {@code player.play()}
-   * so the very first rebuffer is captured. Pass {@code null} for any dependency the
-   * host app is not using.
+   * so the very first rebuffer is captured.
    *
    * <p>If a previous attach was not detached, this defensively detaches it first.
    */
-  public void attach(
-      ExoPlayer player,
-      @Nullable BandwidthMeter bandwidthMeter,
-      @Nullable QoSTransferListener transferListener) {
+  public void attach(ExoPlayer player, @Nullable BandwidthMeter bandwidthMeter) {
     if (activePlayer != null) detach();
     QoSAnalyticsHook analyticsHook =
         new QoSAnalyticsHook(player, bandwidthMeter, transferListener);
@@ -115,12 +140,14 @@ public final class FPlayQoSMonitor {
   }
 
   /**
-   * Removes hooks from the active player and fully resets {@link QoSMonitor} singleton
-   * state (entries, observers, pending bs flags). Call BEFORE {@code player.release()}.
-   * Idempotent — no-op if not currently attached.
+   * Removes hooks from the active player, fully resets {@link QoSMonitor} singleton
+   * state (entries, observers, pending bs flags), and clears pending TTFB in the
+   * internal {@link QoSTransferListener}. Call BEFORE {@code player.release()}.
+   * Idempotent — safe to call when not attached.
    */
   public void detach() {
     QoSMonitor.getInstance().reset();
+    transferListener.clear();
     ExoPlayer player = activePlayer;
     if (player == null) return;
     if (activeAnalyticsHook != null) player.removeAnalyticsListener(activeAnalyticsHook);
