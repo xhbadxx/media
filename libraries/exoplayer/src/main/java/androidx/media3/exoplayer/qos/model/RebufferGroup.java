@@ -1,0 +1,59 @@
+/*
+ * Copyright 2026 The Android Open Source Project
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+package androidx.media3.exoplayer.qos.model;
+
+import androidx.media3.common.util.UnstableApi;
+import java.util.List;
+
+/**
+ * Frozen snapshot of QoS entries captured at the moment a rebuffer event was first
+ * recorded (an entry with {@code bufferStarvationFlag=true}). Snapshot is immutable —
+ * does not update as new entries flow into {@link
+ * androidx.media3.exoplayer.qos.QoSMonitor}.
+ *
+ * <p>Created by {@link androidx.media3.exoplayer.qos.FPlayQoSMonitor} on every
+ * captured rebuffer (cooldown-debounced to suppress duplicate audio/video bs flags
+ * from the same event).
+ */
+@UnstableApi
+public final class RebufferGroup {
+
+  /** Sequential id within the current attach session, starting at 1. */
+  public final int id;
+
+  /** {@link System#currentTimeMillis()} of the bs-flagged entry that triggered capture. */
+  public final long triggerTimeMs;
+
+  /** The bs-flagged entry that triggered capture (last item in {@link #entries}). */
+  public final QoSInfo trigger;
+
+  /**
+   * Frozen snapshot — last N entries (default 50) ending at and including
+   * {@link #trigger}. Newest is {@code entries.get(entries.size()-1)}.
+   */
+  public final List<QoSInfo> entries;
+
+  public RebufferGroup(int id, long triggerTimeMs, QoSInfo trigger, List<QoSInfo> entries) {
+    this.id = id;
+    this.triggerTimeMs = triggerTimeMs;
+    this.trigger = trigger;
+    this.entries = entries;
+  }
+
+  public int size() {
+    return entries.size();
+  }
+}

@@ -23,8 +23,14 @@ import androidx.media3.exoplayer.ExoPlayer;
 import androidx.media3.exoplayer.qos.hook.QoSAnalyticsHook;
 import androidx.media3.exoplayer.qos.hook.QoSPlayerHook;
 import androidx.media3.exoplayer.qos.hook.QoSTransferListener;
+import androidx.media3.exoplayer.qos.model.QoSInfo;
+import androidx.media3.exoplayer.qos.model.RebufferGroup;
 import androidx.media3.exoplayer.qos.observer.QoSObserver;
 import androidx.media3.exoplayer.upstream.BandwidthMeter;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
 
 /**
  * FPlay-facing entry point for QoS monitoring. Hooks into an existing player and the
@@ -82,7 +88,28 @@ public final class FPlayQoSMonitor {
 
   private static final String TAG = "FPlayQoS";
 
+  /** Latest N entries shown in the live "Current" group (HUD). */
+  static final int CURRENT_WINDOW = 10;
+
+  /** Number of entries snapshotted into a {@link RebufferGroup} at trigger time. */
+  static final int PRE_TRIGGER_WINDOW = 50;
+
+  /** Maximum number of {@link RebufferGroup}s retained; oldest evicted FIFO. */
+  static final int MAX_REBUFFER_GROUPS = 5;
+
+  /**
+   * Cooldown to suppress duplicate captures from the same rebuffer event. A single
+   * READY→BUFFERING transition flags BOTH audio and video tracks (see {@link
+   * QoSMonitor#markPendingBufferStarvation()}), so two bs=true entries arrive within
+   * milliseconds — only the first should create a group.
+   */
+  static final long REBUFFER_COOLDOWN_MS = 2_000L;
+
   private final QoSTransferListener transferListener = new QoSTransferListener();
+
+  private final List<RebufferGroup> rebufferGroups = new CopyOnWriteArrayList<>();
+  private long lastCaptureMs = 0L;
+  private int nextGroupId = 0;
 
   @Nullable private ExoPlayer activePlayer;
   @Nullable private QoSAnalyticsHook activeAnalyticsHook;
@@ -93,6 +120,39 @@ public final class FPlayQoSMonitor {
         if (entries.isEmpty()) return;
         Log.d(TAG, entries.get(entries.size() - 1).toLogString());
       };
+
+  /**
+   * Captures a {@link RebufferGroup} on every entry with {@code bs=true}, debounced
+   * by {@link #REBUFFER_COOLDOWN_MS} so audio+video duplicates from the same rebuffer
+   * event produce a single group. Runs on the same thread that called
+   * {@link QoSMonitor#recordInfo(QoSInfo)} (player application thread) — no locking.
+   */
+  private final QoSObserver groupCaptureObserver =
+      entries -> {
+        if (entries.isEmpty()) return;
+        QoSInfo last = entries.get(entries.size() - 1);
+        if (!last.bufferStarvationFlag) return;
+        if (last.timestampMs - lastCaptureMs < REBUFFER_COOLDOWN_MS) return;
+        lastCaptureMs = last.timestampMs;
+        captureRebufferSnapshot(last, entries);
+      };
+
+  private void captureRebufferSnapshot(QoSInfo trigger, List<QoSInfo> all) {
+    int from = Math.max(0, all.size() - PRE_TRIGGER_WINDOW);
+    // Deep copy of reference list — RebufferGroup is frozen, must not share with
+    // the live ring buffer (which evicts oldest as new entries flow in).
+    List<QoSInfo> snapshot = new ArrayList<>(all.subList(from, all.size()));
+    RebufferGroup group =
+        new RebufferGroup(
+            ++nextGroupId,
+            trigger.timestampMs,
+            trigger,
+            Collections.unmodifiableList(snapshot));
+    rebufferGroups.add(group);
+    while (rebufferGroups.size() > MAX_REBUFFER_GROUPS) {
+      rebufferGroups.remove(0);
+    }
+  }
 
   public FPlayQoSMonitor() {}
 
@@ -134,6 +194,7 @@ public final class FPlayQoSMonitor {
     player.addAnalyticsListener(analyticsHook);
     player.addListener(playerHook);
     QoSMonitor.getInstance().addObserver(debugObserver);
+    QoSMonitor.getInstance().addObserver(groupCaptureObserver);
     activePlayer = player;
     activeAnalyticsHook = analyticsHook;
     activePlayerHook = playerHook;
@@ -148,6 +209,9 @@ public final class FPlayQoSMonitor {
   public void detach() {
     QoSMonitor.getInstance().reset();
     transferListener.clear();
+    rebufferGroups.clear();
+    lastCaptureMs = 0L;
+    nextGroupId = 0;
     ExoPlayer player = activePlayer;
     if (player == null) return;
     if (activeAnalyticsHook != null) player.removeAnalyticsListener(activeAnalyticsHook);
@@ -155,5 +219,26 @@ public final class FPlayQoSMonitor {
     activePlayer = null;
     activeAnalyticsHook = null;
     activePlayerHook = null;
+  }
+
+  /**
+   * Returns the {@value #CURRENT_WINDOW}-tail of the live entry buffer for the
+   * "Current" HUD group. Live view — reflects the latest entries on every call.
+   * Empty list when no entries recorded yet. The returned list is an unmodifiable
+   * sub-list view of {@link QoSMonitor#getEntries()}; safe to iterate read-only.
+   */
+  public List<QoSInfo> getCurrentGroupEntries() {
+    List<QoSInfo> all = QoSMonitor.getInstance().getEntries();
+    int from = Math.max(0, all.size() - CURRENT_WINDOW);
+    return all.subList(from, all.size());
+  }
+
+  /**
+   * Returns all currently-retained {@link RebufferGroup}s, oldest first, newest last.
+   * Up to {@value #MAX_REBUFFER_GROUPS}; older groups have been evicted FIFO.
+   * Empty list before the first rebuffer is captured. Returned list is unmodifiable.
+   */
+  public List<RebufferGroup> getRebufferGroups() {
+    return Collections.unmodifiableList(rebufferGroups);
   }
 }
