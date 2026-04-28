@@ -69,6 +69,25 @@ public final class Diagnosis {
       this.severity = severity;
       this.issues = Collections.unmodifiableList(issues);
     }
+
+    /**
+     * Multi-line text for this finding ready to render in a single {@code TextView}.
+     * Format:
+     * <pre>
+     *   {iconForSeverity} {entry.toUiText() — Player line}
+     *      • {issue 1}
+     *      • {issue 2}
+     * </pre>
+     * No issues → only the header line. CDN line dropped to keep finding rows compact.
+     */
+    public String toUiText() {
+      StringBuilder sb = new StringBuilder(120);
+      sb.append(severityIcon(severity)).append(' ').append(entry.toPlayerLogString());
+      for (String issue : issues) {
+        sb.append("\n   • ").append(issue);
+      }
+      return sb.toString();
+    }
   }
 
   public final Pattern pattern;
@@ -126,5 +145,59 @@ public final class Diagnosis {
       if (f.severity != Severity.OK) out.add(f);
     }
     return Collections.unmodifiableList(out);
+  }
+
+  /**
+   * Single multi-line string that renders the entire diagnosis card — header,
+   * conclusion paragraph, every problem finding (with severity icon + issues),
+   * and (if applicable) the trigger entry. Designed to drop straight into a single
+   * {@code TextView} (set typeface to monospace for column alignment) or to copy
+   * directly into a support ticket.
+   *
+   * <p>Healthy ({@link Severity#OK}) entries are intentionally omitted — see
+   * {@link #findings} for the full audit list.
+   *
+   * <p>Example output:
+   * <pre>
+   * ═══ USER_NETWORK +ABR_LAG ═══
+   *
+   * CDN healthy throughout. Problem started at 14:32:31.723: throughput
+   * 2400kbps &lt; br 4800kbps × 0.7 (3360kbps). User network insufficient for
+   * selected bitrate. ABR_LAG: br 4800kbps / mtp 2200kbps = 2.18 (Media3
+   * safety bound 0.8).
+   *
+   * 🔴 [V, br=4.8Mbps, res=1920x1080, cdur=1.9s] [bl=1.3s, mtp=2.2Mbps]
+   *    • throughput 2400kbps &lt; br 4800kbps × 0.7 (3360kbps)
+   *    • dur 3492ms &gt; cdur 1900ms × 1.5 (transfer too slow)
+   *
+   * 🔴 [V, br=4.8Mbps, ...] [bl=...]
+   *    • throughput 2110kbps &lt; br 4800kbps × 0.7 (3360kbps)
+   *
+   * 🟣 [V, br=4.8Mbps, ...] [bl=1.3s, mtp=2.2Mbps, *bs*]
+   * </pre>
+   */
+  public String toFullReport() {
+    StringBuilder sb = new StringBuilder(512);
+    sb.append("═══ ").append(summary()).append(" ═══\n\n");
+    sb.append(conclusion);
+    List<Finding> problems = problemFindings();
+    if (!problems.isEmpty()) {
+      sb.append("\n");
+      for (Finding f : problems) {
+        sb.append('\n').append(f.toUiText()).append('\n');
+      }
+    }
+    return sb.toString();
+  }
+
+  /** Icon used by {@link Finding#toUiText()} and {@link #toFullReport()} per severity. */
+  static String severityIcon(Severity severity) {
+    switch (severity) {
+      case CRITICAL: return "🔴";
+      case WARN:     return "⚠";
+      case TRIGGER:  return "🟣";
+      case OK:
+      default:       return "✓";
+    }
   }
 }
