@@ -186,11 +186,17 @@ public final class QoSDiagnoser {
       }
     }
 
-    // Check 5: per-load throughput < br × 0.7 (V only — A loads too small to measure reliably)
+    // Check 5: per-load throughput < br × 0.7 (V only — A loads too small to measure reliably).
+    // Skip init segments (chunkDurationMs <= 0): init payloads are tiny header/codec data
+    // (often < 1 KB), so the throughput formula yields a misleading low value even on fast
+    // networks (e.g., 767-byte init in 21ms → 292kbps, would falsely trigger CRITICAL).
+    // Only media segments — those carrying actual playback duration — can attest to whether
+    // the network is sustaining the chosen bitrate.
     if (entry.trackType == C.TRACK_TYPE_VIDEO
         && entry.bitrateKbps > 0
         && entry.bytesLoaded > 0
-        && entry.loadDurationMs > 0) {
+        && entry.loadDurationMs > 0
+        && entry.chunkDurationMs > 0) {
       long throughputKbps = entry.bytesLoaded * 8 / entry.loadDurationMs;
       long threshold = (long) (entry.bitrateKbps * THROUGHPUT_BR_FRACTION);
       if (throughputKbps < threshold) {
