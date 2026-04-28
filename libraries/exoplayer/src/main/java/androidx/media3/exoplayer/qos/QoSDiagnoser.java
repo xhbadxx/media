@@ -127,8 +127,14 @@ public final class QoSDiagnoser {
    * tag is what the UI uses to show the {@code *bs*} icon).
    */
   static Diagnosis.Finding analyzeEntry(QoSInfo entry, QoSInfo trigger) {
+    boolean isTrigger = entry == trigger;
     if (entry.trackType != C.TRACK_TYPE_VIDEO && entry.trackType != C.TRACK_TYPE_AUDIO) {
-      return new Diagnosis.Finding(entry, Diagnosis.Severity.OK, Collections.<String>emptyList());
+      // Manifest / unknown-track entries don't get scored, but if this entry happens
+      // to be the trigger we still need to tag it so the UI can show the *bs* icon.
+      return new Diagnosis.Finding(
+          entry,
+          isTrigger ? Diagnosis.Severity.TRIGGER : Diagnosis.Severity.OK,
+          Collections.<String>emptyList());
     }
 
     List<String> issues = new ArrayList<>();
@@ -201,7 +207,7 @@ public final class QoSDiagnoser {
     }
 
     // The trigger entry gets a distinct tag for UI rendering, regardless of issues.
-    if (entry == trigger) {
+    if (isTrigger) {
       severity = Diagnosis.Severity.TRIGGER;
     }
 
