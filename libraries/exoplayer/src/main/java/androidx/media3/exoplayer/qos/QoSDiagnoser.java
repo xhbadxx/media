@@ -81,11 +81,18 @@ public final class QoSDiagnoser {
   /**
    * Runs the per-entry walk, infers verdict, and returns a {@link Diagnosis}.
    * Never returns {@code null}.
+   *
+   * <p>Takes {@code (trigger, entries)} directly rather than a {@link RebufferGroup}
+   * because the caller (e.g., {@code FPlayQoSMonitor.captureRebufferSnapshot})
+   * needs the diagnosis BEFORE constructing the group — the group's
+   * {@link RebufferGroup#diagnosis} field is final, so we can't mutate it after
+   * construction. The group's id and triggerTimeMs are not consumed by the
+   * diagnoser anyway.
    */
-  public static Diagnosis diagnose(RebufferGroup group) {
-    List<Diagnosis.Finding> findings = new ArrayList<>(group.entries.size());
-    for (QoSInfo entry : group.entries) {
-      findings.add(analyzeEntry(entry, group.trigger));
+  public static Diagnosis diagnose(QoSInfo trigger, List<QoSInfo> entries) {
+    List<Diagnosis.Finding> findings = new ArrayList<>(entries.size());
+    for (QoSInfo entry : entries) {
+      findings.add(analyzeEntry(entry, trigger));
     }
 
     int avEntries = 0;
@@ -102,10 +109,15 @@ public final class QoSDiagnoser {
       pattern = inferPattern(findings);
     }
 
-    boolean abrLag = checkAbrLag(group.trigger);
-    String conclusion = buildConclusion(findings, pattern, abrLag, group.trigger);
+    boolean abrLag = checkAbrLag(trigger);
+    String conclusion = buildConclusion(findings, pattern, abrLag, trigger);
 
     return new Diagnosis(pattern, abrLag, findings, conclusion);
+  }
+
+  /** Convenience overload — diagnose a {@link RebufferGroup} (used by tests / external callers). */
+  public static Diagnosis diagnose(RebufferGroup group) {
+    return diagnose(group.trigger, group.entries);
   }
 
   /**

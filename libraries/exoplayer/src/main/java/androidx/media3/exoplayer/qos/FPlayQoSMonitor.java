@@ -144,17 +144,19 @@ public final class FPlayQoSMonitor {
     int from = Math.max(0, all.size() - PRE_TRIGGER_WINDOW);
     // Deep copy of reference list — RebufferGroup is frozen, must not share with
     // the live ring buffer (which evicts oldest as new entries flow in).
-    List<QoSInfo> snapshot = new ArrayList<>(all.subList(from, all.size()));
-    // TODO(Task 3): replace Diagnosis.unknown() with QoSDiagnoser.diagnose(...) once
-    // QoSDiagnoser is implemented (Plan Task 2). UI layers must already handle
-    // UNKNOWN gracefully via Diagnosis.unknown() factory.
+    List<QoSInfo> snapshot = Collections.unmodifiableList(new ArrayList<>(all.subList(from, all.size())));
+    // Diagnoser walks the snapshot per-entry; result is embedded in the group so
+    // every consumer (HUD, log, support tickets) sees the same verdict.
+    Diagnosis diagnosis = QoSDiagnoser.diagnose(trigger, snapshot);
+    int groupId = ++nextGroupId;
+    Log.i(TAG, "Rebuffer #" + groupId + ": " + diagnosis.summary());
     RebufferGroup group =
         new RebufferGroup(
-            ++nextGroupId,
+            groupId,
             trigger.timestampMs,
             trigger,
-            Collections.unmodifiableList(snapshot),
-            Diagnosis.unknown());
+            snapshot,
+            diagnosis);
     rebufferGroups.add(group);
     while (rebufferGroups.size() > MAX_REBUFFER_GROUPS) {
       rebufferGroups.remove(0);
