@@ -20,13 +20,15 @@ import java.util.List;
 
 /**
  * Frozen snapshot of QoS entries captured at the moment a rebuffer event was first
- * recorded (an entry with {@code bufferStarvationFlag=true}). Snapshot is immutable —
- * does not update as new entries flow into {@link
- * androidx.media3.exoplayer.qos.QoSMonitor}.
+ * recorded (an entry with {@code bufferStarvationFlag=true}), bundled with the
+ * diagnoser's verdict. Snapshot is immutable — does not update as new entries flow
+ * into {@link androidx.media3.exoplayer.qos.QoSMonitor}.
  *
  * <p>Created by {@link androidx.media3.exoplayer.qos.FPlayQoSMonitor} on every
  * captured rebuffer (cooldown-debounced to suppress duplicate audio/video bs flags
- * from the same event).
+ * from the same event). The {@link #diagnosis} is computed on the same thread as
+ * the capture (player application thread) — see
+ * {@code androidx.media3.exoplayer.qos.QoSDiagnoser}.
  */
 @UnstableApi
 public final class RebufferGroup {
@@ -46,11 +48,25 @@ public final class RebufferGroup {
    */
   public final List<QoSInfo> entries;
 
-  public RebufferGroup(int id, long triggerTimeMs, QoSInfo trigger, List<QoSInfo> entries) {
+  /**
+   * Diagnoser verdict computed from {@link #entries} and {@link #trigger}. Per-entry
+   * findings + inferred {@link Pattern} + cross-cut ABR flag + natural-language
+   * conclusion. UI layers should render this card per rebuffer rather than dumping
+   * raw {@link #entries}.
+   */
+  public final Diagnosis diagnosis;
+
+  public RebufferGroup(
+      int id,
+      long triggerTimeMs,
+      QoSInfo trigger,
+      List<QoSInfo> entries,
+      Diagnosis diagnosis) {
     this.id = id;
     this.triggerTimeMs = triggerTimeMs;
     this.trigger = trigger;
     this.entries = entries;
+    this.diagnosis = diagnosis;
   }
 
   public int size() {

@@ -1,0 +1,130 @@
+/*
+ * Copyright 2026 The Android Open Source Project
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+package androidx.media3.exoplayer.qos.model;
+
+import androidx.media3.common.util.UnstableApi;
+import java.util.Collections;
+import java.util.List;
+
+/**
+ * Verdict produced by the QoS diagnoser for one rebuffer event. Composed onto every
+ * captured {@link RebufferGroup} alongside the entry snapshot — UI layers should
+ * render a {@code Diagnosis} card per rebuffer rather than dumping the raw entries.
+ *
+ * <p>Approach (Spec §IV — per-entry walk):
+ * <ol>
+ *   <li>Diagnoser walks {@code RebufferGroup.entries} chronologically.
+ *   <li>Each entry is classified into a {@link Finding} with {@link Severity} +
+ *       human-readable {@code issues} citing specific metric values.
+ *   <li>{@link #pattern} is inferred from the observed problem types across findings,
+ *       not from aggregate statistics.
+ *   <li>{@link #abrLag} is an independent cross-cut flag computed on the trigger entry.
+ *   <li>{@link #conclusion} is a 2–3 sentence narrative synthesizing the observation.
+ * </ol>
+ *
+ * <p>Each finding's {@code issues} list quotes specific values (e.g.,
+ * {@code "throughput 2750kbps < br 4800 × 0.7 (3360kbps)"}) so reports are
+ * audit-friendly — every claim verifiable directly against the corresponding entry.
+ */
+@UnstableApi
+public final class Diagnosis {
+
+  /** Per-entry severity tag assigned during the diagnostic walk. */
+  public enum Severity {
+    /** Entry is healthy — no rule fired. */
+    OK,
+    /** Entry shows borderline issue (e.g., load slightly over chunk duration). */
+    WARN,
+    /** Entry shows critical issue (transfer way over duration, server very slow, etc.). */
+    CRITICAL,
+    /** The entry that fired the {@code bs} flag — last item in the walk by definition. */
+    TRIGGER
+  }
+
+  /**
+   * One {@link QoSInfo} entry analysed by the diagnoser, tagged with severity and
+   * the list of issues observed (each issue citing the specific metric value that
+   * triggered it).
+   */
+  public static final class Finding {
+    public final QoSInfo entry;
+    public final Severity severity;
+    public final List<String> issues;
+
+    public Finding(QoSInfo entry, Severity severity, List<String> issues) {
+      this.entry = entry;
+      this.severity = severity;
+      this.issues = Collections.unmodifiableList(issues);
+    }
+  }
+
+  public final Pattern pattern;
+  public final boolean abrLag;
+  public final List<Finding> findings;
+  public final String conclusion;
+
+  public Diagnosis(
+      Pattern pattern,
+      boolean abrLag,
+      List<Finding> findings,
+      String conclusion) {
+    this.pattern = pattern;
+    this.abrLag = abrLag;
+    this.findings = Collections.unmodifiableList(findings);
+    this.conclusion = conclusion;
+  }
+
+  /**
+   * Placeholder used when the diagnoser has not run yet (e.g., during initial
+   * construction in {@code FPlayQoSMonitor.captureRebufferSnapshot} before the real
+   * diagnoser call). UI layers should treat this the same as {@link Pattern#UNKNOWN}.
+   */
+  public static Diagnosis unknown() {
+    return new Diagnosis(
+        Pattern.UNKNOWN,
+        /* abrLag= */ false,
+        Collections.emptyList(),
+        "Diagnoser has not run on this rebuffer yet.");
+  }
+
+  /**
+   * One-line headline for HUD / logcat summary.
+   *
+   * <p>Examples:
+   * <pre>
+   *   USER_NETWORK +ABR_LAG
+   *   CDN_ORIGIN_SLOW
+   *   UNKNOWN
+   * </pre>
+   */
+  public String summary() {
+    return abrLag ? pattern.name() + " +ABR_LAG" : pattern.name();
+  }
+
+  /**
+   * Returns only the findings tagged {@link Severity#WARN} or {@link Severity#CRITICAL}
+   * (plus the {@link Severity#TRIGGER} entry) — the "interesting" subset to render
+   * prominently on the diagnosis card. Healthy entries are kept in {@link #findings}
+   * for full audit but typically rendered collapsed.
+   */
+  public List<Finding> problemFindings() {
+    java.util.List<Finding> out = new java.util.ArrayList<>();
+    for (Finding f : findings) {
+      if (f.severity != Severity.OK) out.add(f);
+    }
+    return Collections.unmodifiableList(out);
+  }
+}

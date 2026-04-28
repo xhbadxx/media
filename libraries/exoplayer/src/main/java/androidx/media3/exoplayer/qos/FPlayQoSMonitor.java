@@ -23,9 +23,11 @@ import androidx.media3.exoplayer.ExoPlayer;
 import androidx.media3.exoplayer.qos.hook.QoSAnalyticsHook;
 import androidx.media3.exoplayer.qos.hook.QoSPlayerHook;
 import androidx.media3.exoplayer.qos.hook.QoSTransferListener;
+import androidx.media3.exoplayer.qos.model.Diagnosis;
 import androidx.media3.exoplayer.qos.model.QoSInfo;
 import androidx.media3.exoplayer.qos.model.RebufferGroup;
 import androidx.media3.exoplayer.qos.observer.QoSObserver;
+import androidx.media3.exoplayer.qos.observer.RebufferGroupObserver;
 import androidx.media3.exoplayer.upstream.BandwidthMeter;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -95,7 +97,7 @@ public final class FPlayQoSMonitor {
   static final int PRE_TRIGGER_WINDOW = 50;
 
   /** Maximum number of {@link RebufferGroup}s retained; oldest evicted FIFO. */
-  static final int MAX_REBUFFER_GROUPS = 5;
+  static final int MAX_REBUFFER_GROUPS = 20;
 
   /**
    * Cooldown to suppress duplicate captures from the same rebuffer event. A single
@@ -108,6 +110,7 @@ public final class FPlayQoSMonitor {
   private final QoSTransferListener transferListener = new QoSTransferListener();
 
   private final List<RebufferGroup> rebufferGroups = new CopyOnWriteArrayList<>();
+  private final List<RebufferGroupObserver> groupObservers = new CopyOnWriteArrayList<>();
   private long lastCaptureMs = 0L;
   private int nextGroupId = 0;
 
@@ -142,15 +145,23 @@ public final class FPlayQoSMonitor {
     // Deep copy of reference list — RebufferGroup is frozen, must not share with
     // the live ring buffer (which evicts oldest as new entries flow in).
     List<QoSInfo> snapshot = new ArrayList<>(all.subList(from, all.size()));
+    // TODO(Task 3): replace Diagnosis.unknown() with QoSDiagnoser.diagnose(...) once
+    // QoSDiagnoser is implemented (Plan Task 2). UI layers must already handle
+    // UNKNOWN gracefully via Diagnosis.unknown() factory.
     RebufferGroup group =
         new RebufferGroup(
             ++nextGroupId,
             trigger.timestampMs,
             trigger,
-            Collections.unmodifiableList(snapshot));
+            Collections.unmodifiableList(snapshot),
+            Diagnosis.unknown());
     rebufferGroups.add(group);
     while (rebufferGroups.size() > MAX_REBUFFER_GROUPS) {
       rebufferGroups.remove(0);
+    }
+    List<RebufferGroup> groupSnapshot = Collections.unmodifiableList(new ArrayList<>(rebufferGroups));
+    for (RebufferGroupObserver observer : groupObservers) {
+      observer.onRebufferGroupsChanged(groupSnapshot);
     }
   }
 
@@ -210,6 +221,7 @@ public final class FPlayQoSMonitor {
     QoSMonitor.getInstance().reset();
     transferListener.clear();
     rebufferGroups.clear();
+    groupObservers.clear();
     lastCaptureMs = 0L;
     nextGroupId = 0;
     ExoPlayer player = activePlayer;
@@ -240,5 +252,21 @@ public final class FPlayQoSMonitor {
    */
   public List<RebufferGroup> getRebufferGroups() {
     return Collections.unmodifiableList(rebufferGroups);
+  }
+
+  /**
+   * Registers an observer notified each time a new {@link RebufferGroup} is captured.
+   * Callback runs on the player application thread — dispatch to UI thread if needed.
+   * Idempotent on duplicate registration is not enforced; callers should pair every
+   * add with a corresponding remove. All registered observers are dropped on
+   * {@link #detach()} — re-register after a re-attach.
+   */
+  public void addRebufferGroupObserver(RebufferGroupObserver observer) {
+    groupObservers.add(observer);
+  }
+
+  /** Removes a previously-registered {@link RebufferGroupObserver}. */
+  public void removeRebufferGroupObserver(RebufferGroupObserver observer) {
+    groupObservers.remove(observer);
   }
 }

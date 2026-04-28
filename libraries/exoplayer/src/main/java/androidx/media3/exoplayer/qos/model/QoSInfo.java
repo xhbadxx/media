@@ -75,7 +75,7 @@ public final class QoSInfo {
    * Each section prefixes its inner per-source groups with the subsystem name so
    * the reader knows where each metric originated.
    * <pre>{@code
-   *   Player [type, br=, res=, cdur=] [bl=, mtp=, retry=, *bs*]  ->  CDN [cache=, cdn=] [ttfb=, dur=, sz=] [ERROR] [<filename>] [url=]
+   *   Player [type, br=, res=, cdur=] [bl=, mtp=, retry=, *bs*]  ->  CDN [cdn=, cache=] [ttfb=, dur=, sz=] [ERROR] [<filename>] [url=]
    *          ↑ track descriptor       ↑ runtime state at load     ↑ delivery        ↑ network result   ↑ err   ↑ id       ↑ full
    * }</pre>
    * Within a group, fields are comma-separated; groups separated by space; sections
@@ -101,6 +101,43 @@ public final class QoSInfo {
     appendGroup(sb, errorGroup());
     appendGroup(sb, shortUrlGroup());
     appendGroup(sb, fullUrlGroup());
+    return sb.toString();
+  }
+
+  /** Player-side portion only — track + runtime state. For UI rendering as line 1. */
+  public String toPlayerLogString() {
+    StringBuilder sb = new StringBuilder(80);
+    appendGroup(sb, trackInfoGroup());
+    appendGroup(sb, playerStateGroup());
+    return sb.toString();
+  }
+
+  /** CDN-side portion only — delivery + network result + url. For UI rendering as line 2. */
+  public String toCdnLogString() {
+    StringBuilder sb = new StringBuilder(140);
+    appendGroup(sb, deliveryGroup());
+    appendGroup(sb, netResultGroup());
+    appendGroup(sb, errorGroup());
+    appendGroup(sb, shortUrlGroup());
+    appendGroup(sb, fullUrlGroup());
+    return sb.toString();
+  }
+
+  /**
+   * UI-ready 2-line text: Player groups on line 1, CDN groups on line 2 (with leading
+   * space as visual indent). Drops the full-URL group — its DRM token bloats width
+   * far beyond any HUD; the short-filename group on line 2 is enough to identify
+   * the segment, and the full URL stays available via {@link #toLogString()} (logcat).
+   */
+  public String toUiText() {
+    StringBuilder sb = new StringBuilder(180);
+    appendGroup(sb, trackInfoGroup());
+    appendGroup(sb, playerStateGroup());
+    sb.append('\n');
+    appendGroup(sb, deliveryGroup());
+    appendGroup(sb, netResultGroup());
+    appendGroup(sb, errorGroup());
+    appendGroup(sb, shortUrlGroup());
     return sb.toString();
   }
 
@@ -133,11 +170,11 @@ public final class QoSInfo {
     return g;
   }
 
-  /** CDN response delivery info: cache status, CDN provider (from response headers/host). */
+  /** CDN response delivery info: CDN provider, cache status (from response headers/host). */
   private StringBuilder deliveryGroup() {
     StringBuilder g = new StringBuilder();
-    if (cacheStatus != null) addField(g, "cache=" + cacheStatus);
     if (cdnProvider != null) addField(g, "cdn=" + cdnProvider);
+    if (cacheStatus != null) addField(g, "cache=" + cacheStatus);
     return g;
   }
 
