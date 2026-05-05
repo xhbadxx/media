@@ -429,7 +429,7 @@ public class QoSDiagnoserTest {
             Diagnosis.unknown());
 
     QoSDiagnoser.WindowMetrics metrics = QoSDiagnoser.computeWindowMetrics(group);
-    String reason = QoSDiagnoser.applySanityGate(metrics);
+    String reason = QoSDiagnoser.applySanityG1ate(metrics);
 
     assertThat(reason).isNotNull();
     assertThat(reason).contains("demand_ratio");
@@ -458,7 +458,7 @@ public class QoSDiagnoserTest {
             Diagnosis.unknown());
 
     QoSDiagnoser.WindowMetrics metrics = QoSDiagnoser.computeWindowMetrics(group);
-    String reason = QoSDiagnoser.applySanityGate(metrics);
+    String reason = QoSDiagnoser.applySanityG1ate(metrics);
 
     assertThat(reason).isNull();
   }
@@ -488,7 +488,7 @@ public class QoSDiagnoserTest {
             Diagnosis.unknown());
 
     QoSDiagnoser.WindowMetrics metrics = QoSDiagnoser.computeWindowMetrics(group);
-    String reason = QoSDiagnoser.applySanityGate(metrics);
+    String reason = QoSDiagnoser.applySanityG1ate(metrics);
 
     assertThat(reason).isNotNull();
     assertThat(reason).contains("demand_ratio");
@@ -506,7 +506,7 @@ public class QoSDiagnoserTest {
             1, trigger.timestampMs, trigger, Arrays.asList(trigger), Diagnosis.unknown());
 
     QoSDiagnoser.WindowMetrics metrics = QoSDiagnoser.computeWindowMetrics(group);
-    String reason = QoSDiagnoser.applySanityGate(metrics);
+    String reason = QoSDiagnoser.applySanityG1ate(metrics);
 
     assertThat(reason).isNotNull();
     assertThat(reason).contains("wall_time");
