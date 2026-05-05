@@ -292,6 +292,125 @@ public class QoSDiagnoserTest {
   }
 
   // ============================================================================
+  // Test 10 — Window metrics: degenerate group (single entry → wall_time = 0)
+  // ============================================================================
+
+  @Test
+  public void computeWindowMetrics_singleEntry_wallTimeAndRatioZero() {
+    QoSInfo trigger = videoTriggerWithMtp(1_000L, /* br= */ 1_800, /* mtp= */ 5_000);
+    RebufferGroup group =
+        new RebufferGroup(
+            1, trigger.timestampMs, trigger, Arrays.asList(trigger), Diagnosis.unknown());
+
+    QoSDiagnoser.WindowMetrics m = QoSDiagnoser.computeWindowMetrics(group);
+
+    assertThat(m.wallTimeMs).isEqualTo(0L);
+    assertThat(m.demandRatio).isEqualTo(0.0);
+  }
+
+  // ============================================================================
+  // Test 11 — Window metrics: steady 1× playback (demand_ratio ≈ 1.0)
+  // ============================================================================
+
+  @Test
+  public void computeWindowMetrics_steadyPlayback_demandRatioApproxOne() {
+    // Five segments evenly spaced 4s apart, each carrying 4s of cdur.
+    // bl steady at 8000ms throughout. Trigger has no media duration so it
+    // does not contribute to ΔSupply.
+    //   wall_time   = 20000ms
+    //   ΔSupply     = 5 × 4000 = 20000ms
+    //   Δbuffer     = 0
+    //   ΔDemand     = 20000 − 0 = 20000ms
+    //   ratio       = 20000 / 20000 = 1.0 (normal 1× playback)
+    QoSInfo s1 = segment(0L, /* cdur= */ 4_000, /* bl= */ 8_000);
+    QoSInfo s2 = segment(4_000L, 4_000, 8_000);
+    QoSInfo s3 = segment(8_000L, 4_000, 8_000);
+    QoSInfo s4 = segment(12_000L, 4_000, 8_000);
+    QoSInfo s5 = segment(16_000L, 4_000, 8_000);
+    QoSInfo trigger = triggerWithBlNoMedia(20_000L, /* bl= */ 8_000);
+
+    RebufferGroup group =
+        new RebufferGroup(
+            1,
+            trigger.timestampMs,
+            trigger,
+            Arrays.asList(s1, s2, s3, s4, s5, trigger),
+            Diagnosis.unknown());
+
+    QoSDiagnoser.WindowMetrics m = QoSDiagnoser.computeWindowMetrics(group);
+
+    assertThat(m.wallTimeMs).isEqualTo(20_000L);
+    assertThat(m.deltaBufferMs).isEqualTo(0L);
+    assertThat(m.deltaSupplyMs).isEqualTo(20_000L);
+    assertThat(m.deltaDemandMs).isEqualTo(20_000L);
+    assertThat(m.demandRatio).isWithin(0.01).of(1.0);
+  }
+
+  // ============================================================================
+  // Test 12 — Window metrics: paused / abnormal playback (demand_ratio < 0.5)
+  // ============================================================================
+
+  @Test
+  public void computeWindowMetrics_pausedHalfWindow_demandRatioBelowHalf() {
+    // Player paused most of the 30s window: only 2 segments fetched (8000ms
+    // supply), and bl dropped from 9000 to 5000 (Δbuffer = −4000) instead of
+    // the full 30000 it would have at 1× speed.
+    //   wall_time   = 30000ms
+    //   ΔSupply     = 2 × 4000 = 8000ms
+    //   Δbuffer     = 5000 − 9000 = −4000ms
+    //   ΔDemand     = 8000 − (−4000) = 12000ms
+    //   ratio       = 12000 / 30000 = 0.4 (well below 0.5 → abnormal)
+    QoSInfo s1 = segment(0L, /* cdur= */ 4_000, /* bl= */ 9_000);
+    QoSInfo s2 = segment(4_000L, 4_000, 9_000);
+    QoSInfo trigger = triggerWithBlNoMedia(30_000L, /* bl= */ 5_000);
+
+    RebufferGroup group =
+        new RebufferGroup(
+            1,
+            trigger.timestampMs,
+            trigger,
+            Arrays.asList(s1, s2, trigger),
+            Diagnosis.unknown());
+
+    QoSDiagnoser.WindowMetrics m = QoSDiagnoser.computeWindowMetrics(group);
+
+    assertThat(m.wallTimeMs).isEqualTo(30_000L);
+    assertThat(m.deltaBufferMs).isEqualTo(-4_000L);
+    assertThat(m.deltaSupplyMs).isEqualTo(8_000L);
+    assertThat(m.deltaDemandMs).isEqualTo(12_000L);
+    assertThat(m.demandRatio).isWithin(0.01).of(0.4);
+  }
+
+  // ============================================================================
+  // Test 13 — Window metrics: manifest and init segments excluded from supply
+  // ============================================================================
+
+  @Test
+  public void computeWindowMetrics_manifestAndInit_excludedFromSupply() {
+    // Mix: 1 manifest (TRACK_TYPE_UNKNOWN, no cdur), 1 init segment
+    // (TRACK_TYPE_VIDEO but cdur=0), 2 real segments cdur=4000, 1 trigger.
+    // Only the 2 real segments should contribute to ΔSupply.
+    QoSInfo manifest = manifestEntry(0L, /* bl= */ 8_000);
+    QoSInfo init = initSegment(1_000L, /* bl= */ 8_000);
+    QoSInfo s1 = segment(2_000L, /* cdur= */ 4_000, /* bl= */ 8_000);
+    QoSInfo s2 = segment(6_000L, 4_000, 8_000);
+    QoSInfo trigger = triggerWithBlNoMedia(10_000L, /* bl= */ 8_000);
+
+    RebufferGroup group =
+        new RebufferGroup(
+            1,
+            trigger.timestampMs,
+            trigger,
+            Arrays.asList(manifest, init, s1, s2, trigger),
+            Diagnosis.unknown());
+
+    QoSDiagnoser.WindowMetrics m = QoSDiagnoser.computeWindowMetrics(group);
+
+    // Only s1 and s2 count → 2 × 4000 = 8000ms
+    assertThat(m.deltaSupplyMs).isEqualTo(8_000L);
+  }
+
+  // ============================================================================
   // Helpers
   // ============================================================================
 
@@ -412,6 +531,72 @@ public class QoSDiagnoserTest {
         .setMeasuredThroughputKbps(mtpKbps)
         .setBufferStarvationFlag(true)
         .setCacheStatus("MISS")
+        .build();
+  }
+
+  /**
+   * Generic V segment with explicit chunk duration and buffer length, used by
+   * window-metric tests that need precise control of ΔSupply and Δbuffer.
+   */
+  private static QoSInfo segment(long timestampMs, long cdurMs, int blMs) {
+    return new QoSInfo.Builder()
+        .setTimestampMs(timestampMs)
+        .setTrackType(C.TRACK_TYPE_VIDEO)
+        .setBitrateKbps(1_800)
+        .setChunkDurationMs(cdurMs)
+        .setBufferedDurationMs(blMs)
+        .setLoadDurationMs(100)
+        .setBytesLoaded(50_000)
+        .setTtfbMs(10)
+        .build();
+  }
+
+  /**
+   * Trigger entry that intentionally omits {@code chunkDurationMs} so it does
+   * not contribute to ΔSupply. Used by window-metric tests where we control the
+   * total supply via the prior segments.
+   */
+  private static QoSInfo triggerWithBlNoMedia(long timestampMs, int blMs) {
+    return new QoSInfo.Builder()
+        .setTimestampMs(timestampMs)
+        .setTrackType(C.TRACK_TYPE_VIDEO)
+        .setBitrateKbps(1_800)
+        .setBufferedDurationMs(blMs)
+        .setBufferStarvationFlag(true)
+        .build();
+  }
+
+  /**
+   * Manifest entry — track type unknown, no chunk duration. Should be excluded
+   * from supply because it carries no playable media.
+   */
+  private static QoSInfo manifestEntry(long timestampMs, int blMs) {
+    return new QoSInfo.Builder()
+        .setTimestampMs(timestampMs)
+        .setTrackType(C.TRACK_TYPE_UNKNOWN)
+        .setUrl("https://example/playlist.m3u8")
+        .setBufferedDurationMs(blMs)
+        .setLoadDurationMs(20)
+        .setBytesLoaded(2_000)
+        .setTtfbMs(8)
+        .build();
+  }
+
+  /**
+   * Init segment — has a track type but no media duration ({@code cdur ≤ 0}).
+   * Should be excluded from supply since it doesn't carry playable seconds.
+   */
+  private static QoSInfo initSegment(long timestampMs, int blMs) {
+    return new QoSInfo.Builder()
+        .setTimestampMs(timestampMs)
+        .setTrackType(C.TRACK_TYPE_VIDEO)
+        .setBitrateKbps(1_800)
+        .setBufferedDurationMs(blMs)
+        .setLoadDurationMs(50)
+        .setBytesLoaded(800)
+        .setTtfbMs(12)
+        // chunkDurationMs intentionally not set (defaults to -1) — init carries
+        // codec headers, not media duration.
         .build();
   }
 

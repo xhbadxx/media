@@ -120,6 +120,107 @@ public final class QoSDiagnoser {
     return diagnose(group.trigger, group.entries);
   }
 
+  // ===== Window-level conservation metrics =====
+
+  /**
+   * Window-level metrics derived from a {@link RebufferGroup}, implementing the
+   * core buffer-conservation equation from {@code Spec - QoS Buffer Conservation
+   * Diagnosis §I}:
+   * <pre>
+   *   Δbuffer  = ΔSupply − ΔDemand
+   *   ΔDemand  = ΔSupply − Δbuffer
+   *   ratio    = ΔDemand / wall_time
+   * </pre>
+   *
+   * <p>The ratio classifies playback regime:
+   * <ul>
+   *   <li>{@code ≈ 1.0} → normal 1× playback
+   *   <li>{@code ≈ 0}   → player paused throughout the window
+   *   <li>{@code > 1.5} → speed up (trick play / LL-DASH speed control)
+   *   <li>{@code < 0.5} → seek refill / partial pause
+   * </ul>
+   * Downstream the sanity gate uses this ratio to distinguish real network
+   * rebuffer from spurious bs flagged during pause/seek.
+   */
+  public static final class WindowMetrics {
+    public final long wallTimeMs;
+    public final long deltaBufferMs;
+    public final long deltaSupplyMs;
+    public final long deltaDemandMs;
+    public final double demandRatio;
+
+    WindowMetrics(
+        long wallTimeMs,
+        long deltaBufferMs,
+        long deltaSupplyMs,
+        long deltaDemandMs,
+        double demandRatio) {
+      this.wallTimeMs = wallTimeMs;
+      this.deltaBufferMs = deltaBufferMs;
+      this.deltaSupplyMs = deltaSupplyMs;
+      this.deltaDemandMs = deltaDemandMs;
+      this.demandRatio = demandRatio;
+    }
+  }
+
+  /**
+   * Computes the window-level conservation metrics for {@code group}. Returns a
+   * zero-valued {@link WindowMetrics} when the group has fewer than 2 entries
+   * (degenerate window) or when the window has zero wall-clock duration.
+   *
+   * <p>{@code ΔSupply} sums {@code chunkDurationMs} only over completed
+   * scored-track segments (V/A/HLS muxed). Manifests, init segments, and failed
+   * loads do not contribute supply because they don't deliver playable media.
+   */
+  public static WindowMetrics computeWindowMetrics(RebufferGroup group) {
+    if (group == null || group.entries == null || group.entries.isEmpty()) {
+      return new WindowMetrics(0L, 0L, 0L, 0L, 0.0);
+    }
+    QoSInfo first = group.entries.get(0);
+    QoSInfo last = group.trigger;
+
+    long wallTimeMs = Math.max(0L, last.timestampMs - first.timestampMs);
+    long deltaBufferMs =
+        clampNonNegativeBl(last.bufferedDurationMs)
+            - clampNonNegativeBl(first.bufferedDurationMs);
+
+    long deltaSupplyMs = 0L;
+    for (QoSInfo entry : group.entries) {
+      if (isCompletedSegment(entry)) {
+        deltaSupplyMs += entry.chunkDurationMs;
+      }
+    }
+
+    long deltaDemandMs = deltaSupplyMs - deltaBufferMs;
+    double demandRatio = wallTimeMs > 0L ? (double) deltaDemandMs / wallTimeMs : 0.0;
+
+    return new WindowMetrics(
+        wallTimeMs, deltaBufferMs, deltaSupplyMs, deltaDemandMs, demandRatio);
+  }
+
+  /**
+   * Treats the {@code bufferedDurationMs = -1} sentinel as 0 for arithmetic
+   * purposes. Snapshots may legitimately be missing if {@code QoSAnalyticsHook}
+   * couldn't capture the player state at load start; in that case we don't want
+   * the computation to flip sign.
+   */
+  private static long clampNonNegativeBl(int bufferedDurationMs) {
+    return bufferedDurationMs >= 0 ? bufferedDurationMs : 0L;
+  }
+
+  /**
+   * A scored-track entry that completed loading and carries a positive media
+   * duration. Manifests ({@code TRACK_TYPE_UNKNOWN}), init segments
+   * ({@code chunkDurationMs ≤ 0}), text/image/metadata, and failed loads are
+   * excluded — they don't deliver playable media into the buffer.
+   */
+  private static boolean isCompletedSegment(QoSInfo entry) {
+    return entry != null
+        && entry.status == QoSInfo.LoadStatus.COMPLETED
+        && entry.chunkDurationMs > 0L
+        && isScoredTrackType(entry.trackType);
+  }
+
   /**
    * Classifies a single entry. Manifest (P) entries are tagged {@code OK} with no
    * issues — they don't reflect playback quality directly. The trigger entry is
