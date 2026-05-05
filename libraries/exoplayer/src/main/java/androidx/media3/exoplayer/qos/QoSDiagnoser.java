@@ -128,9 +128,10 @@ public final class QoSDiagnoser {
    */
   static Diagnosis.Finding analyzeEntry(QoSInfo entry, QoSInfo trigger) {
     boolean isTrigger = entry == trigger;
-    if (entry.trackType != C.TRACK_TYPE_VIDEO && entry.trackType != C.TRACK_TYPE_AUDIO) {
-      // Manifest / unknown-track entries don't get scored, but if this entry happens
-      // to be the trigger we still need to tag it so the UI can show the *bs* icon.
+    if (!isScoredTrackType(entry.trackType)) {
+      // Manifest / unknown / text / image / metadata entries don't reflect playback
+      // quality directly. If this entry is the trigger we still tag it so the UI
+      // can render the *bs* icon, but we don't compute issues against it.
       return new Diagnosis.Finding(
           entry,
           isTrigger ? Diagnosis.Severity.TRIGGER : Diagnosis.Severity.OK,
@@ -186,13 +187,17 @@ public final class QoSDiagnoser {
       }
     }
 
-    // Check 5: per-load throughput < br × 0.7 (V only — A loads too small to measure reliably).
+    // Check 5: per-load throughput < br × 0.7 (video-like only — audio loads are too
+    // small to measure reliably). HLS muxed (TRACK_TYPE_DEFAULT) carries video data
+    // alongside audio in a single segment, so its throughput is meaningful for the
+    // bitrate-vs-pipe comparison.
+    //
     // Skip init segments (chunkDurationMs <= 0): init payloads are tiny header/codec data
     // (often < 1 KB), so the throughput formula yields a misleading low value even on fast
     // networks (e.g., 767-byte init in 21ms → 292kbps, would falsely trigger CRITICAL).
     // Only media segments — those carrying actual playback duration — can attest to whether
     // the network is sustaining the chosen bitrate.
-    if (entry.trackType == C.TRACK_TYPE_VIDEO
+    if (isVideoLikeTrackType(entry.trackType)
         && entry.bitrateKbps > 0
         && entry.bytesLoaded > 0
         && entry.loadDurationMs > 0
@@ -352,6 +357,28 @@ public final class QoSDiagnoser {
   }
 
   // ===== Helpers =====
+
+  /**
+   * Track types whose loads attest to playback quality and therefore enter the
+   * per-entry checks: video, audio, or HLS muxed ({@code TRACK_TYPE_DEFAULT}).
+   * Manifest, text, image, metadata, and unknown loads are excluded — they don't
+   * carry buffered media, so anomalies on them don't directly indicate rebuffer
+   * cause.
+   */
+  private static boolean isScoredTrackType(int trackType) {
+    return trackType == C.TRACK_TYPE_VIDEO
+        || trackType == C.TRACK_TYPE_AUDIO
+        || trackType == C.TRACK_TYPE_DEFAULT;
+  }
+
+  /**
+   * Subset of {@link #isScoredTrackType} that carries video bytes (sufficient
+   * payload size for reliable throughput measurement). Used to gate the
+   * throughput-vs-bitrate check, which is unreliable on small audio payloads.
+   */
+  private static boolean isVideoLikeTrackType(int trackType) {
+    return trackType == C.TRACK_TYPE_VIDEO || trackType == C.TRACK_TYPE_DEFAULT;
+  }
 
   private static boolean containsHttp5xx(String message) {
     if (message == null) return false;

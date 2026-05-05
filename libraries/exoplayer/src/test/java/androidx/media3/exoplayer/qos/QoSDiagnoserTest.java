@@ -239,6 +239,59 @@ public class QoSDiagnoserTest {
   }
 
   // ============================================================================
+  // Test 9 — HLS muxed track type (TRACK_TYPE_DEFAULT) gets scored as segment
+  // ============================================================================
+
+  @Test
+  public void diagnose_hlsMuxedTrackType_isScoredAsSegment() {
+    // Mirrors Test 1 (userNetworkDegrading) but with TRACK_TYPE_DEFAULT muxed
+    // entries instead of TRACK_TYPE_VIDEO. Verifies that HLS muxed segments
+    // (the dominant track type on FPT-CDN HLS streams per qoe-analytic.txt 05-05)
+    // are scored, not silently skipped.
+    QoSInfo a1 = audio(1_000L, /* dur= */ 109);
+    QoSInfo m1 = videoMuxed(2_000L, /* br= */ 1_800, /* dur= */ 535, /* sz= */ 463_700, /* ttfb= */ 36);
+    QoSInfo a2 = audio(3_000L, /* dur= */ 543);
+    QoSInfo a3 = audio(4_000L, /* dur= */ 368);
+    QoSInfo a4 = audio(5_000L, /* dur= */ 200);
+    // Two critical muxed loads at 4.8M with insufficient throughput
+    QoSInfo m2 =
+        videoMuxed(
+            6_000L, /* br= */ 4_800, /* dur= */ 3_492, /* sz= */ 1_200_000, /* ttfb= */ 12);
+    QoSInfo m3 =
+        videoMuxed(
+            7_000L, /* br= */ 4_800, /* dur= */ 3_786, /* sz= */ 1_000_000, /* ttfb= */ 18);
+    QoSInfo trigger =
+        videoTriggerWithMtp(8_000L, /* br= */ 4_800, /* mtp= */ 2_200);
+
+    RebufferGroup group =
+        new RebufferGroup(
+            1,
+            trigger.timestampMs,
+            trigger,
+            Arrays.asList(a1, m1, a2, a3, a4, m2, m3, trigger),
+            Diagnosis.unknown());
+
+    Diagnosis result = QoSDiagnoser.diagnose(group);
+
+    // Before fix: muxed entries skipped (severity OK, no issues fired) →
+    //             diagnose returns TRANSIENT.
+    // After fix: muxed entries are scored like video → throughput < br × 0.7
+    //             fires CRITICAL → pattern resolves to USER_NETWORK.
+    assertThat(result.pattern).isEqualTo(Pattern.USER_NETWORK);
+    // m2 was scored and contains a throughput issue (was previously skipped).
+    Diagnosis.Finding m2Finding = null;
+    for (Diagnosis.Finding f : result.findings) {
+      if (f.entry == m2) {
+        m2Finding = f;
+        break;
+      }
+    }
+    assertThat(m2Finding).isNotNull();
+    assertThat(m2Finding.severity).isEqualTo(Diagnosis.Severity.CRITICAL);
+    assertThat(joinIssues(m2Finding)).contains("throughput");
+  }
+
+  // ============================================================================
   // Helpers
   // ============================================================================
 
@@ -279,6 +332,28 @@ public class QoSDiagnoserTest {
         .setBytesLoaded(sizeBytes)
         .setMeasuredThroughputKbps(brKbps + 2_000)
         .setCacheStatus("MISS")
+        .build();
+  }
+
+  /**
+   * HLS muxed load (TRACK_TYPE_DEFAULT with combined V+A codec). Mirrors {@link
+   * #video} but uses the muxed track type, which is how Media3 tags HLS .ts
+   * segments containing both audio and video streams. Used to verify that the
+   * diagnoser scores muxed loads instead of silently skipping them.
+   */
+  private static QoSInfo videoMuxed(
+      long timestampMs, int brKbps, long durMs, long sizeBytes, int ttfbMs) {
+    return new QoSInfo.Builder()
+        .setTimestampMs(timestampMs)
+        .setTrackType(C.TRACK_TYPE_DEFAULT)
+        .setCodec("avc1.64001f, mp4a.40.2")
+        .setBitrateKbps(brKbps)
+        .setLoadDurationMs(durMs)
+        .setChunkDurationMs(1_900)
+        .setTtfbMs(ttfbMs)
+        .setBytesLoaded(sizeBytes)
+        .setMeasuredThroughputKbps(brKbps + 2_000)
+        .setCacheStatus("HIT")
         .build();
   }
 
