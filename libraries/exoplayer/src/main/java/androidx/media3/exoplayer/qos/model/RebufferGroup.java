@@ -15,7 +15,9 @@
  */
 package androidx.media3.exoplayer.qos.model;
 
+import androidx.annotation.Nullable;
 import androidx.media3.common.util.UnstableApi;
+import androidx.media3.exoplayer.qos.QoSDiagnoser;
 import java.util.List;
 
 /**
@@ -56,17 +58,39 @@ public final class RebufferGroup {
    */
   public final Diagnosis diagnosis;
 
+  /**
+   * Buffer-conservation pipeline verdict — richer than {@link #diagnosis}. Includes
+   * {@link QoSDiagnoser.Cause}, {@link QoSDiagnoser.Mechanism}, smoking-gun list,
+   * per-entry attribution, window metrics, and the ABR-lag cross-cut. {@code null}
+   * for groups created before the buffer-conservation pipeline existed (legacy
+   * 5-arg constructor); always non-null when constructed with the 6-arg ctor.
+   */
+  @Nullable public final QoSDiagnoser.FullDiagnosis fullDiagnosis;
+
+  /** Legacy constructor — preserves binary compatibility for callers / tests pre-FullDiagnosis. */
   public RebufferGroup(
       int id,
       long triggerTimeMs,
       QoSInfo trigger,
       List<QoSInfo> entries,
       Diagnosis diagnosis) {
+    this(id, triggerTimeMs, trigger, entries, diagnosis, null);
+  }
+
+  /** Full constructor — both legacy {@code Diagnosis} and the new {@code FullDiagnosis} attached. */
+  public RebufferGroup(
+      int id,
+      long triggerTimeMs,
+      QoSInfo trigger,
+      List<QoSInfo> entries,
+      Diagnosis diagnosis,
+      @Nullable QoSDiagnoser.FullDiagnosis fullDiagnosis) {
     this.id = id;
     this.triggerTimeMs = triggerTimeMs;
     this.trigger = trigger;
     this.entries = entries;
     this.diagnosis = diagnosis;
+    this.fullDiagnosis = fullDiagnosis;
   }
 
   public int size() {

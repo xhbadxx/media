@@ -149,14 +149,24 @@ public final class FPlayQoSMonitor {
     // every consumer (HUD, log, support tickets) sees the same verdict.
     Diagnosis diagnosis = QoSDiagnoser.diagnose(trigger, snapshot);
     int groupId = ++nextGroupId;
-    Log.i(TAG, "Rebuffer #" + groupId + ": " + diagnosis.summary());
+    // Build a lightweight RebufferGroup just to feed the buffer-conservation
+    // pipeline — diagnoseFully takes a RebufferGroup. The legacy diagnosis is
+    // re-attached on the final group below alongside fullDiagnosis.
+    RebufferGroup pipelineInput =
+        new RebufferGroup(groupId, trigger.timestampMs, trigger, snapshot, diagnosis);
+    QoSDiagnoser.FullDiagnosis fullDiagnosis = QoSDiagnoser.diagnoseFully(pipelineInput);
+    Log.i(TAG, "Rebuffer #" + groupId + ": " + diagnosis.summary()
+        + " | cause=" + fullDiagnosis.cause
+        + " mechanism=" + fullDiagnosis.mechanism
+        + " abrLag=" + fullDiagnosis.abrLag);
     RebufferGroup group =
         new RebufferGroup(
             groupId,
             trigger.timestampMs,
             trigger,
             snapshot,
-            diagnosis);
+            diagnosis,
+            fullDiagnosis);
     rebufferGroups.add(group);
     while (rebufferGroups.size() > MAX_REBUFFER_GROUPS) {
       rebufferGroups.remove(0);
