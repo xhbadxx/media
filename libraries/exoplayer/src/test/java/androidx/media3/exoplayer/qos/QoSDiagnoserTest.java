@@ -1120,6 +1120,127 @@ public class QoSDiagnoserTest {
   }
 
   // ============================================================================
+  // Test 39 — Conclusion: CLIENT_BANDWIDTH cites postTtfb + bitrate + smoking gun
+  // ============================================================================
+
+  @Test
+  public void buildConclusion_clientBandwidth_citesPostTtfbAndBitrate() {
+    QoSInfo s1 = priorSegmentWithPostTtfb(0L, 300_000, 200);
+    QoSInfo s2 = priorSegmentWithPostTtfb(4_000L, 300_000, 200);
+    QoSInfo s3 = priorSegmentWithPostTtfb(8_000L, 300_000, 200);
+    QoSInfo s4 = priorSegmentWithPostTtfb(12_000L, 300_000, 200);
+    QoSInfo s5 = priorSegmentWithPostTtfb(16_000L, 300_000, 200);
+    QoSInfo spike =
+        new QoSInfo.Builder()
+            .setTimestampMs(20_000L)
+            .setTrackType(C.TRACK_TYPE_VIDEO)
+            .setBitrateKbps(850)
+            .setChunkDurationMs(4_000)
+            .setLoadDurationMs(12_000)
+            .setTtfbMs(9)
+            .setBytesLoaded(450_000)
+            .setBufferedDurationMs(8_000)
+            .build();
+    QoSInfo trigger = triggerWithBlNoMedia(32_000L, 0);
+    RebufferGroup group =
+        new RebufferGroup(
+            1,
+            trigger.timestampMs,
+            trigger,
+            Arrays.asList(s1, s2, s3, s4, s5, spike, trigger),
+            Diagnosis.unknown());
+
+    QoSDiagnoser.FullDiagnosis fd = QoSDiagnoser.diagnoseFully(group);
+    String conclusion = QoSDiagnoser.buildConclusion(fd, trigger);
+
+    assertThat(conclusion).contains("CLIENT_BANDWIDTH");
+    assertThat(conclusion).contains("SINGLE_SPIKE");
+    assertThat(conclusion).contains("postTtfb"); // derived metric label
+    assertThat(conclusion).contains("300"); // postTtfb value
+    assertThat(conclusion).contains("850"); // bitrate value
+    assertThat(conclusion).contains("00:00:20.000"); // smoking gun timestamp (formatted)
+  }
+
+  // ============================================================================
+  // Test 40 — Conclusion: CDN_SLOW_DELIVERY includes caveat about server timing
+  // ============================================================================
+
+  @Test
+  public void buildConclusion_cdnSlowDelivery_includesUpstreamTimingCaveat() {
+    QoSInfo s1 = ttfbDominantSegment(0L, 8_000);
+    QoSInfo s2 = ttfbDominantSegment(2_500L, 7_500);
+    QoSInfo s3 = ttfbDominantSegment(5_000L, 7_000);
+    QoSInfo trigger = triggerWithBlNoMedia(7_500L, 6_500);
+    RebufferGroup group =
+        new RebufferGroup(
+            1,
+            trigger.timestampMs,
+            trigger,
+            Arrays.asList(s1, s2, s3, trigger),
+            Diagnosis.unknown());
+
+    QoSDiagnoser.FullDiagnosis fd = QoSDiagnoser.diagnoseFully(group);
+    String conclusion = QoSDiagnoser.buildConclusion(fd, trigger);
+
+    assertThat(conclusion).contains("CDN_SLOW_DELIVERY");
+    // Caveat text must mention the missing server signal so support engineers
+    // know what would resolve the ambiguity.
+    assertThat(conclusion).contains("upstream_response_time");
+  }
+
+  // ============================================================================
+  // Test 41 — Conclusion: ORIGIN_ERROR cites the error entry's status / url
+  // ============================================================================
+
+  @Test
+  public void buildConclusion_originError_citesErrorEntry() {
+    QoSInfo s1 = segmentWithLoadDur(0L, 4_000, 200, 9_000);
+    QoSInfo s2 = segmentWithLoadDur(4_000L, 4_000, 200, 9_000);
+    QoSInfo errored = videoError(8_000L, /* br= */ 4_800, "HTTP 503 Service Unavailable");
+    QoSInfo trigger = triggerWithBlNoMedia(12_000L, 4_000);
+    RebufferGroup group =
+        new RebufferGroup(
+            1,
+            trigger.timestampMs,
+            trigger,
+            Arrays.asList(s1, s2, errored, trigger),
+            Diagnosis.unknown());
+
+    QoSDiagnoser.FullDiagnosis fd = QoSDiagnoser.diagnoseFully(group);
+    String conclusion = QoSDiagnoser.buildConclusion(fd, trigger);
+
+    assertThat(conclusion).contains("ORIGIN_ERROR");
+    assertThat(conclusion).contains("503");
+    assertThat(conclusion).contains("00:00:08.000"); // errored entry timestamp
+  }
+
+  // ============================================================================
+  // Test 42 — Conclusion: sanity gate failure surfaces the gate reason
+  // ============================================================================
+
+  @Test
+  public void buildConclusion_sanityGateFailed_surfacesReason() {
+    // Same paused fixture as Test 12: ratio = 0.4 < 0.7
+    QoSInfo s1 = segment(0L, 4_000, 9_000);
+    QoSInfo s2 = segment(4_000L, 4_000, 9_000);
+    QoSInfo trigger = triggerWithBlNoMedia(30_000L, 5_000);
+    RebufferGroup group =
+        new RebufferGroup(
+            1,
+            trigger.timestampMs,
+            trigger,
+            Arrays.asList(s1, s2, trigger),
+            Diagnosis.unknown());
+
+    QoSDiagnoser.FullDiagnosis fd = QoSDiagnoser.diagnoseFully(group);
+    String conclusion = QoSDiagnoser.buildConclusion(fd, trigger);
+
+    assertThat(conclusion).contains("TRANSIENT");
+    assertThat(conclusion).contains("demand_ratio");
+    assertThat(conclusion).contains("0.40");
+  }
+
+  // ============================================================================
   // Helpers
   // ============================================================================
 

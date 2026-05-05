@@ -760,6 +760,131 @@ public final class QoSDiagnoser {
   }
 
   /**
+   * Builds an audit-friendly conclusion text from a {@link FullDiagnosis} per
+   * {@code Spec - QoS Buffer Conservation Diagnosis §V.2}. Every metric value
+   * cited resolves to a specific entry timestamp + a rule from §IV.
+   *
+   * <p>Layout:
+   * <pre>
+   *   ═══ Rebuffer @ HH:MM:SS.mmm ═══
+   *   Cause: X    Mechanism: Y    abrLag: Z
+   *   [If sanity gate failed: Sanity gate: FAIL (&lt;reason&gt;) — and stop]
+   *   Window: wall=Xms Δbuf=Yms ΔSupply=Zms ΔDemand=Wms ratio=R
+   *   Smoking gun(s):
+   *     HH:MM:SS.mmm: ttfb=… loadDur=… cdur=… bytes=… br=…
+   *       derived: deficit=… transferMs=… postTtfb=…
+   *       attribution: …
+   *   [If abrLag: ABR cross-cut: br/mtp / prior_median facts]
+   *   [If CDN_SLOW_DELIVERY or INSUFFICIENT_DATA: caveat about upstream_response_time]
+   * </pre>
+   */
+  public static String buildConclusion(FullDiagnosis fd, @androidx.annotation.Nullable QoSInfo trigger) {
+    StringBuilder sb = new StringBuilder(512);
+    long triggerTs = trigger != null ? trigger.timestampMs : 0L;
+    sb.append("═══ Rebuffer @ ").append(formatTime(triggerTs)).append(" ═══\n");
+    sb.append("Cause: ")
+        .append(fd.cause.name())
+        .append("    Mechanism: ")
+        .append(fd.mechanism.name())
+        .append("    abrLag: ")
+        .append(fd.abrLag)
+        .append('\n');
+
+    if (fd.sanityFailReason != null) {
+      sb.append("Sanity gate: FAIL — ").append(fd.sanityFailReason).append('\n');
+      return sb.toString();
+    }
+
+    WindowMetrics m = fd.windowMetrics;
+    sb.append(
+        String.format(
+            Locale.US,
+            "Window: wall=%dms · Δbuf=%+dms · ΔSupply=%dms · ΔDemand=%dms · demand_ratio=%.2f%n",
+            m.wallTimeMs,
+            m.deltaBufferMs,
+            m.deltaSupplyMs,
+            m.deltaDemandMs,
+            m.demandRatio));
+
+    if (!fd.smokingGuns.isEmpty()) {
+      sb.append("Smoking gun(s):\n");
+      for (QoSInfo sg : fd.smokingGuns) {
+        appendSmokingGunLine(sb, sg, fd.attributions.get(sg));
+      }
+    }
+
+    if (fd.abrLag && trigger != null) {
+      sb.append("ABR cross-cut: br=").append(trigger.bitrateKbps).append("kbps");
+      if (trigger.measuredThroughputKbps > 0) {
+        sb.append(" · mtp=").append(trigger.measuredThroughputKbps).append("kbps");
+        if (trigger.bitrateKbps > 0) {
+          sb.append(
+              String.format(
+                  Locale.US,
+                  " · br/mtp=%.2f",
+                  (double) trigger.bitrateKbps / trigger.measuredThroughputKbps));
+        }
+      }
+      if (fd.priorMedianPostTtfbKbps > 0L) {
+        sb.append(" · prior_median_postTtfb=").append(fd.priorMedianPostTtfbKbps).append("kbps");
+      }
+      sb.append('\n');
+    }
+
+    if (fd.cause == Cause.CDN_SLOW_DELIVERY || fd.cause == Cause.INSUFFICIENT_DATA) {
+      sb.append(
+          "Caveat: cannot disambiguate origin vs client RTT without server-side "
+              + "upstream_response_time / Server-Timing header.\n");
+    }
+
+    return sb.toString();
+  }
+
+  /** Renders one smoking-gun row: raw + derived + attribution. */
+  private static void appendSmokingGunLine(
+      StringBuilder sb, QoSInfo sg, @androidx.annotation.Nullable Attribution attr) {
+    sb.append("  ").append(formatTime(sg.timestampMs)).append(": ");
+    if (sg.ttfbMs >= 0) {
+      sb.append("ttfb=").append(sg.ttfbMs).append("ms ");
+    }
+    if (sg.loadDurationMs > 0) {
+      sb.append("loadDur=").append(sg.loadDurationMs).append("ms ");
+    }
+    if (sg.chunkDurationMs > 0) {
+      sb.append("cdur=").append(sg.chunkDurationMs).append("ms ");
+    }
+    if (sg.bytesLoaded > 0) {
+      sb.append("bytes=").append(sg.bytesLoaded).append("B ");
+    }
+    if (sg.bitrateKbps > 0) {
+      sb.append("br=").append(sg.bitrateKbps).append("kbps");
+    }
+    if (sg.status == QoSInfo.LoadStatus.ERROR && sg.errorMessage != null) {
+      sb.append(" status=ERROR(").append(sg.errorMessage).append(")");
+    }
+    if (sg.cacheStatus != null) {
+      sb.append(" cache=").append(sg.cacheStatus);
+    }
+    sb.append('\n');
+
+    if (sg.chunkDurationMs > 0 && sg.loadDurationMs > 0) {
+      long deficit = sg.loadDurationMs - sg.chunkDurationMs;
+      long transferMs = Math.max(1L, sg.loadDurationMs - Math.max(0, sg.ttfbMs));
+      sb.append(
+          String.format(Locale.US, "    derived: deficit=%+dms · transferMs=%dms", deficit, transferMs));
+      if (sg.bytesLoaded > 0) {
+        long postTtfbKbps = sg.bytesLoaded * 8L / transferMs;
+        sb.append(" · postTtfb=").append(postTtfbKbps).append("kbps");
+      }
+      sb.append('\n');
+    }
+
+    if (attr != null) {
+      sb.append("    attribution: ").append(attr.name()).append('\n');
+    }
+  }
+
+  /**
    * Returns the completed scored segments that occurred strictly before the
    * earliest smoking-gun entry. When there are no smoking guns, returns all
    * completed scored segments — the caller treats them as the baseline pool.
