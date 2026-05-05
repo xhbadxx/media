@@ -23,8 +23,10 @@ import androidx.media3.exoplayer.qos.model.QoSInfo;
 import androidx.media3.exoplayer.qos.model.RebufferGroup;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.regex.Matcher;
 // java.util.regex.Pattern is fully-qualified at usage sites to disambiguate from
 // androidx.media3.exoplayer.qos.model.Pattern.
@@ -88,6 +90,19 @@ public final class QoSDiagnoser {
 
   /** Manifest load duration above this is treated as slow (baseline ≤ 200ms × 5). */
   static final long MANIFEST_SLOW_LOAD_MS = 1_000L;
+
+  /**
+   * postTtfb below this fraction of {@code prior_median_postTtfb} fires the
+   * defense-in-depth degradation trigger (Spec §IV.3).
+   */
+  static final double ATTRIBUTION_DEGRADATION_RATIO = 0.3;
+
+  /**
+   * When {@code ttfb / loadDur} exceeds this fraction, Phase 1 dominated the
+   * load and we attribute the deficit to slow response start (ambiguous: origin
+   * or client RTT — we cannot disambiguate without server timing).
+   */
+  static final double ATTRIBUTION_TTFB_DOMINANT_RATIO = 0.7;
 
   // ===== HTTP 5xx detection =====
 
@@ -246,7 +261,7 @@ public final class QoSDiagnoser {
    * </ul>
    */
   @androidx.annotation.Nullable
-  public static String applySanityGate(WindowMetrics metrics) {
+  public static String applySanityG1ate(WindowMetrics metrics) {
     if (metrics == null || metrics.wallTimeMs <= 0L) {
       return "wall_time = "
           + (metrics == null ? 0L : metrics.wallTimeMs)
@@ -448,6 +463,128 @@ public final class QoSDiagnoser {
       lower = lower.substring(0, q);
     }
     return lower.endsWith(".m3u8") || lower.endsWith(".mpd");
+  }
+
+  // ===== Per-load attribution =====
+
+  /**
+   * Per-smoking-gun attribution from {@code Spec - QoS Buffer Conservation
+   * Diagnosis §IV.3}. Two of the categories are deterministic:
+   * <ul>
+   *   <li>{@link #CLIENT_BANDWIDTH} fires whenever {@code postTtfb < bitrate};
+   *       a single smoking gun is sufficient because Phase 2 throughput is a
+   *       direct measurement of the client pipe (server has already committed
+   *       the byte stream by T1).
+   *   <li>{@link #ORIGIN_ERROR} is the HTTP status / retry signal — server-side
+   *       semantics give us full confidence on a single entry.
+   * </ul>
+   * The other categories are weaker signals that need group-level corroboration
+   * (handled in Task 6 aggregation).
+   */
+  public enum Attribution {
+    /** {@code postTtfb < bitrate} — pipe deterministically below requested bitrate. */
+    CLIENT_BANDWIDTH,
+    /** {@code postTtfb < prior_median × 0.3} — pipe degraded vs prior baseline. */
+    CLIENT_BANDWIDTH_DEGRADATION,
+    /** {@code ttfb > 0.7 × loadDur} but Phase 2 healthy — origin OR client RTT (ambiguous). */
+    SLOW_RESPONSE_START,
+    /** HTTP error or retry > 0 — server-side failure. */
+    ORIGIN_ERROR,
+    /** None of the deterministic triggers fire — deficit cause not attributable. */
+    MIXED,
+    /** {@code bytesLoaded ≤ 0} so we cannot derive {@code postTtfb}. */
+    UNKNOWN,
+  }
+
+  /** Per-gun attribution map plus the prior median used for degradation comparison. */
+  public static final class AttributionResult {
+    public final Map<QoSInfo, Attribution> perGun;
+    public final long priorMedianPostTtfbKbps;
+
+    AttributionResult(Map<QoSInfo, Attribution> perGun, long priorMedianPostTtfbKbps) {
+      this.perGun = Collections.unmodifiableMap(perGun);
+      this.priorMedianPostTtfbKbps = priorMedianPostTtfbKbps;
+    }
+  }
+
+  /**
+   * Attributes each smoking-gun entry to one of {@link Attribution}, using the
+   * post-TTFB throughput of {@code priorSegments} as the degradation baseline.
+   *
+   * <p>Entry order in the returned map follows {@code smokingGuns} so callers
+   * can render evidence in chronological order.
+   */
+  public static AttributionResult attribute(
+      List<QoSInfo> smokingGuns, List<QoSInfo> priorSegments) {
+    long priorMedian = computeMedianPostTtfbKbps(priorSegments);
+    Map<QoSInfo, Attribution> perGun = new LinkedHashMap<>();
+    if (smokingGuns != null) {
+      for (QoSInfo sg : smokingGuns) {
+        perGun.put(sg, attributeOne(sg, priorMedian));
+      }
+    }
+    return new AttributionResult(perGun, priorMedian);
+  }
+
+  /** Single-entry attribution per Spec §IV.3 priority order. */
+  private static Attribution attributeOne(QoSInfo sg, long priorMedianPostTtfbKbps) {
+    if (sg == null) {
+      return Attribution.UNKNOWN;
+    }
+    // Server-side error / retry has highest priority (HTTP semantics give certainty).
+    if (sg.status == QoSInfo.LoadStatus.ERROR || sg.retryCount > 0) {
+      return Attribution.ORIGIN_ERROR;
+    }
+    if (sg.bytesLoaded <= 0L || sg.loadDurationMs <= 0L) {
+      return Attribution.UNKNOWN;
+    }
+
+    long transferMs = Math.max(1L, sg.loadDurationMs - Math.max(0, sg.ttfbMs));
+    long postTtfbKbps = sg.bytesLoaded * 8L / transferMs;
+
+    // Trigger 1: Phase 2 deterministic — pipe insufficient for selected bitrate.
+    if (sg.bitrateKbps > 0 && postTtfbKbps < sg.bitrateKbps) {
+      return Attribution.CLIENT_BANDWIDTH;
+    }
+
+    // Trigger 2: degradation vs baseline (defense-in-depth, also deterministic).
+    if (priorMedianPostTtfbKbps > 0L
+        && postTtfbKbps < priorMedianPostTtfbKbps * ATTRIBUTION_DEGRADATION_RATIO) {
+      return Attribution.CLIENT_BANDWIDTH_DEGRADATION;
+    }
+
+    // Phase 2 healthy but TTFB dominated the load → response start was slow
+    // (origin or client RTT — cannot disambiguate without server timing).
+    if (sg.ttfbMs > 0
+        && (double) sg.ttfbMs / sg.loadDurationMs > ATTRIBUTION_TTFB_DOMINANT_RATIO) {
+      return Attribution.SLOW_RESPONSE_START;
+    }
+
+    return Attribution.MIXED;
+  }
+
+  /** Median of post-TTFB throughput across completed scored segments. */
+  private static long computeMedianPostTtfbKbps(List<QoSInfo> entries) {
+    if (entries == null || entries.isEmpty()) {
+      return 0L;
+    }
+    List<Long> values = new ArrayList<>();
+    for (QoSInfo e : entries) {
+      if (!isCompletedSegment(e) || e.bytesLoaded <= 0L || e.loadDurationMs <= 0L) {
+        continue;
+      }
+      long transferMs = Math.max(1L, e.loadDurationMs - Math.max(0, e.ttfbMs));
+      values.add(e.bytesLoaded * 8L / transferMs);
+    }
+    if (values.isEmpty()) {
+      return 0L;
+    }
+    Collections.sort(values);
+    int n = values.size();
+    if (n % 2 == 1) {
+      return values.get(n / 2);
+    }
+    return (values.get(n / 2 - 1) + values.get(n / 2)) / 2L;
   }
 
   /**

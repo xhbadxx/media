@@ -705,6 +705,174 @@ public class QoSDiagnoserTest {
   }
 
   // ============================================================================
+  // Test 25 — Attribute: Phase 2 deterministic (postTtfb < bitrate → CLIENT_BANDWIDTH)
+  // ============================================================================
+
+  @Test
+  public void attribute_postTtfbBelowBitrate_returnsClientBandwidth() {
+    // Smoking gun: bytes=450KB, ttfb=9ms, loadDur=12000ms → transferMs=11991ms
+    // → postTtfb = 450000×8/11991 ≈ 300 kbps. bitrate = 850 → fires trigger 1.
+    QoSInfo sg =
+        new QoSInfo.Builder()
+            .setTimestampMs(10_000L)
+            .setTrackType(C.TRACK_TYPE_VIDEO)
+            .setBitrateKbps(850)
+            .setChunkDurationMs(4_000)
+            .setLoadDurationMs(12_000)
+            .setTtfbMs(9)
+            .setBytesLoaded(450_000)
+            .build();
+    List<QoSInfo> prior = Arrays.asList(segment(0L, 4_000, 9_000), segment(4_000L, 4_000, 9_000));
+
+    QoSDiagnoser.AttributionResult r =
+        QoSDiagnoser.attribute(Arrays.asList(sg), prior);
+
+    assertThat(r.perGun.get(sg)).isEqualTo(QoSDiagnoser.Attribution.CLIENT_BANDWIDTH);
+  }
+
+  // ============================================================================
+  // Test 26 — Attribute: degradation vs prior baseline (postTtfb < median × 0.3)
+  // ============================================================================
+
+  @Test
+  public void attribute_postTtfbDroppedFromBaseline_returnsClientBandwidthDegradation() {
+    // Prior segments deliver ~12000 kbps each (300KB / 200ms × 8 = 12000).
+    // → prior_median_postTtfb = 12000 kbps
+    // Smoking gun: 337KB / 900ms × 8 = 3000 kbps
+    //   • > bitrate 1800 → trigger 1 NO
+    //   • < prior_median × 0.3 = 3600 → trigger 2 FIRES
+    QoSInfo p1 = priorSegmentWithPostTtfb(0L, /* bytes= */ 300_000, /* loadDur= */ 200);
+    QoSInfo p2 = priorSegmentWithPostTtfb(2_000L, 300_000, 200);
+    QoSInfo p3 = priorSegmentWithPostTtfb(4_000L, 300_000, 200);
+    QoSInfo sg =
+        new QoSInfo.Builder()
+            .setTimestampMs(10_000L)
+            .setTrackType(C.TRACK_TYPE_VIDEO)
+            .setBitrateKbps(1_800)
+            .setChunkDurationMs(4_000)
+            .setLoadDurationMs(1_000)
+            .setTtfbMs(100)
+            .setBytesLoaded(337_500)
+            .build();
+
+    QoSDiagnoser.AttributionResult r =
+        QoSDiagnoser.attribute(Arrays.asList(sg), Arrays.asList(p1, p2, p3));
+
+    assertThat(r.perGun.get(sg)).isEqualTo(QoSDiagnoser.Attribution.CLIENT_BANDWIDTH_DEGRADATION);
+    assertThat(r.priorMedianPostTtfbKbps).isEqualTo(12_000L);
+  }
+
+  // ============================================================================
+  // Test 27 — Attribute: TTFB dominant (ttfb/loadDur > 0.7 + postTtfb OK)
+  // ============================================================================
+
+  @Test
+  public void attribute_ttfbDominantPhase2Healthy_returnsSlowResponseStart() {
+    // Smoking gun: cdur=2000, loadDur=2500, ttfb=2000 → ttfb share 0.8 > 0.7
+    // bytes=1MB, transferMs=500 → postTtfb = 16000 kbps > br 4800 → trigger 1 NO
+    // prior_median modest (4000 kbps) → 16000 NOT below 4000×0.3=1200 → trigger 2 NO
+    // → SLOW_RESPONSE_START
+    QoSInfo p1 = priorSegmentWithPostTtfb(0L, /* bytes= */ 100_000, /* loadDur= */ 200); // 4000
+    QoSInfo p2 = priorSegmentWithPostTtfb(2_000L, 100_000, 200);
+    QoSInfo sg =
+        new QoSInfo.Builder()
+            .setTimestampMs(10_000L)
+            .setTrackType(C.TRACK_TYPE_VIDEO)
+            .setBitrateKbps(4_800)
+            .setChunkDurationMs(2_000)
+            .setLoadDurationMs(2_500)
+            .setTtfbMs(2_000)
+            .setBytesLoaded(1_000_000)
+            .build();
+
+    QoSDiagnoser.AttributionResult r =
+        QoSDiagnoser.attribute(Arrays.asList(sg), Arrays.asList(p1, p2));
+
+    assertThat(r.perGun.get(sg)).isEqualTo(QoSDiagnoser.Attribution.SLOW_RESPONSE_START);
+  }
+
+  // ============================================================================
+  // Test 28 — Attribute: status ERROR → ORIGIN_ERROR (priority over Phase 2)
+  // ============================================================================
+
+  @Test
+  public void attribute_statusError_returnsOriginErrorRegardlessOfPhase2() {
+    QoSInfo sg =
+        new QoSInfo.Builder()
+            .setTimestampMs(10_000L)
+            .setTrackType(C.TRACK_TYPE_VIDEO)
+            .setBitrateKbps(4_800)
+            .setChunkDurationMs(4_000)
+            .setLoadDurationMs(500)
+            .setStatus(QoSInfo.LoadStatus.ERROR)
+            .setErrorMessage("HTTP 503 Service Unavailable")
+            .setBytesLoaded(0)
+            .build();
+    List<QoSInfo> prior = Arrays.asList(segment(0L, 4_000, 9_000), segment(4_000L, 4_000, 9_000));
+
+    QoSDiagnoser.AttributionResult r =
+        QoSDiagnoser.attribute(Arrays.asList(sg), prior);
+
+    assertThat(r.perGun.get(sg)).isEqualTo(QoSDiagnoser.Attribution.ORIGIN_ERROR);
+  }
+
+  // ============================================================================
+  // Test 29 — Attribute: bytesLoaded = 0 → UNKNOWN (cannot derive postTtfb)
+  // ============================================================================
+
+  @Test
+  public void attribute_zeroBytesLoaded_returnsUnknown() {
+    QoSInfo sg =
+        new QoSInfo.Builder()
+            .setTimestampMs(10_000L)
+            .setTrackType(C.TRACK_TYPE_VIDEO)
+            .setBitrateKbps(4_800)
+            .setChunkDurationMs(4_000)
+            .setLoadDurationMs(5_000)
+            .setTtfbMs(100)
+            .setBytesLoaded(0)
+            .build();
+    List<QoSInfo> prior = Arrays.asList(segment(0L, 4_000, 9_000), segment(4_000L, 4_000, 9_000));
+
+    QoSDiagnoser.AttributionResult r =
+        QoSDiagnoser.attribute(Arrays.asList(sg), prior);
+
+    assertThat(r.perGun.get(sg)).isEqualTo(QoSDiagnoser.Attribution.UNKNOWN);
+  }
+
+  // ============================================================================
+  // Test 30 — Attribute: MIXED (no trigger fires, deficit caused by something else)
+  // ============================================================================
+
+  @Test
+  public void attribute_noTriggerFires_returnsMixed() {
+    // Smoking gun has small deficit (loadDur 5000 vs cdur 4000 → +1000) but:
+    //   • postTtfb = 3500000×8/4500 ≈ 6222 kbps > bitrate 4800 → trigger 1 NO
+    //   • > prior_median×0.3 → trigger 2 NO
+    //   • ttfb 500/loadDur 5000 = 0.1 < 0.7 → SLOW_RESPONSE_START NO
+    //   → MIXED
+    QoSInfo sg =
+        new QoSInfo.Builder()
+            .setTimestampMs(10_000L)
+            .setTrackType(C.TRACK_TYPE_VIDEO)
+            .setBitrateKbps(4_800)
+            .setChunkDurationMs(4_000)
+            .setLoadDurationMs(5_000)
+            .setTtfbMs(500)
+            .setBytesLoaded(3_500_000)
+            .build();
+    List<QoSInfo> prior =
+        Arrays.asList(
+            priorSegmentWithPostTtfb(0L, 100_000, 200),
+            priorSegmentWithPostTtfb(2_000L, 100_000, 200));
+
+    QoSDiagnoser.AttributionResult r =
+        QoSDiagnoser.attribute(Arrays.asList(sg), prior);
+
+    assertThat(r.perGun.get(sg)).isEqualTo(QoSDiagnoser.Attribution.MIXED);
+  }
+
+  // ============================================================================
   // Helpers
   // ============================================================================
 
@@ -860,6 +1028,25 @@ public class QoSDiagnoserTest {
         .setLoadDurationMs(loadDurMs)
         .setBytesLoaded((long) (1_800 * cdurMs / 8))
         .setTtfbMs(10)
+        .build();
+  }
+
+  /**
+   * V segment with explicit bytes and loadDur so attribution tests can compute
+   * a precise post-TTFB throughput. Sets {@code chunkDurationMs > 0} so the
+   * entry passes {@code isCompletedSegment} and contributes to prior median.
+   */
+  private static QoSInfo priorSegmentWithPostTtfb(
+      long timestampMs, long bytesLoaded, long loadDurMs) {
+    return new QoSInfo.Builder()
+        .setTimestampMs(timestampMs)
+        .setTrackType(C.TRACK_TYPE_VIDEO)
+        .setBitrateKbps(1_800)
+        .setChunkDurationMs(4_000)
+        .setLoadDurationMs(loadDurMs)
+        .setTtfbMs(0)
+        .setBytesLoaded(bytesLoaded)
+        .setBufferedDurationMs(8_000)
         .build();
   }
 
