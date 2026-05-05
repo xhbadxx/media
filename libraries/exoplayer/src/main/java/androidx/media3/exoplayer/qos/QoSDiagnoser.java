@@ -370,8 +370,17 @@ public final class QoSDiagnoser {
       return new MechanismResult(Mechanism.INSUFFICIENT_LOG, Collections.<QoSInfo>emptyList());
     }
 
-    // 4. Compute per-segment deficits + find max + count drains
-    long initialBl = clampNonNegativeBl(segments.get(0).bufferedDurationMs);
+    // 4. Compute per-segment deficits + find max + count drains. Track the
+    // highest bl observed in the entire window (not just the first entry) —
+    // post-switch / cold-start groups can have bl=0 at entries[0], which would
+    // make the SPIKE check vacuous if pinned to initialBl alone.
+    long peakBl = 0L;
+    for (QoSInfo e : group.entries) {
+      long bl = clampNonNegativeBl(e.bufferedDurationMs);
+      if (bl > peakBl) {
+        peakBl = bl;
+      }
+    }
     long maxDeficit = 0L;
     int spikeIndex = -1;
     int drainCount = 0;
@@ -387,8 +396,8 @@ public final class QoSDiagnoser {
       }
     }
 
-    // 5. SINGLE_SPIKE — one deficit dominates initial buffer
-    if (initialBl > 0L && (double) maxDeficit / initialBl > MECHANISM_SPIKE_RATIO) {
+    // 5. SINGLE_SPIKE — one deficit dominates the window's peak buffer cushion.
+    if (peakBl > 0L && (double) maxDeficit / peakBl > MECHANISM_SPIKE_RATIO) {
       List<QoSInfo> guns = new ArrayList<>(1);
       guns.add(segments.get(spikeIndex));
       return new MechanismResult(Mechanism.SINGLE_SPIKE, guns);
@@ -939,16 +948,21 @@ public final class QoSDiagnoser {
   }
 
   /**
-   * A scored-track entry that completed loading and carries a positive media
-   * duration. Manifests ({@code TRACK_TYPE_UNKNOWN}), init segments
-   * ({@code chunkDurationMs ≤ 0}), text/image/metadata, and failed loads are
-   * excluded — they don't deliver playable media into the buffer.
+   * A video-bottleneck segment that completed loading and carries a positive
+   * media duration. Filters in:
+   * <ul>
+   *   <li>{@link C#TRACK_TYPE_VIDEO} — DASH-style separate video track
+   *   <li>{@link C#TRACK_TYPE_DEFAULT} — HLS .ts muxed segment (V+A combined)
+   * </ul>
+   * Filters out: audio tracks (DASH plays A+V in parallel — counting both would
+   * double the {@code ΔSupply} value relative to the single-stream wall clock),
+   * manifests, init segments, text/image/metadata, and failed loads.
    */
   private static boolean isCompletedSegment(QoSInfo entry) {
     return entry != null
         && entry.status == QoSInfo.LoadStatus.COMPLETED
         && entry.chunkDurationMs > 0L
-        && isScoredTrackType(entry.trackType);
+        && isVideoLikeTrackType(entry.trackType);
   }
 
   /**
