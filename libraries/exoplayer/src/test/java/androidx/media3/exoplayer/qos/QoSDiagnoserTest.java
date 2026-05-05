@@ -1158,7 +1158,9 @@ public class QoSDiagnoserTest {
     assertThat(conclusion).contains("postTtfb"); // derived metric label
     assertThat(conclusion).contains("300"); // postTtfb value
     assertThat(conclusion).contains("850"); // bitrate value
-    assertThat(conclusion).contains("00:00:20.000"); // smoking gun timestamp (formatted)
+    // Timestamp formatting is now device-local-TZ aware, so we only verify a
+    // formatted clock value is present rather than asserting a specific TZ.
+    assertThat(conclusion).containsMatch("\\d{2}:\\d{2}:\\d{2}\\.\\d{3}");
   }
 
   // ============================================================================
@@ -1211,7 +1213,8 @@ public class QoSDiagnoserTest {
 
     assertThat(conclusion).contains("ORIGIN_ERROR");
     assertThat(conclusion).contains("503");
-    assertThat(conclusion).contains("00:00:08.000"); // errored entry timestamp
+    // Timestamp formatting is now device-local-TZ aware (see Test 39 note).
+    assertThat(conclusion).containsMatch("\\d{2}:\\d{2}:\\d{2}\\.\\d{3}");
   }
 
   // ============================================================================

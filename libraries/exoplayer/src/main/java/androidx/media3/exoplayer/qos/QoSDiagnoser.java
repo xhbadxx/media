@@ -788,16 +788,17 @@ public final class QoSDiagnoser {
    * </pre>
    */
   public static String buildConclusion(FullDiagnosis fd, @androidx.annotation.Nullable QoSInfo trigger) {
-    StringBuilder sb = new StringBuilder(512);
-    long triggerTs = trigger != null ? trigger.timestampMs : 0L;
-    sb.append("═══ Rebuffer @ ").append(formatTime(triggerTs)).append(" ═══\n");
-    sb.append("Cause: ")
-        .append(fd.cause.name())
-        .append("    Mechanism: ")
-        .append(fd.mechanism.name())
-        .append("    abrLag: ")
-        .append(fd.abrLag)
-        .append('\n');
+    // Trimmed for card rendering — the host UI surfaces trigger time as a
+    // separate row above this body, so we skip the ═══ banner. We do keep a
+    // compact verdict line up top so logcat / JSON consumers still have the
+    // verdict + flag inline (the host UI may show its own badge as well; one
+    // duplicated label is cheaper than missing it from the searchable text).
+    StringBuilder sb = new StringBuilder(384);
+    sb.append(fd.cause.name()).append(" · ").append(fd.mechanism.name());
+    if (fd.abrLag) {
+      sb.append(" · ABR_LAG");
+    }
+    sb.append('\n');
 
     if (fd.sanityFailReason != null) {
       sb.append("Sanity gate: FAIL — ").append(fd.sanityFailReason).append('\n');
@@ -1282,11 +1283,17 @@ public final class QoSDiagnoser {
   }
 
   private static String formatTime(long timestampMs) {
-    long s = timestampMs / 1000;
-    long ms = timestampMs % 1000;
-    long sec = s % 60;
-    long min = (s / 60) % 60;
-    long hr = (s / 3600) % 24;
-    return String.format(Locale.US, "%02d:%02d:%02d.%03d", hr, min, sec, ms);
+    // Use the device's default time zone — the previous arithmetic-only
+    // implementation always rendered UTC, which made on-device evidence
+    // diverge from logcat / wall-clock by the local UTC offset.
+    java.util.Calendar cal = java.util.Calendar.getInstance();
+    cal.setTimeInMillis(timestampMs);
+    return String.format(
+        Locale.US,
+        "%02d:%02d:%02d.%03d",
+        cal.get(java.util.Calendar.HOUR_OF_DAY),
+        cal.get(java.util.Calendar.MINUTE),
+        cal.get(java.util.Calendar.SECOND),
+        cal.get(java.util.Calendar.MILLISECOND));
   }
 }
