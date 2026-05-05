@@ -71,6 +71,12 @@ public final class QoSDiagnoser {
   /** Minimum A/V entries needed to issue a non-TRANSIENT verdict. */
   static final int MIN_AV_ENTRIES = 5;
 
+  /** Lower bound of {@code demand_ratio} accepted as normal 1× playback. */
+  static final double SANITY_GATE_RATIO_MIN = 0.7;
+
+  /** Upper bound of {@code demand_ratio} accepted as normal 1× playback. */
+  static final double SANITY_GATE_RATIO_MAX = 1.3;
+
   // ===== HTTP 5xx detection =====
 
   private static final java.util.regex.Pattern HTTP_5XX =
@@ -206,6 +212,44 @@ public final class QoSDiagnoser {
    */
   private static long clampNonNegativeBl(int bufferedDurationMs) {
     return bufferedDurationMs >= 0 ? bufferedDurationMs : 0L;
+  }
+
+  /**
+   * Sanity gate from {@code Spec - QoS Buffer Conservation Diagnosis §IV.1}.
+   * Returns {@code null} when the window represents normal 1× playback (and
+   * thus is suitable for network diagnosis); otherwise returns a human-readable
+   * reason describing why the window is abnormal (paused, sped up, seeked, or
+   * degenerate).
+   *
+   * <p>This is a pure check — it does not mutate the diagnosis. The eventual
+   * pipeline rewrite (see plan Task 6) will short-circuit to {@code TRANSIENT}
+   * when this gate returns non-null.
+   *
+   * <p>Bounds:
+   * <ul>
+   *   <li>{@code wall_time ≤ 0}                 → degenerate window
+   *   <li>{@code demand_ratio < 0.7}            → likely paused / partially paused
+   *   <li>{@code demand_ratio > 1.3}            → likely speed up (trick play)
+   *   <li>{@code 0.7 ≤ demand_ratio ≤ 1.3}     → passes
+   * </ul>
+   */
+  @androidx.annotation.Nullable
+  public static String applySanityGate(WindowMetrics metrics) {
+    if (metrics == null || metrics.wallTimeMs <= 0L) {
+      return "wall_time = "
+          + (metrics == null ? 0L : metrics.wallTimeMs)
+          + "ms (window degenerate, cannot diagnose)";
+    }
+    double ratio = metrics.demandRatio;
+    if (ratio < SANITY_GATE_RATIO_MIN || ratio > SANITY_GATE_RATIO_MAX) {
+      return String.format(
+          Locale.US,
+          "demand_ratio %.2f ∉ [%.1f, %.1f] (abnormal playback: pause/seek/speed change)",
+          ratio,
+          SANITY_GATE_RATIO_MIN,
+          SANITY_GATE_RATIO_MAX);
+    }
+    return null;
   }
 
   /**

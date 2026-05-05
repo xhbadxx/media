@@ -411,6 +411,108 @@ public class QoSDiagnoserTest {
   }
 
   // ============================================================================
+  // Test 14 — Sanity gate: pause / seek scenario fails (ratio < 0.7)
+  // ============================================================================
+
+  @Test
+  public void applySanityGate_ratioBelowFloor_failsWithReason() {
+    // Same paused fixture as Test 12: ratio = 12000/30000 = 0.4 < 0.7
+    QoSInfo s1 = segment(0L, 4_000, 9_000);
+    QoSInfo s2 = segment(4_000L, 4_000, 9_000);
+    QoSInfo trigger = triggerWithBlNoMedia(30_000L, 5_000);
+    RebufferGroup group =
+        new RebufferGroup(
+            1,
+            trigger.timestampMs,
+            trigger,
+            Arrays.asList(s1, s2, trigger),
+            Diagnosis.unknown());
+
+    QoSDiagnoser.WindowMetrics metrics = QoSDiagnoser.computeWindowMetrics(group);
+    String reason = QoSDiagnoser.applySanityGate(metrics);
+
+    assertThat(reason).isNotNull();
+    assertThat(reason).contains("demand_ratio");
+    assertThat(reason).contains("0.40");
+  }
+
+  // ============================================================================
+  // Test 15 — Sanity gate: normal 1× playback passes
+  // ============================================================================
+
+  @Test
+  public void applySanityGate_normalPlayback_passes() {
+    // Same steady fixture as Test 11: ratio ≈ 1.0
+    QoSInfo s1 = segment(0L, 4_000, 8_000);
+    QoSInfo s2 = segment(4_000L, 4_000, 8_000);
+    QoSInfo s3 = segment(8_000L, 4_000, 8_000);
+    QoSInfo s4 = segment(12_000L, 4_000, 8_000);
+    QoSInfo s5 = segment(16_000L, 4_000, 8_000);
+    QoSInfo trigger = triggerWithBlNoMedia(20_000L, 8_000);
+    RebufferGroup group =
+        new RebufferGroup(
+            1,
+            trigger.timestampMs,
+            trigger,
+            Arrays.asList(s1, s2, s3, s4, s5, trigger),
+            Diagnosis.unknown());
+
+    QoSDiagnoser.WindowMetrics metrics = QoSDiagnoser.computeWindowMetrics(group);
+    String reason = QoSDiagnoser.applySanityGate(metrics);
+
+    assertThat(reason).isNull();
+  }
+
+  // ============================================================================
+  // Test 16 — Sanity gate: trick play / speedup fails (ratio > 1.3)
+  // ============================================================================
+
+  @Test
+  public void applySanityGate_ratioAboveCeiling_failsWithReason() {
+    // Synthetic speedup: 5 segments cdur=4000 in only 12s wall time
+    // (player consumed faster than wall clock).
+    //   ΔSupply = 20000ms, Δbuffer = 0, ΔDemand = 20000ms, wall = 12000ms
+    //   ratio = 20000 / 12000 ≈ 1.67 > 1.3 → fail
+    QoSInfo s1 = segment(0L, 4_000, 8_000);
+    QoSInfo s2 = segment(2_400L, 4_000, 8_000);
+    QoSInfo s3 = segment(4_800L, 4_000, 8_000);
+    QoSInfo s4 = segment(7_200L, 4_000, 8_000);
+    QoSInfo s5 = segment(9_600L, 4_000, 8_000);
+    QoSInfo trigger = triggerWithBlNoMedia(12_000L, 8_000);
+    RebufferGroup group =
+        new RebufferGroup(
+            1,
+            trigger.timestampMs,
+            trigger,
+            Arrays.asList(s1, s2, s3, s4, s5, trigger),
+            Diagnosis.unknown());
+
+    QoSDiagnoser.WindowMetrics metrics = QoSDiagnoser.computeWindowMetrics(group);
+    String reason = QoSDiagnoser.applySanityGate(metrics);
+
+    assertThat(reason).isNotNull();
+    assertThat(reason).contains("demand_ratio");
+  }
+
+  // ============================================================================
+  // Test 17 — Sanity gate: degenerate window (wall_time = 0) fails
+  // ============================================================================
+
+  @Test
+  public void applySanityGate_zeroWallTime_failsWithDegenerateReason() {
+    QoSInfo trigger = videoTriggerWithMtp(1_000L, 1_800, 5_000);
+    RebufferGroup group =
+        new RebufferGroup(
+            1, trigger.timestampMs, trigger, Arrays.asList(trigger), Diagnosis.unknown());
+
+    QoSDiagnoser.WindowMetrics metrics = QoSDiagnoser.computeWindowMetrics(group);
+    String reason = QoSDiagnoser.applySanityGate(metrics);
+
+    assertThat(reason).isNotNull();
+    assertThat(reason).contains("wall_time");
+  }
+
+  // ============================================================================
   // Helpers
   // ============================================================================
 
