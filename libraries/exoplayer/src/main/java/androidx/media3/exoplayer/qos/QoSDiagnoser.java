@@ -563,6 +563,232 @@ public final class QoSDiagnoser {
     return Attribution.MIXED;
   }
 
+  // ===== Cause aggregation + ABR cross-cut =====
+
+  /**
+   * Final verdict — what the rebuffer was caused by. Seven values per
+   * {@code Spec - QoS Buffer Conservation Diagnosis §V.1}, ordered by certainty
+   * from definitive (server error) to admit-don't-know ({@link #INSUFFICIENT_DATA}).
+   */
+  public enum Cause {
+    /** ≥1 segment with HTTP 5xx or {@code retryCount > 0}. */
+    ORIGIN_ERROR,
+    /** Manifest fetch failed with {@code status == ERROR}. */
+    MANIFEST_FAILURE,
+    /** ≥2 manifests took > {@link #MANIFEST_SLOW_LOAD_MS}. */
+    MANIFEST_SLOW,
+    /** Phase 2 deterministic — pipe insufficient for selected bitrate. */
+    CLIENT_BANDWIDTH,
+    /** Drain with consistent TTFB-dominant attribution; cannot distinguish origin vs client RTT. */
+    CDN_SLOW_DELIVERY,
+    /** Mixed/ambiguous signals — not enough evidence for a deterministic verdict. */
+    INSUFFICIENT_DATA,
+    /** Sanity gate failed, no observable drain, or group too short to verdict. */
+    TRANSIENT,
+  }
+
+  /**
+   * Maps a {@link MechanismResult} + {@link AttributionResult} pair to a single
+   * {@link Cause} per {@code Spec - QoS Buffer Conservation Diagnosis §IV.4}.
+   * Pure function — does not consult window metrics or sanity gate; callers are
+   * expected to handle the gate fail upstream.
+   */
+  public static Cause aggregateCause(MechanismResult mr, AttributionResult ar) {
+    if (mr == null) {
+      return Cause.TRANSIENT;
+    }
+    switch (mr.mechanism) {
+      case ORIGIN_ERROR_DETECTED:
+        return Cause.ORIGIN_ERROR;
+      case MANIFEST_FAILURE_DETECTED:
+        return Cause.MANIFEST_FAILURE;
+      case MANIFEST_SLOW_DETECTED:
+        return Cause.MANIFEST_SLOW;
+      case SINGLE_SPIKE: {
+        if (mr.smokingGuns.isEmpty() || ar == null) {
+          return Cause.INSUFFICIENT_DATA;
+        }
+        QoSInfo sg = mr.smokingGuns.get(0);
+        Attribution attr = ar.perGun.get(sg);
+        if (attr == null) {
+          return Cause.INSUFFICIENT_DATA;
+        }
+        switch (attr) {
+          case CLIENT_BANDWIDTH:
+          case CLIENT_BANDWIDTH_DEGRADATION:
+            return Cause.CLIENT_BANDWIDTH;
+          case ORIGIN_ERROR:
+            return Cause.ORIGIN_ERROR;
+          case SLOW_RESPONSE_START:
+          case MIXED:
+          case UNKNOWN:
+          default:
+            return Cause.INSUFFICIENT_DATA;
+        }
+      }
+      case CONTINUOUS_DRAIN: {
+        if (ar == null) {
+          return Cause.INSUFFICIENT_DATA;
+        }
+        int clientBwCount = 0;
+        int slowStartCount = 0;
+        for (Attribution a : ar.perGun.values()) {
+          if (a == Attribution.CLIENT_BANDWIDTH || a == Attribution.CLIENT_BANDWIDTH_DEGRADATION) {
+            clientBwCount++;
+          } else if (a == Attribution.SLOW_RESPONSE_START) {
+            slowStartCount++;
+          }
+        }
+        // One CLIENT_BANDWIDTH attribution is enough — Phase 2 is a direct
+        // measurement, no corroboration needed for client side.
+        if (clientBwCount >= 1) {
+          return Cause.CLIENT_BANDWIDTH;
+        }
+        // TTFB-dominant entries need ≥2 corroboration since the signal is noisy.
+        if (slowStartCount >= 2) {
+          return Cause.CDN_SLOW_DELIVERY;
+        }
+        return Cause.INSUFFICIENT_DATA;
+      }
+      case INSUFFICIENT_LOG:
+      case NONE:
+      default:
+        return Cause.TRANSIENT;
+    }
+  }
+
+  /**
+   * ABR lag cross-cut per {@code Spec - QoS Buffer Conservation Diagnosis §IV.5}.
+   * Independent of {@link Cause} — can co-occur with any verdict, most often
+   * {@link Cause#CLIENT_BANDWIDTH}.
+   *
+   * <p>True when either:
+   * <ul>
+   *   <li>{@code trigger.bitrate / trigger.mtp > 0.8} (Media3 ABR safety bound), or
+   *   <li>{@code trigger.bitrate > prior_median_postTtfb} (selected bitrate exceeds
+   *       what the pipe was actually delivering).
+   * </ul>
+   */
+  public static boolean computeAbrLag(QoSInfo trigger, long priorMedianPostTtfbKbps) {
+    if (trigger == null || trigger.bitrateKbps <= 0) {
+      return false;
+    }
+    if (trigger.measuredThroughputKbps > 0
+        && (double) trigger.bitrateKbps / trigger.measuredThroughputKbps > ABR_LAG_RATIO) {
+      return true;
+    }
+    return priorMedianPostTtfbKbps > 0L && trigger.bitrateKbps > priorMedianPostTtfbKbps;
+  }
+
+  // ===== Pipeline orchestration =====
+
+  /**
+   * Full rich diagnosis bundling every step of the pipeline together for
+   * downstream evidence rendering. Built by {@link #diagnoseFully(RebufferGroup)}.
+   */
+  public static final class FullDiagnosis {
+    public final Cause cause;
+    public final Mechanism mechanism;
+    public final List<QoSInfo> smokingGuns;
+    public final Map<QoSInfo, Attribution> attributions;
+    public final long priorMedianPostTtfbKbps;
+    public final WindowMetrics windowMetrics;
+    public final boolean abrLag;
+    /** {@code null} when the sanity gate passed; otherwise the human-readable reason. */
+    @androidx.annotation.Nullable public final String sanityFailReason;
+
+    FullDiagnosis(
+        Cause cause,
+        Mechanism mechanism,
+        List<QoSInfo> smokingGuns,
+        Map<QoSInfo, Attribution> attributions,
+        long priorMedianPostTtfbKbps,
+        WindowMetrics windowMetrics,
+        boolean abrLag,
+        @androidx.annotation.Nullable String sanityFailReason) {
+      this.cause = cause;
+      this.mechanism = mechanism;
+      this.smokingGuns = Collections.unmodifiableList(smokingGuns);
+      this.attributions = Collections.unmodifiableMap(attributions);
+      this.priorMedianPostTtfbKbps = priorMedianPostTtfbKbps;
+      this.windowMetrics = windowMetrics;
+      this.abrLag = abrLag;
+      this.sanityFailReason = sanityFailReason;
+    }
+  }
+
+  /**
+   * End-to-end orchestration of the buffer-conservation pipeline:
+   * window metrics → sanity gate → mechanism detection → per-load
+   * attribution → cause aggregation → ABR cross-cut.
+   *
+   * <p>Returns a {@link FullDiagnosis} suitable for evidence rendering. When
+   * the sanity gate fails the cause is short-circuited to {@link Cause#TRANSIENT}
+   * with {@link FullDiagnosis#sanityFailReason} populated.
+   */
+  public static FullDiagnosis diagnoseFully(RebufferGroup group) {
+    WindowMetrics metrics = computeWindowMetrics(group);
+    String sanityFail = applySanityG1ate(metrics);
+    if (sanityFail != null) {
+      return new FullDiagnosis(
+          Cause.TRANSIENT,
+          Mechanism.NONE,
+          Collections.<QoSInfo>emptyList(),
+          Collections.<QoSInfo, Attribution>emptyMap(),
+          0L,
+          metrics,
+          false,
+          sanityFail);
+    }
+
+    MechanismResult mr = detectMechanism(group);
+    List<QoSInfo> priorSegments = collectPriorSegments(group, mr.smokingGuns);
+    AttributionResult ar = attribute(mr.smokingGuns, priorSegments);
+    Cause cause = aggregateCause(mr, ar);
+    boolean abrLag =
+        group != null && computeAbrLag(group.trigger, ar.priorMedianPostTtfbKbps);
+
+    return new FullDiagnosis(
+        cause,
+        mr.mechanism,
+        mr.smokingGuns,
+        ar.perGun,
+        ar.priorMedianPostTtfbKbps,
+        metrics,
+        abrLag,
+        null);
+  }
+
+  /**
+   * Returns the completed scored segments that occurred strictly before the
+   * earliest smoking-gun entry. When there are no smoking guns, returns all
+   * completed scored segments — the caller treats them as the baseline pool.
+   */
+  private static List<QoSInfo> collectPriorSegments(
+      RebufferGroup group, List<QoSInfo> smokingGuns) {
+    if (group == null || group.entries == null || group.entries.isEmpty()) {
+      return Collections.<QoSInfo>emptyList();
+    }
+    long earliest = Long.MAX_VALUE;
+    if (smokingGuns != null && !smokingGuns.isEmpty()) {
+      for (QoSInfo sg : smokingGuns) {
+        if (sg.timestampMs < earliest) {
+          earliest = sg.timestampMs;
+        }
+      }
+    }
+    List<QoSInfo> prior = new ArrayList<>();
+    for (QoSInfo e : group.entries) {
+      if (!isCompletedSegment(e)) {
+        continue;
+      }
+      if (earliest == Long.MAX_VALUE || e.timestampMs < earliest) {
+        prior.add(e);
+      }
+    }
+    return prior;
+  }
+
   /** Median of post-TTFB throughput across completed scored segments. */
   private static long computeMedianPostTtfbKbps(List<QoSInfo> entries) {
     if (entries == null || entries.isEmpty()) {

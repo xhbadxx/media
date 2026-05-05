@@ -873,6 +873,253 @@ public class QoSDiagnoserTest {
   }
 
   // ============================================================================
+  // Test 31 — Cause: ORIGIN_ERROR
+  // ============================================================================
+
+  @Test
+  public void diagnoseFully_segment5xx_returnsOriginErrorCause() {
+    QoSInfo s1 = segmentWithLoadDur(0L, 4_000, 200, 9_000);
+    QoSInfo s2 = segmentWithLoadDur(4_000L, 4_000, 200, 9_000);
+    QoSInfo errored = videoError(8_000L, /* br= */ 4_800, "HTTP 503");
+    QoSInfo trigger = triggerWithBlNoMedia(12_000L, 4_000);
+    RebufferGroup group =
+        new RebufferGroup(
+            1,
+            trigger.timestampMs,
+            trigger,
+            Arrays.asList(s1, s2, errored, trigger),
+            Diagnosis.unknown());
+
+    QoSDiagnoser.FullDiagnosis r = QoSDiagnoser.diagnoseFully(group);
+
+    assertThat(r.cause).isEqualTo(QoSDiagnoser.Cause.ORIGIN_ERROR);
+    assertThat(r.mechanism).isEqualTo(QoSDiagnoser.Mechanism.ORIGIN_ERROR_DETECTED);
+    assertThat(r.smokingGuns).contains(errored);
+  }
+
+  // ============================================================================
+  // Test 32 — Cause: MANIFEST_FAILURE
+  // ============================================================================
+
+  @Test
+  public void diagnoseFully_manifestStatusError_returnsManifestFailureCause() {
+    QoSInfo manifest =
+        new QoSInfo.Builder()
+            .setTimestampMs(0L)
+            .setTrackType(C.TRACK_TYPE_UNKNOWN)
+            .setUrl("https://example/playlist.m3u8")
+            .setStatus(QoSInfo.LoadStatus.ERROR)
+            .setErrorMessage("connection timeout")
+            .setBufferedDurationMs(8_000)
+            .build();
+    QoSInfo s1 = segmentWithLoadDur(2_000L, 4_000, 200, 8_000);
+    QoSInfo s2 = segmentWithLoadDur(6_000L, 4_000, 200, 8_000);
+    QoSInfo trigger = triggerWithBlNoMedia(10_000L, 4_000);
+    RebufferGroup group =
+        new RebufferGroup(
+            1,
+            trigger.timestampMs,
+            trigger,
+            Arrays.asList(manifest, s1, s2, trigger),
+            Diagnosis.unknown());
+
+    QoSDiagnoser.FullDiagnosis r = QoSDiagnoser.diagnoseFully(group);
+
+    assertThat(r.cause).isEqualTo(QoSDiagnoser.Cause.MANIFEST_FAILURE);
+  }
+
+  // ============================================================================
+  // Test 33 — Cause: MANIFEST_SLOW
+  // ============================================================================
+
+  @Test
+  public void diagnoseFully_twoSlowManifests_returnsManifestSlowCause() {
+    QoSInfo m1 = slowManifest(0L, 1_500, 8_000);
+    QoSInfo m2 = slowManifest(4_000L, 1_800, 8_000);
+    QoSInfo s1 = segmentWithLoadDur(2_000L, 4_000, 200, 8_000);
+    QoSInfo s2 = segmentWithLoadDur(6_000L, 4_000, 200, 8_000);
+    QoSInfo s3 = segmentWithLoadDur(10_000L, 4_000, 200, 8_000);
+    QoSInfo trigger = triggerWithBlNoMedia(14_000L, 8_000);
+    RebufferGroup group =
+        new RebufferGroup(
+            1,
+            trigger.timestampMs,
+            trigger,
+            Arrays.asList(m1, s1, m2, s2, s3, trigger),
+            Diagnosis.unknown());
+
+    QoSDiagnoser.FullDiagnosis r = QoSDiagnoser.diagnoseFully(group);
+
+    assertThat(r.cause).isEqualTo(QoSDiagnoser.Cause.MANIFEST_SLOW);
+  }
+
+  // ============================================================================
+  // Test 34 — Cause: CLIENT_BANDWIDTH (SINGLE_SPIKE + Phase 2 deterministic)
+  // ============================================================================
+
+  @Test
+  public void diagnoseFully_singleSpikeWithPhase2Deficit_returnsClientBandwidthCause() {
+    // 5 healthy + 1 spike: s6 loadDur=12000, ttfb=9 → transfer phase 11991ms.
+    // bytes=450KB → postTtfb ≈ 300 kbps < bitrate 850 → CLIENT_BANDWIDTH attribution.
+    // SINGLE_SPIKE + CLIENT_BANDWIDTH → CLIENT_BANDWIDTH cause.
+    QoSInfo s1 = priorSegmentWithPostTtfb(0L, /* bytes= */ 300_000, /* loadDur= */ 200);
+    QoSInfo s2 = priorSegmentWithPostTtfb(4_000L, 300_000, 200);
+    QoSInfo s3 = priorSegmentWithPostTtfb(8_000L, 300_000, 200);
+    QoSInfo s4 = priorSegmentWithPostTtfb(12_000L, 300_000, 200);
+    QoSInfo s5 = priorSegmentWithPostTtfb(16_000L, 300_000, 200);
+    QoSInfo spike =
+        new QoSInfo.Builder()
+            .setTimestampMs(20_000L)
+            .setTrackType(C.TRACK_TYPE_VIDEO)
+            .setBitrateKbps(850)
+            .setChunkDurationMs(4_000)
+            .setLoadDurationMs(12_000)
+            .setTtfbMs(9)
+            .setBytesLoaded(450_000)
+            .setBufferedDurationMs(8_000) // bl just before the spike
+            .build();
+    QoSInfo trigger = triggerWithBlNoMedia(32_000L, /* bl= */ 0);
+    RebufferGroup group =
+        new RebufferGroup(
+            1,
+            trigger.timestampMs,
+            trigger,
+            Arrays.asList(s1, s2, s3, s4, s5, spike, trigger),
+            Diagnosis.unknown());
+
+    QoSDiagnoser.FullDiagnosis r = QoSDiagnoser.diagnoseFully(group);
+
+    assertThat(r.cause).isEqualTo(QoSDiagnoser.Cause.CLIENT_BANDWIDTH);
+    assertThat(r.mechanism).isEqualTo(QoSDiagnoser.Mechanism.SINGLE_SPIKE);
+    assertThat(r.smokingGuns).containsExactly(spike);
+  }
+
+  // ============================================================================
+  // Test 35 — Cause: CDN_SLOW_DELIVERY (CONTINUOUS_DRAIN + ≥2 SLOW_RESPONSE_START)
+  // ============================================================================
+
+  @Test
+  public void diagnoseFully_continuousDrainWithSlowResponseStart_returnsCdnSlowDelivery() {
+    // 3 segments: cdur=2000, loadDur=2500 (deficit +500), ttfb=2000 (TTFB dominant 0.8 > 0.7)
+    // bytes=1MB, transferMs=500 → postTtfb=16000 kbps > br 4800 → SLOW_RESPONSE_START
+    // No CLIENT_BANDWIDTH attribution → CDN_SLOW_DELIVERY cause.
+    QoSInfo s1 = ttfbDominantSegment(0L, /* bl= */ 8_000);
+    QoSInfo s2 = ttfbDominantSegment(2_500L, 7_500);
+    QoSInfo s3 = ttfbDominantSegment(5_000L, 7_000);
+    QoSInfo trigger = triggerWithBlNoMedia(7_500L, 6_500);
+    RebufferGroup group =
+        new RebufferGroup(
+            1,
+            trigger.timestampMs,
+            trigger,
+            Arrays.asList(s1, s2, s3, trigger),
+            Diagnosis.unknown());
+
+    QoSDiagnoser.FullDiagnosis r = QoSDiagnoser.diagnoseFully(group);
+
+    assertThat(r.cause).isEqualTo(QoSDiagnoser.Cause.CDN_SLOW_DELIVERY);
+    assertThat(r.mechanism).isEqualTo(QoSDiagnoser.Mechanism.CONTINUOUS_DRAIN);
+  }
+
+  // ============================================================================
+  // Test 36 — Cause: INSUFFICIENT_DATA (SINGLE_SPIKE + SLOW_RESPONSE_START)
+  // ============================================================================
+
+  @Test
+  public void diagnoseFully_singleSpikeWithSlowResponseStart_returnsInsufficientData() {
+    // 5 healthy + 1 spike with ttfb dominant + Phase 2 healthy.
+    // SINGLE_SPIKE + SLOW_RESPONSE_START attribution → INSUFFICIENT_DATA cause.
+    QoSInfo s1 = priorSegmentWithPostTtfb(0L, 300_000, 200);
+    QoSInfo s2 = priorSegmentWithPostTtfb(4_000L, 300_000, 200);
+    QoSInfo s3 = priorSegmentWithPostTtfb(8_000L, 300_000, 200);
+    QoSInfo s4 = priorSegmentWithPostTtfb(12_000L, 300_000, 200);
+    QoSInfo s5 = priorSegmentWithPostTtfb(16_000L, 300_000, 200);
+    QoSInfo spike =
+        new QoSInfo.Builder()
+            .setTimestampMs(20_000L)
+            .setTrackType(C.TRACK_TYPE_VIDEO)
+            .setBitrateKbps(4_800)
+            .setChunkDurationMs(4_000)
+            .setLoadDurationMs(12_000)
+            .setTtfbMs(10_000) // 10000/12000 = 0.83 > 0.7 → TTFB dominant
+            .setBytesLoaded(2_000_000) // postTtfb = 8000 kbps > bitrate 4800
+            .setBufferedDurationMs(8_000)
+            .build();
+    QoSInfo trigger = triggerWithBlNoMedia(32_000L, 0);
+    RebufferGroup group =
+        new RebufferGroup(
+            1,
+            trigger.timestampMs,
+            trigger,
+            Arrays.asList(s1, s2, s3, s4, s5, spike, trigger),
+            Diagnosis.unknown());
+
+    QoSDiagnoser.FullDiagnosis r = QoSDiagnoser.diagnoseFully(group);
+
+    assertThat(r.cause).isEqualTo(QoSDiagnoser.Cause.INSUFFICIENT_DATA);
+    assertThat(r.mechanism).isEqualTo(QoSDiagnoser.Mechanism.SINGLE_SPIKE);
+  }
+
+  // ============================================================================
+  // Test 37 — Cause: TRANSIENT (no observable drain)
+  // ============================================================================
+
+  @Test
+  public void diagnoseFully_healthySession_returnsTransient() {
+    QoSInfo s1 = segmentWithLoadDur(0L, 4_000, 124, 8_800);
+    QoSInfo s2 = segmentWithLoadDur(4_000L, 4_000, 37, 8_800);
+    QoSInfo s3 = segmentWithLoadDur(8_000L, 4_000, 47, 8_800);
+    QoSInfo s4 = segmentWithLoadDur(12_000L, 4_000, 35, 8_800);
+    QoSInfo s5 = segmentWithLoadDur(16_000L, 4_000, 44, 8_800);
+    QoSInfo trigger = triggerWithBlNoMedia(20_000L, 8_700);
+    RebufferGroup group =
+        new RebufferGroup(
+            1,
+            trigger.timestampMs,
+            trigger,
+            Arrays.asList(s1, s2, s3, s4, s5, trigger),
+            Diagnosis.unknown());
+
+    QoSDiagnoser.FullDiagnosis r = QoSDiagnoser.diagnoseFully(group);
+
+    assertThat(r.cause).isEqualTo(QoSDiagnoser.Cause.TRANSIENT);
+  }
+
+  // ============================================================================
+  // Test 38 — ABR cross-cut: br/mtp > 0.8 → abrLag = true (independent of cause)
+  // ============================================================================
+
+  @Test
+  public void diagnoseFully_triggerBrOverMtpHigh_setsAbrLagFlag() {
+    // Healthy fixture so the sanity gate passes, but trigger has br/mtp = 4800/2000 = 2.4 > 0.8
+    QoSInfo s1 = segmentWithLoadDur(0L, 4_000, 124, 8_800);
+    QoSInfo s2 = segmentWithLoadDur(4_000L, 4_000, 37, 8_800);
+    QoSInfo s3 = segmentWithLoadDur(8_000L, 4_000, 47, 8_800);
+    QoSInfo s4 = segmentWithLoadDur(12_000L, 4_000, 35, 8_800);
+    QoSInfo s5 = segmentWithLoadDur(16_000L, 4_000, 44, 8_800);
+    QoSInfo trigger =
+        new QoSInfo.Builder()
+            .setTimestampMs(20_000L)
+            .setTrackType(C.TRACK_TYPE_VIDEO)
+            .setBitrateKbps(4_800)
+            .setMeasuredThroughputKbps(2_000)
+            .setBufferedDurationMs(8_700)
+            .setBufferStarvationFlag(true)
+            .build();
+    RebufferGroup group =
+        new RebufferGroup(
+            1,
+            trigger.timestampMs,
+            trigger,
+            Arrays.asList(s1, s2, s3, s4, s5, trigger),
+            Diagnosis.unknown());
+
+    QoSDiagnoser.FullDiagnosis r = QoSDiagnoser.diagnoseFully(group);
+
+    assertThat(r.abrLag).isTrue();
+  }
+
+  // ============================================================================
   // Helpers
   // ============================================================================
 
@@ -1047,6 +1294,24 @@ public class QoSDiagnoserTest {
         .setTtfbMs(0)
         .setBytesLoaded(bytesLoaded)
         .setBufferedDurationMs(8_000)
+        .build();
+  }
+
+  /**
+   * Segment where Phase 1 (TTFB) dominates the load: ttfb/loadDur > 0.7 with
+   * Phase 2 throughput well above bitrate. Used by CDN_SLOW_DELIVERY tests
+   * where the expected attribution is SLOW_RESPONSE_START.
+   */
+  private static QoSInfo ttfbDominantSegment(long timestampMs, int blMs) {
+    return new QoSInfo.Builder()
+        .setTimestampMs(timestampMs)
+        .setTrackType(C.TRACK_TYPE_VIDEO)
+        .setBitrateKbps(4_800)
+        .setChunkDurationMs(2_000)
+        .setLoadDurationMs(2_500) // deficit = +500
+        .setTtfbMs(2_000)         // 2000/2500 = 0.8 > 0.7
+        .setBytesLoaded(1_000_000) // postTtfb = 16,000 kbps > br
+        .setBufferedDurationMs(blMs)
         .build();
   }
 
