@@ -1241,6 +1241,40 @@ public class QoSDiagnoserTest {
   }
 
   // ============================================================================
+  // Test 43 — Worked example §VII Ex 3: continuous drain + client throttle
+  // ============================================================================
+
+  @Test
+  public void diagnoseFully_continuousDrainWithLowPostTtfb_returnsClientBandwidth() {
+    // 6 segments cdur=4000, loadDur=4500 (deficit +500 each), bytes sized so
+    // postTtfb is slightly below bitrate.
+    //   bytes = 4500 × 1500 / 8 = 843_750 → postTtfb = 843_750 × 8 / 4490
+    //                                              ≈ 1503 kbps < bitrate 1800
+    // bl monotonically declining 9000 → 6500 → CONTINUOUS_DRAIN.
+    // Every smoking-gun gets CLIENT_BANDWIDTH attribution → CLIENT_BANDWIDTH cause.
+    QoSInfo s1 = throttledSegment(0L, /* bl= */ 9_000);
+    QoSInfo s2 = throttledSegment(4_500L, 8_500);
+    QoSInfo s3 = throttledSegment(9_000L, 8_000);
+    QoSInfo s4 = throttledSegment(13_500L, 7_500);
+    QoSInfo s5 = throttledSegment(18_000L, 7_000);
+    QoSInfo s6 = throttledSegment(22_500L, 6_500);
+    QoSInfo trigger = triggerWithBlNoMedia(27_000L, 6_000);
+    RebufferGroup group =
+        new RebufferGroup(
+            1,
+            trigger.timestampMs,
+            trigger,
+            Arrays.asList(s1, s2, s3, s4, s5, s6, trigger),
+            Diagnosis.unknown());
+
+    QoSDiagnoser.FullDiagnosis r = QoSDiagnoser.diagnoseFully(group);
+
+    assertThat(r.cause).isEqualTo(QoSDiagnoser.Cause.CLIENT_BANDWIDTH);
+    assertThat(r.mechanism).isEqualTo(QoSDiagnoser.Mechanism.CONTINUOUS_DRAIN);
+    assertThat(r.smokingGuns).hasSize(6);
+  }
+
+  // ============================================================================
   // Helpers
   // ============================================================================
 
@@ -1415,6 +1449,24 @@ public class QoSDiagnoserTest {
         .setTtfbMs(0)
         .setBytesLoaded(bytesLoaded)
         .setBufferedDurationMs(8_000)
+        .build();
+  }
+
+  /**
+   * Throttled-pipe segment: small per-segment deficit (loadDur slightly > cdur),
+   * Phase 2 throughput just below bitrate. Used by Spec §VII Ex 3 fixture to
+   * demonstrate CONTINUOUS_DRAIN attributed to CLIENT_BANDWIDTH on every entry.
+   */
+  private static QoSInfo throttledSegment(long timestampMs, int blMs) {
+    return new QoSInfo.Builder()
+        .setTimestampMs(timestampMs)
+        .setTrackType(C.TRACK_TYPE_VIDEO)
+        .setBitrateKbps(1_800)
+        .setChunkDurationMs(4_000)
+        .setLoadDurationMs(4_500) // deficit = +500
+        .setTtfbMs(10)
+        .setBytesLoaded(843_750) // postTtfb ≈ 1503 kbps < bitrate 1800
+        .setBufferedDurationMs(blMs)
         .build();
   }
 
