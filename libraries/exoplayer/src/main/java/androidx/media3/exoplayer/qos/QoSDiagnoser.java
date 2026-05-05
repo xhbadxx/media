@@ -77,6 +77,18 @@ public final class QoSDiagnoser {
   /** Upper bound of {@code demand_ratio} accepted as normal 1× playback. */
   static final double SANITY_GATE_RATIO_MAX = 1.3;
 
+  /** A single segment's deficit must exceed this fraction of initial buffer to fire SINGLE_SPIKE. */
+  static final double MECHANISM_SPIKE_RATIO = 0.5;
+
+  /** Fraction of segments draining required to fire CONTINUOUS_DRAIN. */
+  static final double MECHANISM_DRAIN_RATIO = 0.5;
+
+  /** Minimum scored segments needed before mechanism detection issues anything other than INSUFFICIENT_LOG. */
+  static final int MIN_SEGMENTS_FOR_MECHANISM = 3;
+
+  /** Manifest load duration above this is treated as slow (baseline ≤ 200ms × 5). */
+  static final long MANIFEST_SLOW_LOAD_MS = 1_000L;
+
   // ===== HTTP 5xx detection =====
 
   private static final java.util.regex.Pattern HTTP_5XX =
@@ -250,6 +262,192 @@ public final class QoSDiagnoser {
           SANITY_GATE_RATIO_MAX);
     }
     return null;
+  }
+
+  // ===== Mechanism detection =====
+
+  /**
+   * Shape of how the rebuffer happened, derived from the buffer-trajectory and
+   * error/manifest signals per {@code Spec - QoS Buffer Conservation Diagnosis §IV.2}.
+   * Mechanism is independent of attribution (the per-load reason for the deficit);
+   * a {@code SINGLE_SPIKE} mechanism could have a {@code CLIENT_BANDWIDTH},
+   * {@code SLOW_RESPONSE_START}, or {@code ORIGIN_ERROR} attribution.
+   */
+  public enum Mechanism {
+    /** ≥1 scored segment with HTTP 5xx or {@code retryCount > 0}. Highest priority. */
+    ORIGIN_ERROR_DETECTED,
+    /** ≥1 manifest entry with {@code status == ERROR}. */
+    MANIFEST_FAILURE_DETECTED,
+    /** Fewer than {@link #MIN_SEGMENTS_FOR_MECHANISM} scored segments — not enough data. */
+    INSUFFICIENT_LOG,
+    /** One segment's deficit consumed > 50% of initial buffer alone. */
+    SINGLE_SPIKE,
+    /** Majority of segments draining + bl declining head→tail. */
+    CONTINUOUS_DRAIN,
+    /** ≥2 manifests took > {@link #MANIFEST_SLOW_LOAD_MS}. */
+    MANIFEST_SLOW_DETECTED,
+    /** No observable drain pattern — likely TRANSIENT (codec init, startup, etc.). */
+    NONE,
+  }
+
+  /** Mechanism plus the entries identified as causing the rebuffer. */
+  public static final class MechanismResult {
+    public final Mechanism mechanism;
+    public final List<QoSInfo> smokingGuns;
+
+    MechanismResult(Mechanism mechanism, List<QoSInfo> smokingGuns) {
+      this.mechanism = mechanism;
+      this.smokingGuns = Collections.unmodifiableList(smokingGuns);
+    }
+  }
+
+  /**
+   * Detects which {@link Mechanism} caused the rebuffer in {@code group} and
+   * returns the responsible smoking-gun entries. Pure function — does not
+   * mutate the group.
+   *
+   * <p>Priority order (early exit at first match):
+   * <ol>
+   *   <li>{@code ORIGIN_ERROR_DETECTED} — segment with HTTP 5xx or retry
+   *   <li>{@code MANIFEST_FAILURE_DETECTED} — manifest with status=ERROR
+   *   <li>{@code INSUFFICIENT_LOG} — fewer than 3 scored segments
+   *   <li>{@code SINGLE_SPIKE} — one segment's deficit > 50% × initial bl
+   *   <li>{@code CONTINUOUS_DRAIN} — majority drain + bl monotonic decline
+   *   <li>{@code MANIFEST_SLOW_DETECTED} — ≥2 manifests with loadDur > 1000ms
+   *   <li>{@code NONE} — no observable drain
+   * </ol>
+   */
+  public static MechanismResult detectMechanism(RebufferGroup group) {
+    if (group == null || group.entries == null || group.entries.isEmpty()) {
+      return new MechanismResult(Mechanism.NONE, Collections.<QoSInfo>emptyList());
+    }
+
+    // 1. Origin error (segment with 5xx or retry)
+    List<QoSInfo> originErrors = new ArrayList<>();
+    for (QoSInfo e : group.entries) {
+      if (hasOriginError(e)) {
+        originErrors.add(e);
+      }
+    }
+    if (!originErrors.isEmpty()) {
+      return new MechanismResult(Mechanism.ORIGIN_ERROR_DETECTED, originErrors);
+    }
+
+    // 2. Manifest failure (manifest with status=ERROR)
+    List<QoSInfo> manifestFails = new ArrayList<>();
+    for (QoSInfo e : group.entries) {
+      if (hasManifestFailure(e)) {
+        manifestFails.add(e);
+      }
+    }
+    if (!manifestFails.isEmpty()) {
+      return new MechanismResult(Mechanism.MANIFEST_FAILURE_DETECTED, manifestFails);
+    }
+
+    // 3. Collect scored segments for buffer-trajectory analysis
+    List<QoSInfo> segments = new ArrayList<>();
+    for (QoSInfo e : group.entries) {
+      if (isCompletedSegment(e)) {
+        segments.add(e);
+      }
+    }
+    if (segments.size() < MIN_SEGMENTS_FOR_MECHANISM) {
+      return new MechanismResult(Mechanism.INSUFFICIENT_LOG, Collections.<QoSInfo>emptyList());
+    }
+
+    // 4. Compute per-segment deficits + find max + count drains
+    long initialBl = clampNonNegativeBl(segments.get(0).bufferedDurationMs);
+    long maxDeficit = 0L;
+    int spikeIndex = -1;
+    int drainCount = 0;
+    for (int i = 0; i < segments.size(); i++) {
+      QoSInfo s = segments.get(i);
+      long deficit = s.loadDurationMs - s.chunkDurationMs;
+      if (deficit > 0L) {
+        drainCount++;
+      }
+      if (deficit > maxDeficit) {
+        maxDeficit = deficit;
+        spikeIndex = i;
+      }
+    }
+
+    // 5. SINGLE_SPIKE — one deficit dominates initial buffer
+    if (initialBl > 0L && (double) maxDeficit / initialBl > MECHANISM_SPIKE_RATIO) {
+      List<QoSInfo> guns = new ArrayList<>(1);
+      guns.add(segments.get(spikeIndex));
+      return new MechanismResult(Mechanism.SINGLE_SPIKE, guns);
+    }
+
+    // 6. CONTINUOUS_DRAIN — majority drain + bl monotonic decline
+    if (drainCount > segments.size() * MECHANISM_DRAIN_RATIO && isBlDeclining(segments)) {
+      List<QoSInfo> guns = new ArrayList<>();
+      for (QoSInfo s : segments) {
+        if (s.loadDurationMs - s.chunkDurationMs > 0L) {
+          guns.add(s);
+        }
+      }
+      return new MechanismResult(Mechanism.CONTINUOUS_DRAIN, guns);
+    }
+
+    // 7. MANIFEST_SLOW — ≥2 manifests with loadDur > threshold
+    List<QoSInfo> manifestSlows = new ArrayList<>();
+    for (QoSInfo e : group.entries) {
+      if (isManifest(e) && e.loadDurationMs > MANIFEST_SLOW_LOAD_MS) {
+        manifestSlows.add(e);
+      }
+    }
+    if (manifestSlows.size() >= 2) {
+      return new MechanismResult(Mechanism.MANIFEST_SLOW_DETECTED, manifestSlows);
+    }
+
+    // 8. No observable drain
+    return new MechanismResult(Mechanism.NONE, Collections.<QoSInfo>emptyList());
+  }
+
+  /**
+   * Buffer length is monotonically declining when the tail bl is below both the
+   * head and the midpoint — confirms a sustained downward trend rather than two
+   * cherry-picked endpoints.
+   */
+  private static boolean isBlDeclining(List<QoSInfo> segments) {
+    if (segments.size() < 3) {
+      return false;
+    }
+    int n = segments.size();
+    long head = clampNonNegativeBl(segments.get(0).bufferedDurationMs);
+    long mid = clampNonNegativeBl(segments.get(n / 2).bufferedDurationMs);
+    long tail = clampNonNegativeBl(segments.get(n - 1).bufferedDurationMs);
+    return tail < head && tail < mid;
+  }
+
+  private static boolean hasOriginError(QoSInfo e) {
+    if (e == null || !isScoredTrackType(e.trackType)) {
+      return false;
+    }
+    if (e.retryCount > 0) {
+      return true;
+    }
+    return e.status == QoSInfo.LoadStatus.ERROR && containsHttp5xx(e.errorMessage);
+  }
+
+  private static boolean hasManifestFailure(QoSInfo e) {
+    return isManifest(e) && e.status == QoSInfo.LoadStatus.ERROR;
+  }
+
+  private static boolean isManifest(QoSInfo e) {
+    if (e == null || e.trackType != C.TRACK_TYPE_UNKNOWN) {
+      return false;
+    }
+    if (e.url == null || e.url.isEmpty()) {
+      return true;
+    }
+    String lower = e.url.toLowerCase(Locale.US);
+    int q = lower.indexOf('?');
+    if (q > 0) {
+      lower = lower.substring(0, q);
+    }
+    return lower.endsWith(".m3u8") || lower.endsWith(".mpd");
   }
 
   /**

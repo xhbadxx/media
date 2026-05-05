@@ -513,6 +513,198 @@ public class QoSDiagnoserTest {
   }
 
   // ============================================================================
+  // Test 18 — Mechanism: ORIGIN_ERROR detected (HTTP 5xx on segment)
+  // ============================================================================
+
+  @Test
+  public void detectMechanism_segment5xx_returnsOriginErrorDetected() {
+    QoSInfo s1 = segment(0L, 4_000, 8_000);
+    QoSInfo s2 = segment(4_000L, 4_000, 8_000);
+    QoSInfo errored = videoError(8_000L, /* br= */ 4_800, "HTTP 503 Service Unavailable");
+    QoSInfo trigger = triggerWithBlNoMedia(12_000L, 4_000);
+    RebufferGroup group =
+        new RebufferGroup(
+            1,
+            trigger.timestampMs,
+            trigger,
+            Arrays.asList(s1, s2, errored, trigger),
+            Diagnosis.unknown());
+
+    QoSDiagnoser.MechanismResult r = QoSDiagnoser.detectMechanism(group);
+
+    assertThat(r.mechanism).isEqualTo(QoSDiagnoser.Mechanism.ORIGIN_ERROR_DETECTED);
+    assertThat(r.smokingGuns).contains(errored);
+  }
+
+  // ============================================================================
+  // Test 19 — Mechanism: MANIFEST_FAILURE detected
+  // ============================================================================
+
+  @Test
+  public void detectMechanism_manifestStatusError_returnsManifestFailureDetected() {
+    QoSInfo manifest =
+        new QoSInfo.Builder()
+            .setTimestampMs(0L)
+            .setTrackType(C.TRACK_TYPE_UNKNOWN)
+            .setUrl("https://example/playlist.m3u8")
+            .setStatus(QoSInfo.LoadStatus.ERROR)
+            .setErrorMessage("connection timeout")
+            .setBufferedDurationMs(8_000)
+            .build();
+    QoSInfo s1 = segment(2_000L, 4_000, 8_000);
+    QoSInfo s2 = segment(6_000L, 4_000, 8_000);
+    QoSInfo trigger = triggerWithBlNoMedia(10_000L, 4_000);
+    RebufferGroup group =
+        new RebufferGroup(
+            1,
+            trigger.timestampMs,
+            trigger,
+            Arrays.asList(manifest, s1, s2, trigger),
+            Diagnosis.unknown());
+
+    QoSDiagnoser.MechanismResult r = QoSDiagnoser.detectMechanism(group);
+
+    assertThat(r.mechanism).isEqualTo(QoSDiagnoser.Mechanism.MANIFEST_FAILURE_DETECTED);
+    assertThat(r.smokingGuns).contains(manifest);
+  }
+
+  // ============================================================================
+  // Test 20 — Mechanism: SINGLE_SPIKE (one segment with deficit > 0.5 × initial_bl)
+  // ============================================================================
+
+  @Test
+  public void detectMechanism_oneLargeDeficit_returnsSingleSpike() {
+    // initial_bl = 9000. Segment s4 has loadDur=12000, cdur=4000 → deficit=8000.
+    // 8000 / 9000 = 0.89 > 0.5 → SINGLE_SPIKE, smoking gun = s4.
+    QoSInfo s1 = segmentWithLoadDur(0L, /* cdur= */ 4_000, /* loadDur= */ 100, /* bl= */ 9_000);
+    QoSInfo s2 = segmentWithLoadDur(4_000L, 4_000, 100, 9_000);
+    QoSInfo s3 = segmentWithLoadDur(8_000L, 4_000, 100, 9_000);
+    QoSInfo s4 = segmentWithLoadDur(12_000L, /* cdur= */ 4_000, /* loadDur= */ 12_000, /* bl= */ 9_000);
+    QoSInfo trigger = triggerWithBlNoMedia(24_000L, 0);
+    RebufferGroup group =
+        new RebufferGroup(
+            1,
+            trigger.timestampMs,
+            trigger,
+            Arrays.asList(s1, s2, s3, s4, trigger),
+            Diagnosis.unknown());
+
+    QoSDiagnoser.MechanismResult r = QoSDiagnoser.detectMechanism(group);
+
+    assertThat(r.mechanism).isEqualTo(QoSDiagnoser.Mechanism.SINGLE_SPIKE);
+    assertThat(r.smokingGuns).containsExactly(s4);
+  }
+
+  // ============================================================================
+  // Test 21 — Mechanism: CONTINUOUS_DRAIN (majority of segments draining + bl decline)
+  // ============================================================================
+
+  @Test
+  public void detectMechanism_majorityDrainPlusBlDecline_returnsContinuousDrain() {
+    // 6 segments, each loadDur slightly > cdur (small positive deficit).
+    // bl monotonically declining (each segment captures lower bl than the prior).
+    // No single deficit dominates (max < 0.5 × bl[0]) → not SPIKE.
+    // drain_count = 6 / 6 = 100% > 50% AND bl declining → CONTINUOUS_DRAIN.
+    QoSInfo s1 = segmentWithLoadDur(0L, /* cdur= */ 4_000, /* loadDur= */ 4_500, /* bl= */ 9_000);
+    QoSInfo s2 = segmentWithLoadDur(4_500L, 4_000, 4_500, 8_500);
+    QoSInfo s3 = segmentWithLoadDur(9_000L, 4_000, 4_500, 8_000);
+    QoSInfo s4 = segmentWithLoadDur(13_500L, 4_000, 4_500, 7_500);
+    QoSInfo s5 = segmentWithLoadDur(18_000L, 4_000, 4_500, 7_000);
+    QoSInfo s6 = segmentWithLoadDur(22_500L, 4_000, 4_500, 6_500);
+    QoSInfo trigger = triggerWithBlNoMedia(27_000L, 6_000);
+    RebufferGroup group =
+        new RebufferGroup(
+            1,
+            trigger.timestampMs,
+            trigger,
+            Arrays.asList(s1, s2, s3, s4, s5, s6, trigger),
+            Diagnosis.unknown());
+
+    QoSDiagnoser.MechanismResult r = QoSDiagnoser.detectMechanism(group);
+
+    assertThat(r.mechanism).isEqualTo(QoSDiagnoser.Mechanism.CONTINUOUS_DRAIN);
+    // All 6 segments contribute drain (each deficit = 500ms > 0)
+    assertThat(r.smokingGuns).hasSize(6);
+  }
+
+  // ============================================================================
+  // Test 22 — Mechanism: MANIFEST_SLOW (≥2 manifest entries with loadDur > 1000ms)
+  // ============================================================================
+
+  @Test
+  public void detectMechanism_twoSlowManifests_returnsManifestSlow() {
+    QoSInfo m1 = slowManifest(0L, /* loadDur= */ 1_500, /* bl= */ 8_000);
+    QoSInfo m2 = slowManifest(4_000L, 1_800, 8_000);
+    QoSInfo s1 = segment(2_000L, 4_000, 8_000);
+    QoSInfo s2 = segment(6_000L, 4_000, 8_000);
+    QoSInfo s3 = segment(10_000L, 4_000, 8_000);
+    QoSInfo trigger = triggerWithBlNoMedia(14_000L, 8_000);
+    RebufferGroup group =
+        new RebufferGroup(
+            1,
+            trigger.timestampMs,
+            trigger,
+            Arrays.asList(m1, s1, m2, s2, s3, trigger),
+            Diagnosis.unknown());
+
+    QoSDiagnoser.MechanismResult r = QoSDiagnoser.detectMechanism(group);
+
+    assertThat(r.mechanism).isEqualTo(QoSDiagnoser.Mechanism.MANIFEST_SLOW_DETECTED);
+    assertThat(r.smokingGuns).containsAtLeast(m1, m2);
+  }
+
+  // ============================================================================
+  // Test 23 — Mechanism: NONE (healthy session, no observable drain)
+  // ============================================================================
+
+  @Test
+  public void detectMechanism_healthySession_returnsNone() {
+    // Mirrors qoe-analytic.txt 05-05: bl steady around 8-12s, all loads
+    // well under cdur (deficit negative — buffer filling).
+    QoSInfo s1 = segmentWithLoadDur(0L, 4_000, 124, 8_800);
+    QoSInfo s2 = segmentWithLoadDur(4_000L, 4_000, 37, 12_700);
+    QoSInfo s3 = segmentWithLoadDur(8_000L, 4_000, 47, 8_800);
+    QoSInfo s4 = segmentWithLoadDur(12_000L, 4_000, 35, 8_600);
+    QoSInfo s5 = segmentWithLoadDur(16_000L, 4_000, 44, 8_800);
+    QoSInfo trigger = triggerWithBlNoMedia(20_000L, 8_700);
+    RebufferGroup group =
+        new RebufferGroup(
+            1,
+            trigger.timestampMs,
+            trigger,
+            Arrays.asList(s1, s2, s3, s4, s5, trigger),
+            Diagnosis.unknown());
+
+    QoSDiagnoser.MechanismResult r = QoSDiagnoser.detectMechanism(group);
+
+    assertThat(r.mechanism).isEqualTo(QoSDiagnoser.Mechanism.NONE);
+    assertThat(r.smokingGuns).isEmpty();
+  }
+
+  // ============================================================================
+  // Test 24 — Mechanism: INSUFFICIENT_LOG (< 3 segments to verdict)
+  // ============================================================================
+
+  @Test
+  public void detectMechanism_lessThanThreeSegments_returnsInsufficientLog() {
+    QoSInfo s1 = segment(0L, 4_000, 8_000);
+    QoSInfo s2 = segment(4_000L, 4_000, 8_000);
+    QoSInfo trigger = triggerWithBlNoMedia(8_000L, 8_000);
+    RebufferGroup group =
+        new RebufferGroup(
+            1,
+            trigger.timestampMs,
+            trigger,
+            Arrays.asList(s1, s2, trigger),
+            Diagnosis.unknown());
+
+    QoSDiagnoser.MechanismResult r = QoSDiagnoser.detectMechanism(group);
+
+    assertThat(r.mechanism).isEqualTo(QoSDiagnoser.Mechanism.INSUFFICIENT_LOG);
+    assertThat(r.smokingGuns).isEmpty();
+  }
+
+  // ============================================================================
   // Helpers
   // ============================================================================
 
@@ -650,6 +842,37 @@ public class QoSDiagnoserTest {
         .setLoadDurationMs(100)
         .setBytesLoaded(50_000)
         .setTtfbMs(10)
+        .build();
+  }
+
+  /**
+   * V segment with explicit {@code loadDur} so mechanism-detection tests can
+   * control the per-segment deficit ({@code loadDur − cdur}).
+   */
+  private static QoSInfo segmentWithLoadDur(
+      long timestampMs, long cdurMs, long loadDurMs, int blMs) {
+    return new QoSInfo.Builder()
+        .setTimestampMs(timestampMs)
+        .setTrackType(C.TRACK_TYPE_VIDEO)
+        .setBitrateKbps(1_800)
+        .setChunkDurationMs(cdurMs)
+        .setBufferedDurationMs(blMs)
+        .setLoadDurationMs(loadDurMs)
+        .setBytesLoaded((long) (1_800 * cdurMs / 8))
+        .setTtfbMs(10)
+        .build();
+  }
+
+  /** Manifest entry with elevated loadDur to trigger MANIFEST_SLOW detection. */
+  private static QoSInfo slowManifest(long timestampMs, long loadDurMs, int blMs) {
+    return new QoSInfo.Builder()
+        .setTimestampMs(timestampMs)
+        .setTrackType(C.TRACK_TYPE_UNKNOWN)
+        .setUrl("https://example/playlist.m3u8")
+        .setLoadDurationMs(loadDurMs)
+        .setBytesLoaded(2_000)
+        .setTtfbMs(50)
+        .setBufferedDurationMs(blMs)
         .build();
   }
 
