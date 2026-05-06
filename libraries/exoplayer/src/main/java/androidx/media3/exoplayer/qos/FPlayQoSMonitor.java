@@ -183,7 +183,8 @@ public final class FPlayQoSMonitor {
             trigger,
             snapshot,
             diagnosis,
-            fullDiagnosis);
+            fullDiagnosis,
+            v2);
     rebufferGroups.add(group);
     while (rebufferGroups.size() > MAX_REBUFFER_GROUPS) {
       rebufferGroups.remove(0);

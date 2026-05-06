@@ -67,6 +67,14 @@ public final class RebufferGroup {
    */
   @Nullable public final QoSDiagnoser.FullDiagnosis fullDiagnosis;
 
+  /**
+   * V2 diagnoser verdict (parallel to {@link #fullDiagnosis} during the dual-write
+   * phase). UI layers may render V1 and V2 side-by-side so disagreements surface for
+   * cross-validation. {@code null} for groups created before V2 wiring (legacy 5/6-arg
+   * constructors); always non-null when constructed with the 7-arg ctor.
+   */
+  @Nullable public final DiagnosisV2 diagnosisV2;
+
   /** Legacy constructor — preserves binary compatibility for callers / tests pre-FullDiagnosis. */
   public RebufferGroup(
       int id,
@@ -74,10 +82,10 @@ public final class RebufferGroup {
       QoSInfo trigger,
       List<QoSInfo> entries,
       Diagnosis diagnosis) {
-    this(id, triggerTimeMs, trigger, entries, diagnosis, null);
+    this(id, triggerTimeMs, trigger, entries, diagnosis, null, null);
   }
 
-  /** Full constructor — both legacy {@code Diagnosis} and the new {@code FullDiagnosis} attached. */
+  /** Pre-V2 constructor — both legacy {@code Diagnosis} and the new {@code FullDiagnosis} attached. */
   public RebufferGroup(
       int id,
       long triggerTimeMs,
@@ -85,12 +93,25 @@ public final class RebufferGroup {
       List<QoSInfo> entries,
       Diagnosis diagnosis,
       @Nullable QoSDiagnoser.FullDiagnosis fullDiagnosis) {
+    this(id, triggerTimeMs, trigger, entries, diagnosis, fullDiagnosis, null);
+  }
+
+  /** Full constructor — V1 ({@code Diagnosis} + {@code FullDiagnosis}) and V2 ({@code DiagnosisV2}) attached. */
+  public RebufferGroup(
+      int id,
+      long triggerTimeMs,
+      QoSInfo trigger,
+      List<QoSInfo> entries,
+      Diagnosis diagnosis,
+      @Nullable QoSDiagnoser.FullDiagnosis fullDiagnosis,
+      @Nullable DiagnosisV2 diagnosisV2) {
     this.id = id;
     this.triggerTimeMs = triggerTimeMs;
     this.trigger = trigger;
     this.entries = entries;
     this.diagnosis = diagnosis;
     this.fullDiagnosis = fullDiagnosis;
+    this.diagnosisV2 = diagnosisV2;
   }
 
   public int size() {
