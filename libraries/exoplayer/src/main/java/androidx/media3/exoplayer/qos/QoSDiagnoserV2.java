@@ -88,10 +88,12 @@ public final class QoSDiagnoserV2 {
       return DiagnosisV2.transientFromSanity(sanityFail);
     }
 
-    // Step 2 + Step 3 — Phase decomposition (Spec §IV.2) + significance check.
+    // Steps 2 + 3 + per-segment ABR counts (Spec §IV.2 / §IV.4.2): single pass over scored segments.
     long totalDrain = 0L;
     long serverDrain = 0L;
     long clientDrain = 0L;
+    int countAbrAggressive = 0;
+    int countClientDrain = 0;
     for (QoSInfo entry : group.entries) {
       if (!isCompletedScoredSegment(entry)) {
         continue;
@@ -100,6 +102,13 @@ public final class QoSDiagnoserV2 {
       totalDrain += share.excessMs;
       serverDrain += share.serverShareMs;
       clientDrain += share.clientShareMs;
+      if (share.clientShareMs > 0L) {
+        countClientDrain++;
+        if (entry.measuredThroughputKbps > 0
+            && entry.bitrateKbps > entry.measuredThroughputKbps) {
+          countAbrAggressive++;
+        }
+      }
     }
 
     if (totalDrain == 0L) {
@@ -121,22 +130,6 @@ public final class QoSDiagnoserV2 {
     }
 
     // Step 5 — Client sub-classify (Spec §IV.4.2: ABR vs Weak Net) by ABR-aggressive count.
-    int countAbrAggressive = 0;
-    int countClientDrain = 0;
-    for (QoSInfo entry : group.entries) {
-      if (!isCompletedScoredSegment(entry)) {
-        continue;
-      }
-      SegmentShare share = decompose(entry);
-      if (share.clientShareMs > 0L) {
-        countClientDrain++;
-        if (entry.measuredThroughputKbps > 0
-            && entry.bitrateKbps > entry.measuredThroughputKbps) {
-          countAbrAggressive++;
-        }
-      }
-    }
-
     // Tie favors ABR: actionable verdict (lower bitrate ladder) beats "weak net" which is unactionable from the player.
     DiagnosisV2.Cause clientCause =
         (2 * countAbrAggressive >= countClientDrain)
