@@ -291,6 +291,140 @@ public class QoSDiagnoserV2Test {
     assertThat(result.clientDrainMs).isEqualTo(0L);
   }
 
+  // ===== Client sub-classify (ABR vs Weak Net) =====
+
+  @Test
+  public void diagnose_clientDrainAbrAggressive_returnsClientAbr() {
+    // 3 segments, transfer-dominant (low ttfb), bitrate=4000Kbps but mtp=2000Kbps each.
+    // ABR chose above measured throughput → CLIENT_ABR.
+    QoSInfo s1 =
+        clientSegment(
+            /* ts= */ 1_000L,
+            /* loadDurMs= */ 5_000L,
+            /* ttfbMs= */ 500,
+            /* bitrateKbps= */ 4_000,
+            /* mtpKbps= */ 2_000,
+            /* blMs= */ 9_000);
+    QoSInfo s2 =
+        clientSegment(
+            /* ts= */ 6_000L,
+            /* loadDurMs= */ 5_500L,
+            /* ttfbMs= */ 600,
+            /* bitrateKbps= */ 4_000,
+            /* mtpKbps= */ 2_000,
+            /* blMs= */ 5_500);
+    QoSInfo s3 =
+        clientSegment(
+            /* ts= */ 11_500L,
+            /* loadDurMs= */ 6_000L,
+            /* ttfbMs= */ 700,
+            /* bitrateKbps= */ 4_000,
+            /* mtpKbps= */ 2_000,
+            /* blMs= */ 2_000);
+    QoSInfo trigger = triggerSegment(/* ts= */ 17_500L, /* blMs= */ 0);
+    RebufferGroup group =
+        new RebufferGroup(
+            /* id= */ 1,
+            /* triggerTimeMs= */ trigger.timestampMs,
+            /* trigger= */ trigger,
+            /* entries= */ Arrays.asList(s1, s2, s3, trigger),
+            /* diagnosis= */ null);
+
+    DiagnosisV2 result = QoSDiagnoserV2.diagnose(group);
+
+    assertThat(result.cause).isEqualTo(DiagnosisV2.Cause.CLIENT_ABR);
+    assertThat(result.countAbrAggressive).isEqualTo(3);
+    assertThat(result.countClientDrain).isEqualTo(3);
+  }
+
+  @Test
+  public void diagnose_clientDrainPipeWithinMtp_returnsClientWeakNet() {
+    // 3 segments transfer-dominant, but bitrate=2000 ≤ mtp=4000 each.
+    // ABR was conservative — pipe degraded after decision → CLIENT_WEAK_NET.
+    QoSInfo s1 =
+        clientSegment(
+            /* ts= */ 1_000L,
+            /* loadDurMs= */ 5_000L,
+            /* ttfbMs= */ 500,
+            /* bitrateKbps= */ 2_000,
+            /* mtpKbps= */ 4_000,
+            /* blMs= */ 9_000);
+    QoSInfo s2 =
+        clientSegment(
+            /* ts= */ 6_000L,
+            /* loadDurMs= */ 5_500L,
+            /* ttfbMs= */ 600,
+            /* bitrateKbps= */ 2_000,
+            /* mtpKbps= */ 4_000,
+            /* blMs= */ 5_500);
+    QoSInfo s3 =
+        clientSegment(
+            /* ts= */ 11_500L,
+            /* loadDurMs= */ 6_000L,
+            /* ttfbMs= */ 700,
+            /* bitrateKbps= */ 2_000,
+            /* mtpKbps= */ 4_000,
+            /* blMs= */ 2_000);
+    QoSInfo trigger = triggerSegment(/* ts= */ 17_500L, /* blMs= */ 0);
+    RebufferGroup group =
+        new RebufferGroup(
+            /* id= */ 1,
+            /* triggerTimeMs= */ trigger.timestampMs,
+            /* trigger= */ trigger,
+            /* entries= */ Arrays.asList(s1, s2, s3, trigger),
+            /* diagnosis= */ null);
+
+    DiagnosisV2 result = QoSDiagnoserV2.diagnose(group);
+
+    assertThat(result.cause).isEqualTo(DiagnosisV2.Cause.CLIENT_WEAK_NET);
+    assertThat(result.countAbrAggressive).isEqualTo(0);
+    assertThat(result.countClientDrain).isEqualTo(3);
+  }
+
+  @Test
+  public void diagnose_mixedClientDrainMajorityAbr_returnsClientAbr() {
+    // 3 client-drain segments: 2 with bitrate>mtp, 1 with bitrate<=mtp.
+    // 2 × count_aggressive (4) ≥ count_total (3) → CLIENT_ABR.
+    QoSInfo s1 =
+        clientSegment(
+            /* ts= */ 1_000L,
+            /* loadDurMs= */ 5_000L,
+            /* ttfbMs= */ 500,
+            /* bitrateKbps= */ 4_000,
+            /* mtpKbps= */ 2_000,
+            /* blMs= */ 9_000);  // aggressive
+    QoSInfo s2 =
+        clientSegment(
+            /* ts= */ 6_000L,
+            /* loadDurMs= */ 5_500L,
+            /* ttfbMs= */ 600,
+            /* bitrateKbps= */ 4_000,
+            /* mtpKbps= */ 2_000,
+            /* blMs= */ 5_500);  // aggressive
+    QoSInfo s3 =
+        clientSegment(
+            /* ts= */ 11_500L,
+            /* loadDurMs= */ 6_000L,
+            /* ttfbMs= */ 700,
+            /* bitrateKbps= */ 2_000,
+            /* mtpKbps= */ 4_000,
+            /* blMs= */ 2_000);  // not aggressive
+    QoSInfo trigger = triggerSegment(/* ts= */ 17_500L, /* blMs= */ 0);
+    RebufferGroup group =
+        new RebufferGroup(
+            /* id= */ 1,
+            /* triggerTimeMs= */ trigger.timestampMs,
+            /* trigger= */ trigger,
+            /* entries= */ Arrays.asList(s1, s2, s3, trigger),
+            /* diagnosis= */ null);
+
+    DiagnosisV2 result = QoSDiagnoserV2.diagnose(group);
+
+    assertThat(result.cause).isEqualTo(DiagnosisV2.Cause.CLIENT_ABR);
+    assertThat(result.countAbrAggressive).isEqualTo(2);
+    assertThat(result.countClientDrain).isEqualTo(3);
+  }
+
   // Test fixture builders — keep flat & explicit per V1 test convention.
   private static QoSInfo scoredSegment(
       long ts, long cdurMs, long loadDurMs, int ttfbMs, int blMs) {
@@ -314,6 +448,27 @@ public class QoSDiagnoserV2Test {
         .setTrackType(C.TRACK_TYPE_VIDEO)
         .setBufferedDurationMs(blMs)
         .setBufferStarvationFlag(true)
+        .build();
+  }
+
+  /** Client-bound test fixture: explicit bitrate + mtp control for client tests. */
+  private static QoSInfo clientSegment(
+      long ts,
+      long loadDurMs,
+      int ttfbMs,
+      int bitrateKbps,
+      int mtpKbps,
+      int blMs) {
+    return new QoSInfo.Builder()
+        .setTimestampMs(ts)
+        .setTrackType(C.TRACK_TYPE_VIDEO)
+        .setChunkDurationMs(2_000L)
+        .setLoadDurationMs(loadDurMs)
+        .setTtfbMs(ttfbMs)
+        .setBufferedDurationMs(blMs)
+        .setBytesLoaded(loadDurMs * bitrateKbps / 8L)   // approx for postTtfb math; not asserted
+        .setBitrateKbps(bitrateKbps)
+        .setMeasuredThroughputKbps(mtpKbps)
         .build();
   }
 }

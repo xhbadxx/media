@@ -120,18 +120,36 @@ public final class QoSDiagnoserV2 {
           /* sanityFailReason= */ null);
     }
 
-    // Step 5 — Client sub-classify (Spec §IV.4.2: ABR vs Weak Net). PLACEHOLDER.
-    // WARNING: Until Task 5 lands, this returns CLIENT_ABR unconditionally for any
-    // client-dominant drain. Cases where bitrate ≤ mtp should be CLIENT_WEAK_NET —
-    // do NOT trust this verdict on real captures until Task 5 is committed.
-    // TODO(Task 5): replace CLIENT_ABR placeholder with bitrate-vs-mtp comparison.
+    // Step 5 — Client sub-classify (Spec §IV.4.2: ABR vs Weak Net) by ABR-aggressive count.
+    int countAbrAggressive = 0;
+    int countClientDrain = 0;
+    for (QoSInfo entry : group.entries) {
+      if (!isCompletedScoredSegment(entry)) {
+        continue;
+      }
+      SegmentShare share = decompose(entry);
+      if (share.clientShareMs > 0L) {
+        countClientDrain++;
+        if (entry.bitrateKbps > 0
+            && entry.measuredThroughputKbps > 0
+            && entry.bitrateKbps > entry.measuredThroughputKbps) {
+          countAbrAggressive++;
+        }
+      }
+    }
+
+    DiagnosisV2.Cause clientCause =
+        (2 * countAbrAggressive >= countClientDrain)
+            ? DiagnosisV2.Cause.CLIENT_ABR
+            : DiagnosisV2.Cause.CLIENT_WEAK_NET;
+
     return new DiagnosisV2(
-        DiagnosisV2.Cause.CLIENT_ABR,
+        clientCause,
         totalDrain,
         serverDrain,
         clientDrain,
-        -1,
-        -1,
+        countAbrAggressive,
+        countClientDrain,
         /* sanityFailReason= */ null);
   }
 
