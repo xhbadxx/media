@@ -29,12 +29,12 @@ import androidx.media3.exoplayer.qos.model.RebufferGroup;
  * <p>Sibling to {@link QoSDiagnoser} (V1). V1 stays untouched; both run in
  * parallel via {@code FPlayQoSMonitor} for cross-validation.
  */
+@UnstableApi
 public final class QoSDiagnoserV2 {
 
   private QoSDiagnoserV2() {}
 
   /** Per-segment phase decomposition result. */
-  @UnstableApi
   public static final class SegmentShare {
     public final long excessMs;
     public final long serverShareMs;

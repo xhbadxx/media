@@ -111,9 +111,17 @@ public class QoSDiagnoserV2Test {
     assertThat(result.sanityFailReason).contains("wall_time");
   }
 
+  // ===== decompose helper =====
+
   @Test
   public void decompose_healthySegment_allZeros() {
-    QoSInfo seg = scoredSegment(/* ts= */ 0L, /* cdur= */ 2_000L, /* loadDur= */ 1_500L, /* ttfb= */ 200, /* bl= */ 5_000);
+    QoSInfo seg =
+        scoredSegment(
+            /* ts= */ 0L,
+            /* cdurMs= */ 2_000L,
+            /* loadDurMs= */ 1_500L,
+            /* ttfbMs= */ 200,
+            /* blMs= */ 5_000);
     QoSDiagnoserV2.SegmentShare s = QoSDiagnoserV2.decompose(seg);
     assertThat(s.excessMs).isEqualTo(0L);
     assertThat(s.serverShareMs).isEqualTo(0L);
@@ -123,7 +131,13 @@ public class QoSDiagnoserV2Test {
   @Test
   public void decompose_ttfbDominantExcess_serverGetsAll() {
     // loadDur=4000, cdur=2000 → excess=2000. ttfb=3500 ≥ excess → server_share=2000, client=0.
-    QoSInfo seg = scoredSegment(/* ts= */ 0L, /* cdur= */ 2_000L, /* loadDur= */ 4_000L, /* ttfb= */ 3_500, /* bl= */ 5_000);
+    QoSInfo seg =
+        scoredSegment(
+            /* ts= */ 0L,
+            /* cdurMs= */ 2_000L,
+            /* loadDurMs= */ 4_000L,
+            /* ttfbMs= */ 3_500,
+            /* blMs= */ 5_000);
     QoSDiagnoserV2.SegmentShare s = QoSDiagnoserV2.decompose(seg);
     assertThat(s.excessMs).isEqualTo(2_000L);
     assertThat(s.serverShareMs).isEqualTo(2_000L);
@@ -133,7 +147,13 @@ public class QoSDiagnoserV2Test {
   @Test
   public void decompose_transferDominantExcess_clientGetsRemainder() {
     // loadDur=5000, cdur=2000 → excess=3000. ttfb=1000 < excess → server_share=1000, client=2000.
-    QoSInfo seg = scoredSegment(/* ts= */ 0L, /* cdur= */ 2_000L, /* loadDur= */ 5_000L, /* ttfb= */ 1_000, /* bl= */ 5_000);
+    QoSInfo seg =
+        scoredSegment(
+            /* ts= */ 0L,
+            /* cdurMs= */ 2_000L,
+            /* loadDurMs= */ 5_000L,
+            /* ttfbMs= */ 1_000,
+            /* blMs= */ 5_000);
     QoSDiagnoserV2.SegmentShare s = QoSDiagnoserV2.decompose(seg);
     assertThat(s.excessMs).isEqualTo(3_000L);
     assertThat(s.serverShareMs).isEqualTo(1_000L);
@@ -143,7 +163,13 @@ public class QoSDiagnoserV2Test {
   @Test
   public void decompose_zeroTtfb_allClient() {
     // ttfb=0 → server_share=0, client=excess.
-    QoSInfo seg = scoredSegment(/* ts= */ 0L, /* cdur= */ 2_000L, /* loadDur= */ 3_500L, /* ttfb= */ 0, /* bl= */ 5_000);
+    QoSInfo seg =
+        scoredSegment(
+            /* ts= */ 0L,
+            /* cdurMs= */ 2_000L,
+            /* loadDurMs= */ 3_500L,
+            /* ttfbMs= */ 0,
+            /* blMs= */ 5_000);
     QoSDiagnoserV2.SegmentShare s = QoSDiagnoserV2.decompose(seg);
     assertThat(s.excessMs).isEqualTo(1_500L);
     assertThat(s.serverShareMs).isEqualTo(0L);
@@ -153,7 +179,13 @@ public class QoSDiagnoserV2Test {
   @Test
   public void decompose_negativeTtfbSentinel_treatedAsZero() {
     // QoSInfo.ttfbMs=-1 sentinel (capture missed). Treat as 0 → all excess goes to client.
-    QoSInfo seg = scoredSegment(/* ts= */ 0L, /* cdur= */ 2_000L, /* loadDur= */ 3_000L, /* ttfb= */ -1, /* bl= */ 5_000);
+    QoSInfo seg =
+        scoredSegment(
+            /* ts= */ 0L,
+            /* cdurMs= */ 2_000L,
+            /* loadDurMs= */ 3_000L,
+            /* ttfbMs= */ -1,
+            /* blMs= */ 5_000);
     QoSDiagnoserV2.SegmentShare s = QoSDiagnoserV2.decompose(seg);
     assertThat(s.excessMs).isEqualTo(1_000L);
     assertThat(s.serverShareMs).isEqualTo(0L);
