@@ -130,14 +130,14 @@ public final class QoSDiagnoserV2 {
       SegmentShare share = decompose(entry);
       if (share.clientShareMs > 0L) {
         countClientDrain++;
-        if (entry.bitrateKbps > 0
-            && entry.measuredThroughputKbps > 0
+        if (entry.measuredThroughputKbps > 0
             && entry.bitrateKbps > entry.measuredThroughputKbps) {
           countAbrAggressive++;
         }
       }
     }
 
+    // Tie favors ABR: actionable verdict (lower bitrate ladder) beats "weak net" which is unactionable from the player.
     DiagnosisV2.Cause clientCause =
         (2 * countAbrAggressive >= countClientDrain)
             ? DiagnosisV2.Cause.CLIENT_ABR
