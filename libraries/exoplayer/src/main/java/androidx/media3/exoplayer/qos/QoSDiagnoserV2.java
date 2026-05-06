@@ -104,11 +104,11 @@ public final class QoSDiagnoserV2 {
 
     if (totalDrain == 0L) {
       // No observable drain — gate passed but every segment was healthy.
-      return new DiagnosisV2(
-          DiagnosisV2.Cause.TRANSIENT, 0L, 0L, 0L, -1, -1, /* sanityFailReason= */ null);
+      return DiagnosisV2.transientNoDrain();
     }
 
     // Step 4 — Server vs Client by drain magnitude majority (Spec §IV.4).
+    // Tie favors server: when shares are equal, treat as CDN_SLOW (client can self-recover via ABR; server can't).
     if (serverDrain >= clientDrain) {
       return new DiagnosisV2(
           DiagnosisV2.Cause.CDN_SLOW,
@@ -120,7 +120,10 @@ public final class QoSDiagnoserV2 {
           /* sanityFailReason= */ null);
     }
 
-    // Step 5 — Client sub-classify (Tasks 5: ABR vs Weak Net). Placeholder for now.
+    // Step 5 — Client sub-classify (Spec §IV.4.2: ABR vs Weak Net). PLACEHOLDER.
+    // WARNING: Until Task 5 lands, this returns CLIENT_ABR unconditionally for any
+    // client-dominant drain. Cases where bitrate ≤ mtp should be CLIENT_WEAK_NET —
+    // do NOT trust this verdict on real captures until Task 5 is committed.
     // TODO(Task 5): replace CLIENT_ABR placeholder with bitrate-vs-mtp comparison.
     return new DiagnosisV2(
         DiagnosisV2.Cause.CLIENT_ABR,
