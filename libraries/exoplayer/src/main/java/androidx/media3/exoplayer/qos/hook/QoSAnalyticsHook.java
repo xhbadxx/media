@@ -199,6 +199,17 @@ public final class QoSAnalyticsHook implements AnalyticsListener {
           loadEventInfo.dataSpec.position,
           loadEventInfo.dataSpec.length);
       if (ttfb != null) b.setTtfbMs(ttfb);
+
+      QoSTransferListener.RateProfile rateProfile = transferListener.takeRateProfile(
+          loadEventInfo.dataSpec.uri,
+          loadEventInfo.dataSpec.position,
+          loadEventInfo.dataSpec.length);
+      if (rateProfile != null) {
+        b.setTransferRateCv(rateProfile.cv);
+        b.setTransferRateMinKbps(rateProfile.minKbps);
+        b.setTransferRateMaxKbps(rateProfile.maxKbps);
+        b.setTransferSampleCount(rateProfile.sampleCount);
+      }
     }
 
     if (mediaLoadData.mediaStartTimeMs != C.TIME_UNSET
@@ -275,12 +286,16 @@ public final class QoSAnalyticsHook implements AnalyticsListener {
   }
 
   /**
-   * Discards any pending TTFB entry for this load (the load is being dropped, not
-   * recorded). Prevents memory leak in {@link QoSTransferListener#takeTtfb}'s storage.
+   * Discards any pending TTFB and rate-profile entries for this load (the load is being
+   * dropped, not recorded). Prevents memory leak in {@link QoSTransferListener}'s storage.
    */
   private void discardTtfb(LoadEventInfo loadEventInfo) {
     if (transferListener != null) {
       transferListener.takeTtfb(
+          loadEventInfo.dataSpec.uri,
+          loadEventInfo.dataSpec.position,
+          loadEventInfo.dataSpec.length);
+      transferListener.takeRateProfile(
           loadEventInfo.dataSpec.uri,
           loadEventInfo.dataSpec.position,
           loadEventInfo.dataSpec.length);

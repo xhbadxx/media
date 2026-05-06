@@ -60,6 +60,21 @@ public final class QoSInfo {
   @Nullable public final String errorMessage;
   @Nullable public final String cacheStatus;
   @Nullable public final String cdnProvider;
+  /**
+   * Coefficient of variation (StdDev/Mean) of per-100ms rate samples during transfer
+   * phase. {@code -1.0} sentinel when not measured (local load, transfer too short for
+   * meaningful sampling, or hook unavailable). Low CV (&lt; 0.15) hints at steady
+   * server-side throttling; high CV (&gt; 0.3) hints at unstable client signal.
+   * Interpretation requires also looking at {@link #measuredThroughputKbps} and link
+   * capacity — see {@code research-bandwidth-vs-rate-stability.md}.
+   */
+  public final double transferRateCv;
+  /** Minimum per-100ms rate sample observed during transfer phase. {@code -1} = unset. */
+  public final long transferRateMinKbps;
+  /** Maximum per-100ms rate sample observed during transfer phase. {@code -1} = unset. */
+  public final long transferRateMaxKbps;
+  /** Number of 100ms windows sampled during transfer. {@code 0} = unset/no samples. */
+  public final int transferSampleCount;
 
   /**
    * Compact one-line representation suitable for logcat — skips fields holding
@@ -332,6 +347,10 @@ public final class QoSInfo {
     this.errorMessage = b.errorMessage;
     this.cacheStatus = b.cacheStatus;
     this.cdnProvider = b.cdnProvider;
+    this.transferRateCv = b.transferRateCv;
+    this.transferRateMinKbps = b.transferRateMinKbps;
+    this.transferRateMaxKbps = b.transferRateMaxKbps;
+    this.transferSampleCount = b.transferSampleCount;
   }
 
   /** Builder — all fields optional; sensible defaults for unset values. */
@@ -355,6 +374,10 @@ public final class QoSInfo {
     @Nullable private String errorMessage;
     @Nullable private String cacheStatus;
     @Nullable private String cdnProvider;
+    private double transferRateCv = -1.0;
+    private long transferRateMinKbps = -1L;
+    private long transferRateMaxKbps = -1L;
+    private int transferSampleCount = 0;
 
     public Builder setTimestampMs(long v) { timestampMs = v; return this; }
     public Builder setUrl(String v) { url = v; return this; }
@@ -375,6 +398,10 @@ public final class QoSInfo {
     public Builder setErrorMessage(@Nullable String v) { errorMessage = v; return this; }
     public Builder setCacheStatus(@Nullable String v) { cacheStatus = v; return this; }
     public Builder setCdnProvider(@Nullable String v) { cdnProvider = v; return this; }
+    public Builder setTransferRateCv(double v) { transferRateCv = v; return this; }
+    public Builder setTransferRateMinKbps(long v) { transferRateMinKbps = v; return this; }
+    public Builder setTransferRateMaxKbps(long v) { transferRateMaxKbps = v; return this; }
+    public Builder setTransferSampleCount(int v) { transferSampleCount = v; return this; }
 
     public QoSInfo build() { return new QoSInfo(this); }
   }

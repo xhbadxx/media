@@ -22,6 +22,8 @@ import androidx.media3.common.util.UnstableApi;
 import androidx.media3.datasource.DataSource;
 import androidx.media3.datasource.DataSpec;
 import androidx.media3.datasource.TransferListener;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 
@@ -60,11 +62,53 @@ public final class QoSTransferListener implements TransferListener {
   /** Cap to avoid unbounded growth if onTransferStart never fires for some loads. */
   private static final int MAX_PENDING = 128;
 
+  /** Sample rate window for transfer-phase stability measurement (ms). */
+  private static final long RATE_SAMPLE_WINDOW_MS = 100L;
+
+  /** Minimum sample count for a meaningful CV — too few = unreliable stat. */
+  private static final int MIN_SAMPLES_FOR_CV = 5;
+
   /** Active loads: composite key → onTransferInitializing timestamp (elapsedRealtimeMs). */
   private final ConcurrentMap<String, Long> initStartMs = new ConcurrentHashMap<>();
 
   /** Completed TTFBs ready to be consumed by {@link QoSAnalyticsHook}. */
   private final ConcurrentMap<String, Integer> readyTtfbMs = new ConcurrentHashMap<>();
+
+  /** Active transfers: composite key → in-progress rate accumulator. */
+  private final ConcurrentMap<String, RateAccumulator> activeProfiles = new ConcurrentHashMap<>();
+
+  /** Completed rate profiles ready to be consumed by {@link QoSAnalyticsHook}. */
+  private final ConcurrentMap<String, RateProfile> readyProfiles = new ConcurrentHashMap<>();
+
+  /**
+   * Stats from per-100ms rate sampling during a single transfer's payload phase
+   * (post-TTFB). Used to disambiguate steady CDN throttle (low CV) from unstable
+   * client signal (high CV). See {@code research-bandwidth-vs-rate-stability.md}.
+   */
+  public static final class RateProfile {
+    public final double cv;
+    public final long minKbps;
+    public final long maxKbps;
+    public final int sampleCount;
+
+    RateProfile(double cv, long minKbps, long maxKbps, int sampleCount) {
+      this.cv = cv;
+      this.minKbps = minKbps;
+      this.maxKbps = maxKbps;
+      this.sampleCount = sampleCount;
+    }
+  }
+
+  /** Mutable per-transfer accumulator. NOT thread-safe — confined to loader thread. */
+  private static final class RateAccumulator {
+    long lastSampleMs;
+    long bytesInWindow;
+    final List<Double> rateKbpsSamples = new ArrayList<>();
+
+    RateAccumulator(long startMs) {
+      this.lastSampleMs = startMs;
+    }
+  }
 
   @Override
   public void onTransferInitializing(DataSource source, DataSpec dataSpec, boolean isNetwork) {
@@ -77,22 +121,70 @@ public final class QoSTransferListener implements TransferListener {
   public void onTransferStart(DataSource source, DataSpec dataSpec, boolean isNetwork) {
     if (!isNetwork) return;
     String key = makeKey(dataSpec);
+    long now = SystemClock.elapsedRealtime();
     Long t0 = initStartMs.remove(key);
     if (t0 != null) {
-      int ttfb = (int) (SystemClock.elapsedRealtime() - t0);
+      int ttfb = (int) (now - t0);
       readyTtfbMs.put(key, ttfb);
     }
+    // Begin payload-phase rate sampling. Window starts at first-byte time (now).
+    activeProfiles.put(key, new RateAccumulator(now));
   }
 
   @Override
   public void onBytesTransferred(
       DataSource source, DataSpec dataSpec, boolean isNetwork, int bytesTransferred) {
-    // No-op — TTFB already captured at onTransferStart.
+    if (!isNetwork) return;
+    RateAccumulator acc = activeProfiles.get(makeKey(dataSpec));
+    if (acc == null) return;
+    acc.bytesInWindow += bytesTransferred;
+    long now = SystemClock.elapsedRealtime();
+    long elapsed = now - acc.lastSampleMs;
+    if (elapsed >= RATE_SAMPLE_WINDOW_MS) {
+      // bytes×8 / ms = kbps directly (1 kbps = 1 bit/ms).
+      double rateKbps = (double) (acc.bytesInWindow * 8L) / elapsed;
+      acc.rateKbpsSamples.add(rateKbps);
+      acc.bytesInWindow = 0;
+      acc.lastSampleMs = now;
+    }
   }
 
   @Override
   public void onTransferEnd(DataSource source, DataSpec dataSpec, boolean isNetwork) {
-    if (isNetwork) initStartMs.remove(makeKey(dataSpec));
+    if (!isNetwork) return;
+    String key = makeKey(dataSpec);
+    initStartMs.remove(key);
+    RateAccumulator acc = activeProfiles.remove(key);
+    if (acc != null) {
+      RateProfile profile = computeProfile(acc);
+      if (profile != null) {
+        readyProfiles.put(key, profile);
+      }
+    }
+  }
+
+  @Nullable
+  private static RateProfile computeProfile(RateAccumulator acc) {
+    int n = acc.rateKbpsSamples.size();
+    if (n < MIN_SAMPLES_FOR_CV) return null;
+    double sum = 0;
+    double min = Double.MAX_VALUE;
+    double max = 0;
+    for (Double r : acc.rateKbpsSamples) {
+      sum += r;
+      if (r < min) min = r;
+      if (r > max) max = r;
+    }
+    double mean = sum / n;
+    if (mean <= 0) return null;
+    double sumSq = 0;
+    for (Double r : acc.rateKbpsSamples) {
+      double d = r - mean;
+      sumSq += d * d;
+    }
+    double stddev = Math.sqrt(sumSq / n);
+    double cv = stddev / mean;
+    return new RateProfile(cv, (long) min, (long) max, n);
   }
 
   /**
@@ -106,13 +198,27 @@ public final class QoSTransferListener implements TransferListener {
   }
 
   /**
-   * Clears all pending and ready TTFB entries. Used by {@link
+   * Returns the rate-stability profile for the load identified by
+   * {@code uri+position+length} and removes it from internal storage. Returns
+   * {@code null} when the transfer was too short for meaningful sampling
+   * (fewer than {@link #MIN_SAMPLES_FOR_CV} 100ms windows) or did not produce
+   * payload bytes after first-byte arrival.
+   */
+  @Nullable
+  public RateProfile takeRateProfile(Uri uri, long position, long length) {
+    return readyProfiles.remove(makeKey(uri, position, length));
+  }
+
+  /**
+   * Clears all pending and ready entries. Used by {@link
    * androidx.media3.exoplayer.qos.FPlayQoSMonitor#detach()} so re-attach starts fresh,
-   * preventing stale TTFB from a previous player session leaking into the new one.
+   * preventing stale data from a previous player session leaking into the new one.
    */
   public void clear() {
     initStartMs.clear();
     readyTtfbMs.clear();
+    activeProfiles.clear();
+    readyProfiles.clear();
   }
 
   private static String makeKey(DataSpec dataSpec) {
