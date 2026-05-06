@@ -24,6 +24,7 @@ import androidx.media3.exoplayer.qos.hook.QoSAnalyticsHook;
 import androidx.media3.exoplayer.qos.hook.QoSPlayerHook;
 import androidx.media3.exoplayer.qos.hook.QoSTransferListener;
 import androidx.media3.exoplayer.qos.model.Diagnosis;
+import androidx.media3.exoplayer.qos.model.DiagnosisV2;
 import androidx.media3.exoplayer.qos.model.QoSInfo;
 import androidx.media3.exoplayer.qos.model.RebufferGroup;
 import androidx.media3.exoplayer.qos.observer.QoSObserver;
@@ -155,10 +156,19 @@ public final class FPlayQoSMonitor {
     RebufferGroup pipelineInput =
         new RebufferGroup(groupId, trigger.timestampMs, trigger, snapshot, diagnosis);
     QoSDiagnoser.FullDiagnosis fullDiagnosis = QoSDiagnoser.diagnoseFully(pipelineInput);
+    DiagnosisV2 v2 = QoSDiagnoserV2.diagnose(pipelineInput);
     Log.i(TAG, "Rebuffer #" + groupId + ": " + diagnosis.summary()
-        + " | cause=" + fullDiagnosis.cause
-        + " mechanism=" + fullDiagnosis.mechanism
-        + " abrLag=" + fullDiagnosis.abrLag);
+        + " | v1.cause=" + fullDiagnosis.cause
+        + " v1.mechanism=" + fullDiagnosis.mechanism
+        + " v1.abrLag=" + fullDiagnosis.abrLag
+        + " | v2.cause=" + v2.cause
+        + " v2.totalDrain=" + v2.totalDrainMs + "ms"
+        + " v2.serverDrain=" + v2.serverDrainMs + "ms"
+        + " v2.clientDrain=" + v2.clientDrainMs + "ms"
+        + (v2.countClientDrain > 0
+            ? " v2.abrAggr=" + v2.countAbrAggressive + "/" + v2.countClientDrain
+            : "")
+        + (v2.sanityFailReason != null ? " v2.sanity=FAIL:" + v2.sanityFailReason : ""));
     RebufferGroup group =
         new RebufferGroup(
             groupId,
