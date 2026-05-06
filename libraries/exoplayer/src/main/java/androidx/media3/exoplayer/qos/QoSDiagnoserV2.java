@@ -39,7 +39,15 @@ public final class QoSDiagnoserV2 {
     if (group == null || group.entries == null || group.entries.isEmpty()) {
       return DiagnosisV2.transientNoDrain();
     }
-    // TODO(Tasks 1-5): replace placeholder with sanity gate + buffer-conservation pipeline.
+
+    // Step 1 — Sanity gate (reuse V1's pure functions).
+    QoSDiagnoser.WindowMetrics metrics = QoSDiagnoser.computeWindowMetrics(group);
+    String sanityFail = QoSDiagnoser.applySanityG1ate(metrics);
+    if (sanityFail != null) {
+      return DiagnosisV2.transientFromSanity(sanityFail);
+    }
+
+    // TODO(Tasks 2-5): replace placeholder with buffer-conservation pipeline.
     return DiagnosisV2.transientNoDrain();
   }
 }
