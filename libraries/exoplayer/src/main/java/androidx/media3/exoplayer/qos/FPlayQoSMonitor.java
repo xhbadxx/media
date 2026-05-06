@@ -156,19 +156,26 @@ public final class FPlayQoSMonitor {
     RebufferGroup pipelineInput =
         new RebufferGroup(groupId, trigger.timestampMs, trigger, snapshot, diagnosis);
     QoSDiagnoser.FullDiagnosis fullDiagnosis = QoSDiagnoser.diagnoseFully(pipelineInput);
+    // Dual-write phase: V1 is the source of truth for FullDiagnosis on the
+    // RebufferGroup; V2 runs side-by-side in the log only for cross-validation.
+    // Remove the V1 branch after V2 migration lands.
     DiagnosisV2 v2 = QoSDiagnoserV2.diagnose(pipelineInput);
-    Log.i(TAG, "Rebuffer #" + groupId + ": " + diagnosis.summary()
-        + " | v1.cause=" + fullDiagnosis.cause
-        + " v1.mechanism=" + fullDiagnosis.mechanism
-        + " v1.abrLag=" + fullDiagnosis.abrLag
-        + " | v2.cause=" + v2.cause
-        + " v2.totalDrain=" + v2.totalDrainMs + "ms"
-        + " v2.serverDrain=" + v2.serverDrainMs + "ms"
-        + " v2.clientDrain=" + v2.clientDrainMs + "ms"
-        + (v2.countClientDrain > 0
-            ? " v2.abrAggr=" + v2.countAbrAggressive + "/" + v2.countClientDrain
-            : "")
-        + (v2.sanityFailReason != null ? " v2.sanity=FAIL:" + v2.sanityFailReason : ""));
+    StringBuilder log = new StringBuilder(384)
+        .append("Rebuffer #").append(groupId).append(": ").append(diagnosis.summary())
+        .append(" | v1.cause=").append(fullDiagnosis.cause)
+        .append(" v1.mechanism=").append(fullDiagnosis.mechanism)
+        .append(" v1.abrLag=").append(fullDiagnosis.abrLag)
+        .append(" | v2.cause=").append(v2.cause)
+        .append(" v2.totalDrain=").append(v2.totalDrainMs).append("ms")
+        .append(" v2.serverDrain=").append(v2.serverDrainMs).append("ms")
+        .append(" v2.clientDrain=").append(v2.clientDrainMs).append("ms");
+    if (v2.countClientDrain > 0) {
+      log.append(" v2.abrAggr=").append(v2.countAbrAggressive).append('/').append(v2.countClientDrain);
+    }
+    if (v2.sanityFailReason != null) {
+      log.append(" v2.sanityFail=\"").append(v2.sanityFailReason).append('"');
+    }
+    Log.i(TAG, log.toString());
     RebufferGroup group =
         new RebufferGroup(
             groupId,
