@@ -192,6 +192,51 @@ public class QoSDiagnoserV2Test {
     assertThat(s.clientShareMs).isEqualTo(1_000L);
   }
 
+  // ===== significance gate (TRANSIENT no drain) =====
+
+  @Test
+  public void diagnose_allHealthySegments_returnsTransientNoDrain() {
+    // 3 segments all with loadDur ≤ cdur → no excess → TRANSIENT (no drain) even though gate passes.
+    // Per Task 1 sanity-gate math: wallTime=6000ms, ΣcDur=6000ms, Δbuffer=500ms → ΔDemand=5500ms,
+    // ratio=0.92 → PASSES sanity gate (within [0.7, 1.3]).
+    QoSInfo s1 =
+        scoredSegment(
+            /* ts= */ 1_000L,
+            /* cdurMs= */ 2_000L,
+            /* loadDurMs= */ 1_500L,
+            /* ttfbMs= */ 200,
+            /* blMs= */ 6_000);
+    QoSInfo s2 =
+        scoredSegment(
+            /* ts= */ 3_000L,
+            /* cdurMs= */ 2_000L,
+            /* loadDurMs= */ 1_800L,
+            /* ttfbMs= */ 200,
+            /* blMs= */ 6_200);
+    QoSInfo s3 =
+        scoredSegment(
+            /* ts= */ 5_000L,
+            /* cdurMs= */ 2_000L,
+            /* loadDurMs= */ 1_700L,
+            /* ttfbMs= */ 200,
+            /* blMs= */ 6_500);
+    QoSInfo trigger = triggerSegment(/* ts= */ 7_000L, /* blMs= */ 6_500);
+    RebufferGroup group =
+        new RebufferGroup(
+            /* id= */ 1,
+            /* triggerTimeMs= */ trigger.timestampMs,
+            /* trigger= */ trigger,
+            /* entries= */ Arrays.asList(s1, s2, s3, trigger),
+            /* diagnosis= */ null);
+
+    DiagnosisV2 result = QoSDiagnoserV2.diagnose(group);
+
+    assertThat(result.cause).isEqualTo(DiagnosisV2.Cause.TRANSIENT);
+    // Gate passed (no sanityFailReason), TRANSIENT came from "no observable drain" path.
+    assertThat(result.sanityFailReason).isNull();
+    assertThat(result.totalDrainMs).isEqualTo(0L);
+  }
+
   // Test fixture builders — keep flat & explicit per V1 test convention.
   private static QoSInfo scoredSegment(
       long ts, long cdurMs, long loadDurMs, int ttfbMs, int blMs) {

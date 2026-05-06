@@ -15,6 +15,7 @@
  */
 package androidx.media3.exoplayer.qos;
 
+import androidx.media3.common.C;
 import androidx.media3.common.util.UnstableApi;
 import androidx.media3.exoplayer.qos.model.DiagnosisV2;
 import androidx.media3.exoplayer.qos.model.QoSInfo;
@@ -87,7 +88,48 @@ public final class QoSDiagnoserV2 {
       return DiagnosisV2.transientFromSanity(sanityFail);
     }
 
-    // TODO(Tasks 2-5): replace placeholder with buffer-conservation pipeline.
-    return DiagnosisV2.transientNoDrain();
+    // Step 2 + Step 3 — Phase decomposition (Spec §IV.2) + significance check.
+    long totalDrain = 0L;
+    long serverDrain = 0L;
+    long clientDrain = 0L;
+    for (QoSInfo entry : group.entries) {
+      if (!isCompletedScoredSegment(entry)) {
+        continue;
+      }
+      SegmentShare share = decompose(entry);
+      totalDrain += share.excessMs;
+      serverDrain += share.serverShareMs;
+      clientDrain += share.clientShareMs;
+    }
+
+    if (totalDrain == 0L) {
+      return new DiagnosisV2(
+          DiagnosisV2.Cause.TRANSIENT, 0L, 0L, 0L, -1, -1, /* sanityFailReason= */ null);
+    }
+
+    // TODO(Tasks 4-5): classify SERVER vs CLIENT based on share majority.
+    return new DiagnosisV2(
+        DiagnosisV2.Cause.TRANSIENT,
+        totalDrain,
+        serverDrain,
+        clientDrain,
+        -1,
+        -1,
+        /* sanityFailReason= */ null);
+  }
+
+  /**
+   * Same predicate as V1's window-metrics supply filter: V/DEFAULT scored segments
+   * with status COMPLETED. Excludes manifests, init segments, audio (DASH split-track),
+   * and failed loads.
+   */
+  private static boolean isCompletedScoredSegment(QoSInfo e) {
+    if (e == null) {
+      return false;
+    }
+    if (e.status != QoSInfo.LoadStatus.COMPLETED) {
+      return false;
+    }
+    return e.trackType == C.TRACK_TYPE_VIDEO || e.trackType == C.TRACK_TYPE_DEFAULT;
   }
 }
