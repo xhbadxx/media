@@ -237,6 +237,60 @@ public class QoSDiagnoserV2Test {
     assertThat(result.totalDrainMs).isEqualTo(0L);
   }
 
+  // ===== Server vs Client classification =====
+
+  @Test
+  public void diagnose_continuousTtfbDominant_returnsCdnSlow() {
+    // 4 segments, each loadDur > cdur with TTFB eating the entire excess.
+    // server_share dominates → CDN_SLOW.
+    QoSInfo s1 =
+        scoredSegment(
+            /* ts= */ 1_000L,
+            /* cdurMs= */ 2_000L,
+            /* loadDurMs= */ 2_800L,
+            /* ttfbMs= */ 2_100,
+            /* blMs= */ 9_000);
+    QoSInfo s2 =
+        scoredSegment(
+            /* ts= */ 3_800L,
+            /* cdurMs= */ 2_000L,
+            /* loadDurMs= */ 3_200L,
+            /* ttfbMs= */ 2_400,
+            /* blMs= */ 6_000);
+    QoSInfo s3 =
+        scoredSegment(
+            /* ts= */ 7_000L,
+            /* cdurMs= */ 2_000L,
+            /* loadDurMs= */ 3_500L,
+            /* ttfbMs= */ 2_800,
+            /* blMs= */ 3_500);
+    QoSInfo s4 =
+        scoredSegment(
+            /* ts= */ 10_500L,
+            /* cdurMs= */ 2_000L,
+            /* loadDurMs= */ 4_500L,
+            /* ttfbMs= */ 3_500,
+            /* blMs= */ 1_000);
+    QoSInfo trigger = triggerSegment(/* ts= */ 15_000L, /* blMs= */ 0);
+    RebufferGroup group =
+        new RebufferGroup(
+            /* id= */ 1,
+            /* triggerTimeMs= */ trigger.timestampMs,
+            /* trigger= */ trigger,
+            /* entries= */ Arrays.asList(s1, s2, s3, s4, trigger),
+            /* diagnosis= */ null);
+
+    DiagnosisV2 result = QoSDiagnoserV2.diagnose(group);
+
+    assertThat(result.cause).isEqualTo(DiagnosisV2.Cause.CDN_SLOW);
+    assertThat(result.serverDrainMs).isGreaterThan(result.clientDrainMs);
+    // Decomposition: each segment excess = loadDur−cdur ∈ {800, 1200, 1500, 2500} = 6000 total.
+    // ttfb ≥ excess on all 4 → server gets all 6000.
+    assertThat(result.totalDrainMs).isEqualTo(6_000L);
+    assertThat(result.serverDrainMs).isEqualTo(6_000L);
+    assertThat(result.clientDrainMs).isEqualTo(0L);
+  }
+
   // Test fixture builders — keep flat & explicit per V1 test convention.
   private static QoSInfo scoredSegment(
       long ts, long cdurMs, long loadDurMs, int ttfbMs, int blMs) {

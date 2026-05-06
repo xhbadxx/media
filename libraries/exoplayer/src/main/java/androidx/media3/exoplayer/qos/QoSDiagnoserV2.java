@@ -108,10 +108,22 @@ public final class QoSDiagnoserV2 {
           DiagnosisV2.Cause.TRANSIENT, 0L, 0L, 0L, -1, -1, /* sanityFailReason= */ null);
     }
 
-    // Drain observed but not yet classified.
-    // TODO(Tasks 4-5): classify SERVER vs CLIENT based on share majority.
+    // Step 4 — Server vs Client by drain magnitude majority (Spec §IV.4).
+    if (serverDrain >= clientDrain) {
+      return new DiagnosisV2(
+          DiagnosisV2.Cause.CDN_SLOW,
+          totalDrain,
+          serverDrain,
+          clientDrain,
+          -1,
+          -1,
+          /* sanityFailReason= */ null);
+    }
+
+    // Step 5 — Client sub-classify (Tasks 5: ABR vs Weak Net). Placeholder for now.
+    // TODO(Task 5): replace CLIENT_ABR placeholder with bitrate-vs-mtp comparison.
     return new DiagnosisV2(
-        DiagnosisV2.Cause.TRANSIENT,
+        DiagnosisV2.Cause.CLIENT_ABR,
         totalDrain,
         serverDrain,
         clientDrain,
