@@ -103,10 +103,12 @@ public final class QoSDiagnoserV2 {
     }
 
     if (totalDrain == 0L) {
+      // No observable drain — gate passed but every segment was healthy.
       return new DiagnosisV2(
           DiagnosisV2.Cause.TRANSIENT, 0L, 0L, 0L, -1, -1, /* sanityFailReason= */ null);
     }
 
+    // Drain observed but not yet classified.
     // TODO(Tasks 4-5): classify SERVER vs CLIENT based on share majority.
     return new DiagnosisV2(
         DiagnosisV2.Cause.TRANSIENT,
@@ -120,14 +122,18 @@ public final class QoSDiagnoserV2 {
 
   /**
    * Same predicate as V1's window-metrics supply filter: V/DEFAULT scored segments
-   * with status COMPLETED. Excludes manifests, init segments, audio (DASH split-track),
-   * and failed loads.
+   * with status COMPLETED and a positive chunk duration. Excludes manifests, init
+   * segments, audio (DASH split-track), failed loads, and the trigger entry
+   * (which has no chunkDurationMs by construction).
    */
   private static boolean isCompletedScoredSegment(QoSInfo e) {
     if (e == null) {
       return false;
     }
     if (e.status != QoSInfo.LoadStatus.COMPLETED) {
+      return false;
+    }
+    if (e.chunkDurationMs <= 0L) {
       return false;
     }
     return e.trackType == C.TRACK_TYPE_VIDEO || e.trackType == C.TRACK_TYPE_DEFAULT;
