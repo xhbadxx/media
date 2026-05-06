@@ -40,7 +40,7 @@ public final class QoSDiagnoserV2 {
       return DiagnosisV2.transientNoDrain();
     }
 
-    // Step 1 — Sanity gate (reuse V1's pure functions).
+    // Step 1 — Sanity gate (Spec §IV.1, reuses V1's pure functions).
     QoSDiagnoser.WindowMetrics metrics = QoSDiagnoser.computeWindowMetrics(group);
     String sanityFail = QoSDiagnoser.applySanityG1ate(metrics);
     if (sanityFail != null) {

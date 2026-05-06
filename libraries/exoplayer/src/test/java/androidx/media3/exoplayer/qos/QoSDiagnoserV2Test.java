@@ -127,6 +127,7 @@ public class QoSDiagnoserV2Test {
         .build();
   }
 
+  /** Trigger entry — no chunkDurationMs by design so it does not contribute to ΔSupply. */
   private static QoSInfo triggerSegment(long ts, int blMs) {
     return new QoSInfo.Builder()
         .setTimestampMs(ts)
