@@ -6,6 +6,12 @@
  * You may obtain a copy of the License at
  *
  *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  */
 package androidx.media3.exoplayer.qos;
 
@@ -33,6 +39,7 @@ public final class QoSDiagnoserV2 {
     if (group == null || group.entries == null || group.entries.isEmpty()) {
       return DiagnosisV2.transientNoDrain();
     }
-    return DiagnosisV2.transientNoDrain();  // TODO Tasks 1-5
+    // TODO(Tasks 1-5): replace placeholder with sanity gate + buffer-conservation pipeline.
+    return DiagnosisV2.transientNoDrain();
   }
 }
