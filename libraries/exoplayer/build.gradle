@@ -72,7 +72,7 @@ dependencies {
     testImplementation project(modulePrefix + 'test-utils')
     testImplementation project(modulePrefix + 'test-utils-robolectric')
     // Sigma
-    implementation ('com.sigma.packer:media3-1.6.1:1.0.3'){
+    implementation ('com.sigma.packer:media3-1.9.2:1.0.3'){
         exclude group: 'org.checkerframework', module: 'checker-qual'
         exclude group: 'androidx.media3', module: 'media3-exoplayer'
         exclude group: 'androidx.media3', module: 'media3-database'

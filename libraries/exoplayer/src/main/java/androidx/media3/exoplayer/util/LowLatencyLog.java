@@ -82,7 +82,7 @@ public final class LowLatencyLog {
    * Master switch. Kept for backwards compatibility. Setting to {@code false} is equivalent to
    * {@code mode = MODE_OFF}. Setting to {@code true} restores {@link #MODE_REBUFFER_TEST}.
    */
-  public static volatile boolean enabled = true;
+  public static volatile boolean enabled = false;
 
   private LowLatencyLog() {}
 
