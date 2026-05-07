@@ -26,6 +26,7 @@ import androidx.media3.exoplayer.qos.hook.QoSPlayerHook;
 import androidx.media3.exoplayer.qos.hook.QoSTransferListener;
 import androidx.media3.exoplayer.qos.model.Diagnosis;
 import androidx.media3.exoplayer.qos.model.DiagnosisV2;
+import androidx.media3.exoplayer.qos.model.DiagnosisV4;
 import androidx.media3.exoplayer.qos.model.QoSInfo;
 import androidx.media3.exoplayer.qos.model.RebufferGroup;
 import androidx.media3.exoplayer.qos.observer.QoSObserver;
@@ -157,11 +158,12 @@ public final class FPlayQoSMonitor {
     RebufferGroup pipelineInput =
         new RebufferGroup(groupId, trigger.timestampMs, trigger, snapshot, diagnosis);
     QoSDiagnoser.FullDiagnosis fullDiagnosis = QoSDiagnoser.diagnoseFully(pipelineInput);
-    // Dual-write phase: V1 is the source of truth for FullDiagnosis on the
-    // RebufferGroup; V2 runs side-by-side in the log only for cross-validation.
-    // Remove the V1 branch after V2 migration lands.
+    // Triple-write phase: V1 is source of truth for FullDiagnosis; V2 + V4 run
+    // side-by-side in the log only for cross-validation. After V4 production
+    // validation V2 dual-write can be dropped, then V1 once V4 fully replaces it.
     DiagnosisV2 v2 = QoSDiagnoserV2.diagnose(pipelineInput);
-    StringBuilder log = new StringBuilder(384)
+    DiagnosisV4 v4 = QoSDiagnoserV4.diagnose(pipelineInput);
+    StringBuilder log = new StringBuilder(512)
         .append("Rebuffer #").append(groupId).append(": ").append(diagnosis.summary())
         .append(" | v1.cause=").append(fullDiagnosis.cause)
         .append(" v1.mechanism=").append(fullDiagnosis.mechanism)
@@ -176,6 +178,24 @@ public final class FPlayQoSMonitor {
     if (v2.sanityFailReason != null) {
       log.append(" v2.sanityFail=\"").append(v2.sanityFailReason).append('"');
     }
+    log.append(" | v4.cause=").append(v4.cause);
+    if (v4.cause == DiagnosisV4.Cause.CDN_HTTP_ERROR && v4.httpErrorCodes.length > 0) {
+      log.append(" v4.codes=").append(java.util.Arrays.toString(v4.httpErrorCodes));
+    } else if (v4.sanityFailReason != null) {
+      log.append(" v4.sanityFail=\"").append(v4.sanityFailReason).append('"');
+    } else {
+      log.append(" v4.nV=").append(v4.nVSegments);
+      log.append(" v4.nSlow=").append(v4.nSlowSegments);
+      log.append(" v4.median=").append(String.format(java.util.Locale.US, "%.2f", v4.medianExcessRatio));
+      if (v4.nCdnEvidenceSegments > 0) {
+        log.append(" v4.cdnEv=").append(v4.nCdnEvidenceSegments);
+      }
+      if (v4.nASegments > 0) {
+        log.append(" v4.crossA=").append(v4.crossTrackCorrelated);
+      }
+      log.append(" v4.bufTrend=").append(v4.bufferTrend);
+      log.append(" v4.abrAware=").append(v4.abrWasAware);
+    }
     Log.i(TAG, log.toString());
     RebufferGroup group =
         new RebufferGroup(
@@ -185,7 +205,8 @@ public final class FPlayQoSMonitor {
             snapshot,
             diagnosis,
             fullDiagnosis,
-            v2);
+            v2,
+            v4);
     rebufferGroups.add(group);
     while (rebufferGroups.size() > MAX_REBUFFER_GROUPS) {
       rebufferGroups.remove(0);
