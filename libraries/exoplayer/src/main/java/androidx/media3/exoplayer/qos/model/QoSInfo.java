@@ -113,6 +113,7 @@ public final class QoSInfo {
     sb.append(" -> CDN");
     appendGroup(sb, deliveryGroup());
     appendGroup(sb, netResultGroup());
+    appendGroup(sb, rateProfileGroup());
     appendGroup(sb, errorGroup());
     appendGroup(sb, shortUrlGroup());
     appendGroup(sb, fullUrlGroup());
@@ -132,6 +133,7 @@ public final class QoSInfo {
     StringBuilder sb = new StringBuilder(140);
     appendGroup(sb, deliveryGroup());
     appendGroup(sb, netResultGroup());
+    appendGroup(sb, rateProfileGroup());
     appendGroup(sb, errorGroup());
     appendGroup(sb, shortUrlGroup());
     appendGroup(sb, fullUrlGroup());
@@ -151,6 +153,7 @@ public final class QoSInfo {
     sb.append('\n');
     appendGroup(sb, deliveryGroup());
     appendGroup(sb, netResultGroup());
+    appendGroup(sb, rateProfileGroup());
     appendGroup(sb, errorGroup());
     appendGroup(sb, shortUrlGroup());
     return sb.toString();
@@ -182,6 +185,18 @@ public final class QoSInfo {
     if (ttfbMs >= 0) addField(g, "ttfb=" + ttfbMs + "ms");
     if (loadDurationMs > 0) addField(g, "dur=" + loadDurationMs + "ms");
     if (bytesLoaded > 0) addField(g, "sz=" + formatBytes(bytesLoaded));
+    return g;
+  }
+
+  /** Per-100ms transfer rate profile: CV, min-max kbps, sample count. */
+  private StringBuilder rateProfileGroup() {
+    StringBuilder g = new StringBuilder();
+    if (transferSampleCount <= 0) return g;
+    addField(g, "cv=" + String.format(java.util.Locale.US, "%.2f", transferRateCv));
+    if (transferRateMinKbps >= 0 && transferRateMaxKbps >= 0) {
+      addField(g, "rate=" + transferRateMinKbps + "-" + transferRateMaxKbps + "kbps");
+    }
+    addField(g, "n=" + transferSampleCount);
     return g;
   }
 
