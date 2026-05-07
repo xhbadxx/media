@@ -75,6 +75,18 @@ public final class QoSInfo {
   public final long transferRateMaxKbps;
   /** Number of 100ms windows sampled during transfer. {@code 0} = unset/no samples. */
   public final int transferSampleCount;
+  /**
+   * Client-side network connection type at load time (Wi-Fi/4G/5G NSA/etc.). Sourced
+   * from {@link androidx.media3.common.util.NetworkTypeObserver}. Sentinel
+   * {@link C#NETWORK_TYPE_UNKNOWN} when unavailable (no Context wired).
+   */
+  public final @C.NetworkType int networkType;
+  /**
+   * Client-side link downstream bandwidth (kbps) reported by
+   * {@code NetworkCapabilities.getLinkDownstreamBandwidthKbps()}. Sentinel {@code -1}
+   * when unavailable. Note: driver/system estimate, not a real-time probe.
+   */
+  public final int linkDownstreamKbps;
 
   /**
    * Compact one-line representation suitable for logcat — skips fields holding
@@ -108,6 +120,7 @@ public final class QoSInfo {
     sb.append("Player");
     appendGroup(sb, trackInfoGroup());
     appendGroup(sb, playerStateGroup());
+    appendGroup(sb, linkProfileGroup());
 
     // CDN section: groups derived from network response
     sb.append(" -> CDN");
@@ -125,6 +138,7 @@ public final class QoSInfo {
     StringBuilder sb = new StringBuilder(80);
     appendGroup(sb, trackInfoGroup());
     appendGroup(sb, playerStateGroup());
+    appendGroup(sb, linkProfileGroup());
     return sb.toString();
   }
 
@@ -150,6 +164,7 @@ public final class QoSInfo {
     StringBuilder sb = new StringBuilder(180);
     appendGroup(sb, trackInfoGroup());
     appendGroup(sb, playerStateGroup());
+    appendGroup(sb, linkProfileGroup());
     sb.append('\n');
     appendGroup(sb, deliveryGroup());
     appendGroup(sb, netResultGroup());
@@ -177,6 +192,34 @@ public final class QoSInfo {
     if (retryCount > 0) addField(g, "retry=" + retryCount);
     if (bufferStarvationFlag) addField(g, "*bs*");
     return g;
+  }
+
+  /** Client-side link profile: connection type + downstream link bandwidth. */
+  private StringBuilder linkProfileGroup() {
+    StringBuilder g = new StringBuilder();
+    if (networkType != C.NETWORK_TYPE_UNKNOWN) {
+      addField(g, "net=" + networkTypeName(networkType));
+    }
+    if (linkDownstreamKbps > 0) {
+      addField(g, "link=" + formatKbps(linkDownstreamKbps));
+    }
+    return g;
+  }
+
+  private static String networkTypeName(@C.NetworkType int t) {
+    switch (t) {
+      case C.NETWORK_TYPE_WIFI: return "WIFI";
+      case C.NETWORK_TYPE_2G: return "2G";
+      case C.NETWORK_TYPE_3G: return "3G";
+      case C.NETWORK_TYPE_4G: return "4G";
+      case C.NETWORK_TYPE_5G_SA: return "5G_SA";
+      case C.NETWORK_TYPE_5G_NSA: return "5G_NSA";
+      case C.NETWORK_TYPE_CELLULAR_UNKNOWN: return "CELL";
+      case C.NETWORK_TYPE_ETHERNET: return "ETH";
+      case C.NETWORK_TYPE_OFFLINE: return "OFFLINE";
+      case C.NETWORK_TYPE_OTHER: return "OTHER";
+      default: return "?";
+    }
   }
 
   /** CDN-observed network result: TTFB, total load duration, bytes received. */
@@ -366,6 +409,8 @@ public final class QoSInfo {
     this.transferRateMinKbps = b.transferRateMinKbps;
     this.transferRateMaxKbps = b.transferRateMaxKbps;
     this.transferSampleCount = b.transferSampleCount;
+    this.networkType = b.networkType;
+    this.linkDownstreamKbps = b.linkDownstreamKbps;
   }
 
   /** Builder — all fields optional; sensible defaults for unset values. */
@@ -393,6 +438,8 @@ public final class QoSInfo {
     private long transferRateMinKbps = -1L;
     private long transferRateMaxKbps = -1L;
     private int transferSampleCount = 0;
+    private @C.NetworkType int networkType = C.NETWORK_TYPE_UNKNOWN;
+    private int linkDownstreamKbps = -1;
 
     public Builder setTimestampMs(long v) { timestampMs = v; return this; }
     public Builder setUrl(String v) { url = v; return this; }
@@ -417,6 +464,8 @@ public final class QoSInfo {
     public Builder setTransferRateMinKbps(long v) { transferRateMinKbps = v; return this; }
     public Builder setTransferRateMaxKbps(long v) { transferRateMaxKbps = v; return this; }
     public Builder setTransferSampleCount(int v) { transferSampleCount = v; return this; }
+    public Builder setNetworkType(@C.NetworkType int v) { networkType = v; return this; }
+    public Builder setLinkDownstreamKbps(int v) { linkDownstreamKbps = v; return this; }
 
     public QoSInfo build() { return new QoSInfo(this); }
   }

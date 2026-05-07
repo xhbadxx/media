@@ -15,11 +15,17 @@
  */
 package androidx.media3.exoplayer.qos.hook;
 
+import android.content.Context;
+import android.net.ConnectivityManager;
+import android.net.Network;
+import android.net.NetworkCapabilities;
 import android.net.Uri;
+import android.os.Build;
 import androidx.annotation.Nullable;
 import androidx.media3.common.C;
 import androidx.media3.common.Format;
 import androidx.media3.common.Player;
+import androidx.media3.common.util.NetworkTypeObserver;
 import androidx.media3.common.util.UnstableApi;
 import androidx.media3.exoplayer.analytics.AnalyticsListener;
 import androidx.media3.exoplayer.qos.QoSMonitor;
@@ -61,6 +67,8 @@ public final class QoSAnalyticsHook implements AnalyticsListener {
   @Nullable private final Player player;
   @Nullable private final BandwidthMeter bandwidthMeter;
   @Nullable private final QoSTransferListener transferListener;
+  @Nullable private final ConnectivityManager connectivityManager;
+  @Nullable private final NetworkTypeObserver networkTypeObserver;
 
   /**
    * Cached latest bandwidth estimate (bps) from {@link #onBandwidthEstimate}.
@@ -76,24 +84,39 @@ public final class QoSAnalyticsHook implements AnalyticsListener {
   private final Map<Long, LoadStartSnapshot> startSnapshots = new HashMap<>();
 
   public QoSAnalyticsHook() {
-    this(null, null, null);
+    this(null, null, null, null);
   }
 
   public QoSAnalyticsHook(@Nullable Player player) {
-    this(player, null, null);
+    this(player, null, null, null);
   }
 
   public QoSAnalyticsHook(@Nullable Player player, @Nullable BandwidthMeter bandwidthMeter) {
-    this(player, bandwidthMeter, null);
+    this(player, bandwidthMeter, null, null);
   }
 
   public QoSAnalyticsHook(
       @Nullable Player player,
       @Nullable BandwidthMeter bandwidthMeter,
       @Nullable QoSTransferListener transferListener) {
+    this(player, bandwidthMeter, transferListener, null);
+  }
+
+  public QoSAnalyticsHook(
+      @Nullable Player player,
+      @Nullable BandwidthMeter bandwidthMeter,
+      @Nullable QoSTransferListener transferListener,
+      @Nullable Context context) {
     this.player = player;
     this.bandwidthMeter = bandwidthMeter;
     this.transferListener = transferListener;
+    Context appCtx = (context != null) ? context.getApplicationContext() : null;
+    this.connectivityManager =
+        (appCtx != null && Build.VERSION.SDK_INT >= 23)
+            ? (ConnectivityManager) appCtx.getSystemService(Context.CONNECTIVITY_SERVICE)
+            : null;
+    this.networkTypeObserver =
+        (appCtx != null) ? NetworkTypeObserver.getInstance(appCtx) : null;
   }
 
   @Override
@@ -209,6 +232,20 @@ public final class QoSAnalyticsHook implements AnalyticsListener {
         b.setTransferRateMinKbps(rateProfile.minKbps);
         b.setTransferRateMaxKbps(rateProfile.maxKbps);
         b.setTransferSampleCount(rateProfile.sampleCount);
+      }
+    }
+
+    if (networkTypeObserver != null) {
+      b.setNetworkType(networkTypeObserver.getNetworkType());
+    }
+    if (connectivityManager != null) {
+      Network active = connectivityManager.getActiveNetwork();
+      if (active != null) {
+        NetworkCapabilities caps = connectivityManager.getNetworkCapabilities(active);
+        if (caps != null) {
+          int linkKbps = caps.getLinkDownstreamBandwidthKbps();
+          if (linkKbps > 0) b.setLinkDownstreamKbps(linkKbps);
+        }
       }
     }
 

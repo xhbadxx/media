@@ -15,6 +15,7 @@
  */
 package androidx.media3.exoplayer.qos;
 
+import android.content.Context;
 import android.util.Log;
 import androidx.annotation.Nullable;
 import androidx.media3.common.util.UnstableApi;
@@ -226,11 +227,27 @@ public final class FPlayQoSMonitor {
    * so the very first rebuffer is captured.
    *
    * <p>If a previous attach was not detached, this defensively detaches it first.
+   *
+   * <p>Backward-compat overload: passes {@code null} Context so link profile fields
+   * ({@code networkType}, {@code linkDownstreamKbps}) stay sentinel.
    */
   public void attach(ExoPlayer player, @Nullable BandwidthMeter bandwidthMeter) {
+    attach(player, bandwidthMeter, /* context= */ null);
+  }
+
+  /**
+   * Same as {@link #attach(ExoPlayer, BandwidthMeter)} but accepts a {@link Context}
+   * to enable client-side link profile capture (network type, link downstream kbps).
+   * Pass an Application Context (any Context will be reduced via
+   * {@code getApplicationContext()} internally to avoid Activity leaks).
+   */
+  public void attach(
+      ExoPlayer player,
+      @Nullable BandwidthMeter bandwidthMeter,
+      @Nullable Context context) {
     if (activePlayer != null) detach();
     QoSAnalyticsHook analyticsHook =
-        new QoSAnalyticsHook(player, bandwidthMeter, transferListener);
+        new QoSAnalyticsHook(player, bandwidthMeter, transferListener, context);
     QoSPlayerHook playerHook = new QoSPlayerHook();
     player.addAnalyticsListener(analyticsHook);
     player.addListener(playerHook);
