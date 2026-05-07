@@ -27,6 +27,7 @@ import androidx.media3.common.Format;
 import androidx.media3.common.Player;
 import androidx.media3.common.util.NetworkTypeObserver;
 import androidx.media3.common.util.UnstableApi;
+import androidx.media3.datasource.HttpDataSource;
 import androidx.media3.exoplayer.analytics.AnalyticsListener;
 import androidx.media3.exoplayer.qos.QoSMonitor;
 import androidx.media3.exoplayer.qos.model.QoSInfo;
@@ -170,9 +171,14 @@ public final class QoSAnalyticsHook implements AnalyticsListener {
       discardTtfb(loadEventInfo);
       return;
     }
+    int httpCode = -1;
+    if (error instanceof HttpDataSource.InvalidResponseCodeException) {
+      httpCode = ((HttpDataSource.InvalidResponseCodeException) error).responseCode;
+    }
     QoSInfo info = buildBaseInfo(loadEventInfo, mediaLoadData)
         .setStatus(QoSInfo.LoadStatus.ERROR)
         .setErrorMessage(error.getMessage())
+        .setHttpStatusCode(httpCode)
         .build();
     QoSMonitor.getInstance().recordInfo(info);
   }

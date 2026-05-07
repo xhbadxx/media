@@ -76,6 +76,13 @@ public final class QoSInfo {
   /** Number of 100ms windows sampled during transfer. {@code 0} = unset/no samples. */
   public final int transferSampleCount;
   /**
+   * HTTP response code when the load failed with an HTTP status error (e.g. 503).
+   * Sentinel {@code -1} for non-HTTP failures (timeout/reset/refused) or successful
+   * loads. Captured from {@code InvalidResponseCodeException.responseCode} on
+   * {@code onLoadError}.
+   */
+  public final int httpStatusCode;
+  /**
    * Client-side network connection type at load time (Wi-Fi/4G/5G NSA/etc.). Sourced
    * from {@link androidx.media3.common.util.NetworkTypeObserver}. Sentinel
    * {@link C#NETWORK_TYPE_UNKNOWN} when unavailable (no Context wired).
@@ -254,9 +261,10 @@ public final class QoSInfo {
   /** Error info — present only when load failed (status != COMPLETED). */
   private StringBuilder errorGroup() {
     StringBuilder g = new StringBuilder();
-    if (status == LoadStatus.ERROR) {
-      addField(g, errorMessage != null ? "ERROR=" + errorMessage : "ERROR");
-    }
+    if (status != LoadStatus.ERROR) return g;
+    addField(g, "ERROR");
+    if (httpStatusCode > 0) addField(g, "code=" + httpStatusCode);
+    if (errorMessage != null) addField(g, "msg=" + errorMessage);
     return g;
   }
 
@@ -411,6 +419,7 @@ public final class QoSInfo {
     this.transferSampleCount = b.transferSampleCount;
     this.networkType = b.networkType;
     this.linkDownstreamKbps = b.linkDownstreamKbps;
+    this.httpStatusCode = b.httpStatusCode;
   }
 
   /** Builder — all fields optional; sensible defaults for unset values. */
@@ -440,6 +449,7 @@ public final class QoSInfo {
     private int transferSampleCount = 0;
     private @C.NetworkType int networkType = C.NETWORK_TYPE_UNKNOWN;
     private int linkDownstreamKbps = -1;
+    private int httpStatusCode = -1;
 
     public Builder setTimestampMs(long v) { timestampMs = v; return this; }
     public Builder setUrl(String v) { url = v; return this; }
@@ -466,6 +476,7 @@ public final class QoSInfo {
     public Builder setTransferSampleCount(int v) { transferSampleCount = v; return this; }
     public Builder setNetworkType(@C.NetworkType int v) { networkType = v; return this; }
     public Builder setLinkDownstreamKbps(int v) { linkDownstreamKbps = v; return this; }
+    public Builder setHttpStatusCode(int v) { httpStatusCode = v; return this; }
 
     public QoSInfo build() { return new QoSInfo(this); }
   }
