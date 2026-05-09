@@ -496,6 +496,142 @@ public class QoSDiagnoserV5Test {
     assertThat(r.nVSegments).isEqualTo(2);
   }
 
+  // ===== Step 5 — Bandwidth deficit majority + variance modifier (MDPI 2021) =====
+
+  @Test
+  public void step5_v8FixtureBandwidthMajority_returnsInsufficientBandwidth() {
+    // v8 #1 reproduction: 4 V-segments cdur=1900, loadDur ≈ 2.4-2.7s, all slow,
+    // median ≈ 0.31, variance low (sustained pattern).
+    QoSInfo s1 = vSegmentExcess(1_000L, 2_483L, 1_500);
+    QoSInfo s2 = vSegmentExcess(3_500L, 2_365L, 1_000);
+    QoSInfo s3 = vSegmentExcess(6_000L, 2_481L, 500);
+    QoSInfo s4 = vSegmentExcess(8_500L, 2_726L, 0);
+    QoSInfo trigger = triggerSegment(11_000L, 0);
+    RebufferGroup group =
+        new RebufferGroup(
+            1, trigger.timestampMs, trigger,
+            Arrays.asList(s1, s2, s3, s4, trigger), null);
+
+    DiagnosisV5 r = QoSDiagnoserV5.diagnose(group, /* sessionStats= */ null);
+
+    assertThat(r.cause).isEqualTo(DiagnosisV5.Cause.INSUFFICIENT_BANDWIDTH);
+    assertThat(r.cacheBranch).isEqualTo(DiagnosisV5.CacheBranch.MISS_DOMINANT);
+    assertThat(r.nSlowSegments).isEqualTo(4);
+    assertThat(r.medianExcessRatio).isGreaterThan(0.10);
+    // Variance modifier: sustained (low variance).
+    assertThat(r.varianceExcess).isLessThan(0.05);
+    // Cohort dims emitted for backend reattribution.
+    assertThat(r.cohortNetworkType).isEqualTo("WIFI");
+    assertThat(r.cohortCacheBranch).isEqualTo("MISS_DOMINANT");
+    assertThat(r.cohortCdnHostname).isEqualTo("fpt");
+  }
+
+  @Test
+  public void step5_minoritySlow_returnsTransient() {
+    // 1/4 V-segments slow → not majority → TRANSIENT.
+    QoSInfo s1 = vSegmentExcess(1_000L, /* loadDurMs= */ 2_700L, 1_500); // slow
+    // Healthy: loadDur ≈ cdur (1900) so excess_ratio = 0.
+    QoSInfo s2 = vSegmentExcess(3_500L, /* loadDurMs= */ 1_900L, 1_000);
+    QoSInfo s3 = vSegmentExcess(6_000L, /* loadDurMs= */ 1_900L, 500);
+    QoSInfo s4 = vSegmentExcess(8_500L, /* loadDurMs= */ 1_900L, 0);
+    QoSInfo trigger = triggerSegment(11_000L, 0);
+    RebufferGroup group =
+        new RebufferGroup(
+            1, trigger.timestampMs, trigger,
+            Arrays.asList(s1, s2, s3, s4, trigger), null);
+
+    DiagnosisV5 r = QoSDiagnoserV5.diagnose(group, /* sessionStats= */ null);
+
+    assertThat(r.cause).isEqualTo(DiagnosisV5.Cause.TRANSIENT);
+    assertThat(r.nSlowSegments).isEqualTo(1);
+  }
+
+  @Test
+  public void step5_allHealthy_returnsTransient() {
+    // 4 healthy V-segments (loadDur ≈ cdur). nSlow=0 → TRANSIENT.
+    QoSInfo s1 = vSegmentExcess(1_000L, 1_900L, 1_500);
+    QoSInfo s2 = vSegmentExcess(3_500L, 1_900L, 1_000);
+    QoSInfo s3 = vSegmentExcess(6_000L, 1_900L, 500);
+    QoSInfo s4 = vSegmentExcess(8_500L, 1_900L, 0);
+    QoSInfo trigger = triggerSegment(11_000L, 0);
+    RebufferGroup group =
+        new RebufferGroup(
+            1, trigger.timestampMs, trigger,
+            Arrays.asList(s1, s2, s3, s4, trigger), null);
+
+    DiagnosisV5 r = QoSDiagnoserV5.diagnose(group, /* sessionStats= */ null);
+
+    assertThat(r.cause).isEqualTo(DiagnosisV5.Cause.TRANSIENT);
+    assertThat(r.nSlowSegments).isEqualTo(0);
+  }
+
+  @Test
+  public void step5_meanInflatedByOutlier_medianSaves_returnsTransient() {
+    // 4 healthy + 1 huge outlier. Mean ≈ 0.32 (above threshold), median = 0
+    // (filters outlier). nSlow = 1 → not majority → TRANSIENT.
+    // Window math: bl 1500→0 over 5 V → wallTime 12500, supply 9500, demand=11000,
+    //   ratio=0.86 → pass sanity.
+    QoSInfo s1 = vSegmentExcess(1_000L, 1_900L, 1_500);
+    QoSInfo s2 = vSegmentExcess(3_500L, 1_900L, 1_200);
+    QoSInfo s3 = vSegmentExcess(6_000L, 1_900L, 900);
+    QoSInfo s4 = vSegmentExcess(8_500L, 1_900L, 600);
+    QoSInfo s5 = vSegmentExcess(11_000L, 5_500L, 300); // outlier
+    QoSInfo trigger = triggerSegment(13_500L, 0);
+    RebufferGroup group =
+        new RebufferGroup(
+            1, trigger.timestampMs, trigger,
+            Arrays.asList(s1, s2, s3, s4, s5, trigger), null);
+
+    DiagnosisV5 r = QoSDiagnoserV5.diagnose(group, /* sessionStats= */ null);
+
+    assertThat(r.cause).isEqualTo(DiagnosisV5.Cause.TRANSIENT);
+    assertThat(r.nSlowSegments).isEqualTo(1);
+    // Median = 0, mean ≈ 0.38 → big spread, spike pattern.
+    assertThat(r.medianExcessRatio).isLessThan(0.10);
+    assertThat(r.meanExcessRatio).isGreaterThan(0.20);
+  }
+
+  @Test
+  public void step6_transientDefault_emitsCohortDimsAndEvidence() {
+    // No cause fires → TRANSIENT default. Cohort dims still emitted from last seg.
+    QoSInfo s1 = vSegmentWithCache(1_000L, 1_500, "MISS");
+    QoSInfo s2 = vSegmentWithCache(3_500L, 1_000, "MISS");
+    QoSInfo s3 = vSegmentWithCache(6_000L, 500, "MISS");
+    QoSInfo s4 = vSegmentWithCache(8_500L, 0, "MISS");
+    QoSInfo trigger = triggerSegment(11_000L, 0);
+    RebufferGroup group =
+        new RebufferGroup(
+            1, trigger.timestampMs, trigger,
+            Arrays.asList(s1, s2, s3, s4, trigger), null);
+
+    DiagnosisV5 r = QoSDiagnoserV5.diagnose(group, /* sessionStats= */ null);
+
+    assertThat(r.cause).isEqualTo(DiagnosisV5.Cause.TRANSIENT);
+    assertThat(r.cohortNetworkType).isEqualTo("WIFI");
+    assertThat(r.cohortCacheBranch).isEqualTo("MISS_DOMINANT");
+    assertThat(r.cohortCdnHostname).isEqualTo("fpt");
+    assertThat(r.cohortRegion).isNull();
+  }
+
+  @Test
+  public void bufferTrend_monotonicallyDecreasing_isMonotonicDrain() {
+    // 4 V-segs with bl strictly decreasing → MONOTONIC_DRAIN. Bounds picked so
+    // sanity gate passes: deltaBuffer -2500, demand=10500, wallTime=10000, ratio=1.05.
+    QoSInfo s1 = vSegmentWithCache(1_000L, 2_500, "MISS");
+    QoSInfo s2 = vSegmentWithCache(3_500L, 2_000, "MISS");
+    QoSInfo s3 = vSegmentWithCache(6_000L, 1_500, "MISS");
+    QoSInfo s4 = vSegmentWithCache(8_500L, 1_000, "MISS");
+    QoSInfo trigger = triggerSegment(11_000L, 0);
+    RebufferGroup group =
+        new RebufferGroup(
+            1, trigger.timestampMs, trigger,
+            Arrays.asList(s1, s2, s3, s4, trigger), null);
+
+    DiagnosisV5 r = QoSDiagnoserV5.diagnose(group, /* sessionStats= */ null);
+
+    assertThat(r.bufferTrend).isEqualTo(DiagnosisV5.BufferTrend.MONOTONIC_DRAIN);
+  }
+
   // ===== Test fixture builders (mirror V4 patterns for consistency) =====
 
   /** V-segment with default mtp 5_000kbps, bitrate 2_000kbps (ABR-not-aware). */

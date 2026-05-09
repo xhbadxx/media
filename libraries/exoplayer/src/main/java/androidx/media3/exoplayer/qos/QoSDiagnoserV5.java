@@ -296,8 +296,17 @@ public final class QoSDiagnoserV5 {
       }
     }
 
-    // TODO Task A7: Step 5 bandwidth majority + variance modifier (if finalCause still
-    // TRANSIENT). Until then, emit single DiagnosisV5 with computed cause.
+    // Step 5 — Bandwidth deficit majority (V4 inherited rule). Variance is reported as
+    // observability evidence (MDPI 2021 anchor: low variance = sustained, high = spiky)
+    // but does NOT change cause classification.
+    if (finalCause == DiagnosisV5.Cause.TRANSIENT
+        && nSlow * 2 >= nV
+        && medianExcess > MEDIAN_DEFICIT_THRESHOLD) {
+      finalCause = DiagnosisV5.Cause.INSUFFICIENT_BANDWIDTH;
+    }
+
+    // Step 6 — TRANSIENT default (already the initial value of finalCause). All paths
+    // emit cohort dims for backend reattribution.
     return new DiagnosisV5(
         finalCause,
         cacheBranch,
