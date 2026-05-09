@@ -27,8 +27,10 @@ import androidx.media3.exoplayer.qos.hook.QoSTransferListener;
 import androidx.media3.exoplayer.qos.model.Diagnosis;
 import androidx.media3.exoplayer.qos.model.DiagnosisV2;
 import androidx.media3.exoplayer.qos.model.DiagnosisV4;
+import androidx.media3.exoplayer.qos.model.DiagnosisV5;
 import androidx.media3.exoplayer.qos.model.QoSInfo;
 import androidx.media3.exoplayer.qos.model.RebufferGroup;
+import androidx.media3.exoplayer.qos.model.SessionStatistics;
 import androidx.media3.exoplayer.qos.observer.QoSObserver;
 import androidx.media3.exoplayer.qos.observer.RebufferGroupObserver;
 import androidx.media3.exoplayer.upstream.BandwidthMeter;
@@ -114,6 +116,8 @@ public final class FPlayQoSMonitor {
 
   private final List<RebufferGroup> rebufferGroups = new CopyOnWriteArrayList<>();
   private final List<RebufferGroupObserver> groupObservers = new CopyOnWriteArrayList<>();
+  /** V5 session-rolling Tukey baselines. Reset on detach. Reused across rebuffers. */
+  private SessionStatistics sessionStats = new SessionStatistics();
   private long lastCaptureMs = 0L;
   private int nextGroupId = 0;
 
@@ -163,6 +167,7 @@ public final class FPlayQoSMonitor {
     // validation V2 dual-write can be dropped, then V1 once V4 fully replaces it.
     DiagnosisV2 v2 = QoSDiagnoserV2.diagnose(pipelineInput);
     DiagnosisV4 v4 = QoSDiagnoserV4.diagnose(pipelineInput);
+    DiagnosisV5 v5 = QoSDiagnoserV5.diagnose(pipelineInput, sessionStats);
     StringBuilder log = new StringBuilder(512)
         .append("Rebuffer #").append(groupId).append(": ").append(diagnosis.summary())
         .append(" | v1.cause=").append(fullDiagnosis.cause)
@@ -196,6 +201,33 @@ public final class FPlayQoSMonitor {
       log.append(" v4.bufTrend=").append(v4.bufferTrend);
       log.append(" v4.abrAware=").append(v4.abrWasAware);
     }
+    log.append(" | v5.cause=").append(v5.cause);
+    log.append(" v5.branch=").append(v5.cacheBranch);
+    if (v5.cause == DiagnosisV5.Cause.CDN_HTTP_ERROR && v5.httpErrorCodes.length > 0) {
+      log.append(" v5.codes=").append(java.util.Arrays.toString(v5.httpErrorCodes));
+    } else if (v5.sanityFailReason != null && v5.cause == DiagnosisV5.Cause.TRANSIENT) {
+      log.append(" v5.sanityFail=\"").append(v5.sanityFailReason).append('"');
+    } else {
+      log.append(" v5.nV=").append(v5.nVSegments);
+      log.append(" v5.nSlow=").append(v5.nSlowSegments);
+      log.append(" v5.median=").append(String.format(java.util.Locale.US, "%.2f", v5.medianExcessRatio));
+      if (v5.nCdnEvidenceSegments > 0) {
+        log.append(" v5.cdnEv=").append(v5.nCdnEvidenceSegments);
+      }
+      if (v5.nDeliveryRateOutlierSegments > 0) {
+        log.append(" v5.delivOut=").append(v5.nDeliveryRateOutlierSegments);
+      }
+      if (v5.nRetrySegments > 0) {
+        log.append(" v5.nRetry=").append(v5.nRetrySegments);
+      }
+      log.append(" v5.fence=").append(v5.ttfbUpperFenceApplied).append("ms");
+      if (v5.usedColdStartFallback) {
+        log.append(" v5.cold=1");
+      }
+      log.append(" v5.cohort=").append(v5.cohortNetworkType)
+          .append('/').append(v5.cohortCacheBranch)
+          .append('/').append(v5.cohortCdnHostname);
+    }
     Log.i(TAG, log.toString());
     RebufferGroup group =
         new RebufferGroup(
@@ -206,7 +238,8 @@ public final class FPlayQoSMonitor {
             diagnosis,
             fullDiagnosis,
             v2,
-            v4);
+            v4,
+            v5);
     rebufferGroups.add(group);
     while (rebufferGroups.size() > MAX_REBUFFER_GROUPS) {
       rebufferGroups.remove(0);
@@ -292,6 +325,8 @@ public final class FPlayQoSMonitor {
     groupObservers.clear();
     lastCaptureMs = 0L;
     nextGroupId = 0;
+    // Reset V5 session-rolling baselines so re-attach starts cold-start fresh.
+    sessionStats = new SessionStatistics();
     ExoPlayer player = activePlayer;
     if (player == null) return;
     if (activeAnalyticsHook != null) player.removeAnalyticsListener(activeAnalyticsHook);
