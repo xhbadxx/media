@@ -83,6 +83,14 @@ public final class RebufferGroup {
    */
   @Nullable public final DiagnosisV4 diagnosisV4;
 
+  /**
+   * V5 diagnoser verdict (parallel to {@link #diagnosisV4} during V5 dual-write phase).
+   * Client-only paper-anchored cascade with cohort dims for backend reattribution.
+   * {@code null} for groups created before V5 wiring (5/6/7/8-arg constructors); always
+   * non-null when constructed with the 9-arg ctor.
+   */
+  @Nullable public final DiagnosisV5 diagnosisV5;
+
   /** Legacy constructor — preserves binary compatibility for callers / tests pre-FullDiagnosis. */
   public RebufferGroup(
       int id,
@@ -90,7 +98,7 @@ public final class RebufferGroup {
       QoSInfo trigger,
       List<QoSInfo> entries,
       Diagnosis diagnosis) {
-    this(id, triggerTimeMs, trigger, entries, diagnosis, null, null, null);
+    this(id, triggerTimeMs, trigger, entries, diagnosis, null, null, null, null);
   }
 
   /** Pre-V2 constructor — both legacy {@code Diagnosis} and the new {@code FullDiagnosis} attached. */
@@ -101,7 +109,7 @@ public final class RebufferGroup {
       List<QoSInfo> entries,
       Diagnosis diagnosis,
       @Nullable QoSDiagnoser.FullDiagnosis fullDiagnosis) {
-    this(id, triggerTimeMs, trigger, entries, diagnosis, fullDiagnosis, null, null);
+    this(id, triggerTimeMs, trigger, entries, diagnosis, fullDiagnosis, null, null, null);
   }
 
   /** Pre-V4 constructor — V1 + V2 attached, V4 missing. */
@@ -113,10 +121,10 @@ public final class RebufferGroup {
       Diagnosis diagnosis,
       @Nullable QoSDiagnoser.FullDiagnosis fullDiagnosis,
       @Nullable DiagnosisV2 diagnosisV2) {
-    this(id, triggerTimeMs, trigger, entries, diagnosis, fullDiagnosis, diagnosisV2, null);
+    this(id, triggerTimeMs, trigger, entries, diagnosis, fullDiagnosis, diagnosisV2, null, null);
   }
 
-  /** Full constructor — V1, V2, and V4 verdicts all attached. */
+  /** Pre-V5 constructor — V1, V2, V4 verdicts attached, V5 missing. */
   public RebufferGroup(
       int id,
       long triggerTimeMs,
@@ -126,6 +134,20 @@ public final class RebufferGroup {
       @Nullable QoSDiagnoser.FullDiagnosis fullDiagnosis,
       @Nullable DiagnosisV2 diagnosisV2,
       @Nullable DiagnosisV4 diagnosisV4) {
+    this(id, triggerTimeMs, trigger, entries, diagnosis, fullDiagnosis, diagnosisV2, diagnosisV4, null);
+  }
+
+  /** Full constructor — V1, V2, V4, and V5 verdicts all attached. */
+  public RebufferGroup(
+      int id,
+      long triggerTimeMs,
+      QoSInfo trigger,
+      List<QoSInfo> entries,
+      Diagnosis diagnosis,
+      @Nullable QoSDiagnoser.FullDiagnosis fullDiagnosis,
+      @Nullable DiagnosisV2 diagnosisV2,
+      @Nullable DiagnosisV4 diagnosisV4,
+      @Nullable DiagnosisV5 diagnosisV5) {
     this.id = id;
     this.triggerTimeMs = triggerTimeMs;
     this.trigger = trigger;
@@ -134,6 +156,7 @@ public final class RebufferGroup {
     this.fullDiagnosis = fullDiagnosis;
     this.diagnosisV2 = diagnosisV2;
     this.diagnosisV4 = diagnosisV4;
+    this.diagnosisV5 = diagnosisV5;
   }
 
   public int size() {
