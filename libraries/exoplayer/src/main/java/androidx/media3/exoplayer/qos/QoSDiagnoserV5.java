@@ -16,6 +16,7 @@
 package androidx.media3.exoplayer.qos;
 
 import androidx.annotation.Nullable;
+import androidx.media3.common.C;
 import androidx.media3.common.util.UnstableApi;
 import androidx.media3.exoplayer.qos.model.DiagnosisV5;
 import androidx.media3.exoplayer.qos.model.QoSInfo;
@@ -131,10 +132,127 @@ public final class QoSDiagnoserV5 {
       return DiagnosisV5.transientFromSanity(sanityFail);
     }
 
-    // TODO Tasks A4-A7: Step 2.5 retry, Step 3 evidence + cache branch, Step 4 cache-fork
-    // CDN check, Step 5 bandwidth majority, Step 6 TRANSIENT default with cohort dims.
-    // Until then, return TRANSIENT(no_v_data) carrying any 4xx codes for evidence.
-    return DiagnosisV5.transientNoVData(toIntArray(http4xx));
+    // Filter V-segments + A-segments (needed for Step 2.5 retry count + last-seg mtp).
+    List<QoSInfo> vSegments = new ArrayList<>();
+    List<QoSInfo> aSegments = new ArrayList<>();
+    for (QoSInfo s : group.entries) {
+      if (isCompletedScoredSegment(s)) {
+        vSegments.add(s);
+      } else if (isCompletedAudioSegment(s)) {
+        aSegments.add(s);
+      }
+    }
+    int nV = vSegments.size();
+    int nA = aSegments.size();
+    int[] http4xxArr = toIntArray(http4xx);
+
+    if (nV == 0) {
+      return DiagnosisV5.transientNoVData(http4xxArr);
+    }
+
+    // Step 2.5 — Retry decisive (RFC 7230 anchor + AWS canonical "non-2xx prior to bs").
+    int nRetryV = 0;
+    for (QoSInfo s : vSegments) {
+      if (s.retryCount > 0) nRetryV++;
+    }
+    if (nRetryV >= RETRY_DECISIVE_COUNT) {
+      QoSInfo lastSeg = vSegments.get(nV - 1);
+      // mtp_ratio guard — if mtp collapsed (< 50% bitrate), retry is client-side disconnect,
+      // not CDN. Token bucket math: client throttle leaves mtp ≈ throttle floor; full
+      // disconnect drops mtp to ~0. mtp ≥ 0.5 × bitrate → bandwidth still healthy.
+      if (lastSeg.bitrateKbps > 0
+          && lastSeg.measuredThroughputKbps > 0
+          && lastSeg.measuredThroughputKbps
+              >= (int) Math.round(MTP_NOT_COLLAPSED_RATIO * lastSeg.bitrateKbps)) {
+        return new DiagnosisV5(
+            DiagnosisV5.Cause.CDN_DELIVERY_SLOW,
+            DiagnosisV5.CacheBranch.UNKNOWN, // Task A5 will compute cache branch dispatch.
+            nV,
+            nA,
+            http4xxArr,
+            /* nSlowSegments= */ 0,
+            /* medianExcessRatio= */ 0.0,
+            /* meanExcessRatio= */ 0.0,
+            /* maxExcessRatio= */ 0.0,
+            /* varianceExcess= */ 0.0,
+            /* nCdnEvidenceSegments= */ 0,
+            /* nTtfbOutlierSegments= */ 0,
+            /* nCacheHitSlowSegments= */ 0,
+            /* nDeliveryRateOutlierSegments= */ 0,
+            nRetryV,
+            /* crossTrackCorrelated= */ false,
+            /* abrWasAware= */ false,
+            DiagnosisV5.BufferTrend.UNAVAILABLE,
+            /* sessionTtfbQ1Ms= */ -1,
+            /* sessionTtfbQ3Ms= */ -1,
+            /* ttfbUpperFenceApplied= */ -1,
+            /* sessionDeliveryRateQ1Kbps= */ -1,
+            /* sessionDeliveryRateQ3Kbps= */ -1,
+            /* deliveryRateLowerFenceApplied= */ -1,
+            /* usedColdStartFallback= */ false,
+            networkTypeStr(lastSeg.networkType),
+            /* cohortCacheBranch= */ "UNKNOWN",
+            lastSeg.cdnProvider != null ? lastSeg.cdnProvider : "UNKNOWN",
+            /* cohortRegion= */ null,
+            hadRetries,
+            /* sanityFailReason= */ null);
+      }
+      // mtp collapsed → fall through (likely client disconnect, not CDN).
+    }
+
+    // TODO Tasks A5-A7: Step 3 cache branch + per-V evidence with Tukey, Step 4 cache-fork
+    // CDN check (4a HIT / 4b MISS / 4c MIXED), Step 5 bandwidth + variance modifier,
+    // Step 6 TRANSIENT default with full cohort dims.
+    return DiagnosisV5.transientNoVData(http4xxArr);
+  }
+
+  // ===== Filters (mirror V4 patterns) =====
+
+  /** Same predicate as V4: V/DEFAULT scored segments với {@code chunkDurationMs > 0}. */
+  static boolean isCompletedScoredSegment(QoSInfo e) {
+    if (e == null) return false;
+    if (e.status != QoSInfo.LoadStatus.COMPLETED) return false;
+    if (e.chunkDurationMs <= 0L) return false;
+    return e.trackType == C.TRACK_TYPE_VIDEO || e.trackType == C.TRACK_TYPE_DEFAULT;
+  }
+
+  /** Audio-track scored segment với positive chunk duration. */
+  static boolean isCompletedAudioSegment(QoSInfo e) {
+    if (e == null) return false;
+    if (e.status != QoSInfo.LoadStatus.COMPLETED) return false;
+    if (e.chunkDurationMs <= 0L) return false;
+    return e.trackType == C.TRACK_TYPE_AUDIO;
+  }
+
+  // ===== Cohort dim helpers =====
+
+  /** Convert {@link C.NetworkType} int to short label for cohort emission. */
+  static String networkTypeStr(@C.NetworkType int t) {
+    switch (t) {
+      case C.NETWORK_TYPE_WIFI:
+        return "WIFI";
+      case C.NETWORK_TYPE_2G:
+        return "2G";
+      case C.NETWORK_TYPE_3G:
+        return "3G";
+      case C.NETWORK_TYPE_4G:
+        return "4G";
+      case C.NETWORK_TYPE_5G_NSA:
+        return "5G_NSA";
+      case C.NETWORK_TYPE_5G_SA:
+        return "5G_SA";
+      case C.NETWORK_TYPE_ETHERNET:
+        return "ETH";
+      case C.NETWORK_TYPE_OFFLINE:
+        return "OFFLINE";
+      case C.NETWORK_TYPE_CELLULAR_UNKNOWN:
+        return "CELLULAR";
+      case C.NETWORK_TYPE_OTHER:
+        return "OTHER";
+      case C.NETWORK_TYPE_UNKNOWN:
+      default:
+        return "UNKNOWN";
+    }
   }
 
   // ===== Misc =====

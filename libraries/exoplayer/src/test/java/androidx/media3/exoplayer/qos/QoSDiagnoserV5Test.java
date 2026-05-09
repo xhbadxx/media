@@ -128,6 +128,68 @@ public class QoSDiagnoserV5Test {
     assertThat(r.sanityFailReason).isNotNull();
   }
 
+  // ===== Step 2.5 — Retry decisive (RFC 7230 anchor) =====
+
+  @Test
+  public void diagnose_majorityRetry_mtpHealthy_returnsCdnDeliverySlow() {
+    // 4 V-segments, 2 with retryCount > 0, last seg mtp=1500 vs bitrate=1000
+    // → mtp_ratio = 1.5 > 0.5 (MTP_NOT_COLLAPSED_RATIO) → CDN_DELIVERY_SLOW.
+    // Window math: ts gap=2500, bl 1500→0 over 4 V → wallTime=10000, supply=8000,
+    //   Δbuffer=-1500 ⇒ pass sanity gate.
+    QoSInfo s1 = retrySegment(1_000L, /* retries= */ 0, /* mtp= */ 1_500, 1_500);
+    QoSInfo s2 = retrySegment(3_500L, /* retries= */ 1, /* mtp= */ 1_500, 1_000);
+    QoSInfo s3 = retrySegment(6_000L, /* retries= */ 1, /* mtp= */ 1_500, 500);
+    QoSInfo s4 = retrySegment(8_500L, /* retries= */ 0, /* mtp= */ 1_500, 0);
+    QoSInfo trigger = triggerSegment(11_000L, 0);
+    RebufferGroup group =
+        new RebufferGroup(
+            1, trigger.timestampMs, trigger,
+            Arrays.asList(s1, s2, s3, s4, trigger), null);
+
+    DiagnosisV5 r = QoSDiagnoserV5.diagnose(group, /* sessionStats= */ null);
+
+    assertThat(r.cause).isEqualTo(DiagnosisV5.Cause.CDN_DELIVERY_SLOW);
+    assertThat(r.nRetrySegments).isEqualTo(2);
+    assertThat(r.hadRetries).isTrue();
+  }
+
+  @Test
+  public void diagnose_majorityRetry_mtpCollapsed_fallsThrough() {
+    // 2 retries on V but mtp=100 vs bitrate=1000 → mtp_ratio=0.1 < 0.5 → client disconnect
+    // → Step 2.5 does NOT fire CDN_DELIVERY_SLOW. Falls to placeholder TRANSIENT.
+    QoSInfo s1 = retrySegment(1_000L, /* retries= */ 0, /* mtp= */ 100, 1_500);
+    QoSInfo s2 = retrySegment(3_500L, /* retries= */ 1, /* mtp= */ 100, 1_000);
+    QoSInfo s3 = retrySegment(6_000L, /* retries= */ 1, /* mtp= */ 100, 500);
+    QoSInfo s4 = retrySegment(8_500L, /* retries= */ 0, /* mtp= */ 100, 0);
+    QoSInfo trigger = triggerSegment(11_000L, 0);
+    RebufferGroup group =
+        new RebufferGroup(
+            1, trigger.timestampMs, trigger,
+            Arrays.asList(s1, s2, s3, s4, trigger), null);
+
+    DiagnosisV5 r = QoSDiagnoserV5.diagnose(group, /* sessionStats= */ null);
+
+    assertThat(r.cause).isNotEqualTo(DiagnosisV5.Cause.CDN_DELIVERY_SLOW);
+  }
+
+  @Test
+  public void diagnose_singleRetry_doesNotFireStep25() {
+    // Only 1/4 V-segments has retry → < RETRY_DECISIVE_COUNT (2) → Step 2.5 skips.
+    QoSInfo s1 = retrySegment(1_000L, /* retries= */ 0, /* mtp= */ 1_500, 1_500);
+    QoSInfo s2 = retrySegment(3_500L, /* retries= */ 1, /* mtp= */ 1_500, 1_000);
+    QoSInfo s3 = retrySegment(6_000L, /* retries= */ 0, /* mtp= */ 1_500, 500);
+    QoSInfo s4 = retrySegment(8_500L, /* retries= */ 0, /* mtp= */ 1_500, 0);
+    QoSInfo trigger = triggerSegment(11_000L, 0);
+    RebufferGroup group =
+        new RebufferGroup(
+            1, trigger.timestampMs, trigger,
+            Arrays.asList(s1, s2, s3, s4, trigger), null);
+
+    DiagnosisV5 r = QoSDiagnoserV5.diagnose(group, /* sessionStats= */ null);
+
+    assertThat(r.cause).isNotEqualTo(DiagnosisV5.Cause.CDN_DELIVERY_SLOW);
+  }
+
   // ===== Test fixture builders (mirror V4 patterns for consistency) =====
 
   /** V-segment with default mtp 5_000kbps, bitrate 2_000kbps (ABR-not-aware). */
@@ -170,6 +232,25 @@ public class QoSDiagnoserV5Test {
         .setStatus(QoSInfo.LoadStatus.ERROR)
         .setHttpStatusCode(httpCode)
         .setErrorMessage("Response code: " + httpCode)
+        .build();
+  }
+
+  /**
+   * V-segment with explicit retry count + mtp + bitrate=1000 kbps. cdur=2000ms,
+   * loadDur=1900ms (healthy load — Step 2.5 doesn't depend on excess_ratio).
+   */
+  private static QoSInfo retrySegment(long ts, int retries, int mtpKbps, int blMs) {
+    return new QoSInfo.Builder()
+        .setTimestampMs(ts)
+        .setTrackType(C.TRACK_TYPE_VIDEO)
+        .setChunkDurationMs(2_000L)
+        .setLoadDurationMs(1_900L)
+        .setTtfbMs(200)
+        .setBytesLoaded(240_000L)
+        .setBitrateKbps(1_000)
+        .setMeasuredThroughputKbps(mtpKbps)
+        .setBufferedDurationMs(blMs)
+        .setRetryCount(retries)
         .build();
   }
 }
