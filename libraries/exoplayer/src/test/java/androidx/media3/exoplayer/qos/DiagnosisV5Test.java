@@ -68,4 +68,16 @@ public class DiagnosisV5Test {
     assertThat(s).contains("TRANSIENT");
     assertThat(s).contains("sanity=ratio=2.5");
   }
+
+  @Test
+  public void toFullDetail_multilineBreakdown_includesAllEvidenceCategories() {
+    DiagnosisV5 r = DiagnosisV5.cdnHttpError(new int[] {503, 504});
+    String s = r.toFullDetail();
+    // Multi-line: each section on its own line.
+    assertThat(s).contains("\n");
+    // Cohort dims always present.
+    assertThat(s).contains("Cohort:");
+    // Cause + branch info present.
+    assertThat(s).contains("CDN_HTTP_ERROR");
+  }
 }

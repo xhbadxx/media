@@ -310,6 +310,58 @@ public final class DiagnosisV5 {
     return sb.toString();
   }
 
+  /**
+   * Multi-line full evidence breakdown for expanded UI / debug HUD / support tickets.
+   * Each evidence category on its own line for human readability.
+   */
+  public String toFullDetail() {
+    StringBuilder sb = new StringBuilder(512);
+    sb.append("Cause: ").append(cause.name()).append(" · ").append(cacheBranch.name());
+    if (cause == Cause.CDN_HTTP_ERROR && httpErrorCodes.length > 0) {
+      sb.append(" · codes=").append(java.util.Arrays.toString(httpErrorCodes));
+    } else if (sanityFailReason != null) {
+      sb.append(" · sanity=").append(sanityFailReason);
+    }
+    sb.append('\n');
+    sb.append("Rates: nV=").append(nVSegments)
+        .append(" nA=").append(nASegments)
+        .append(" slow=").append(nSlowSegments)
+        .append(String.format(java.util.Locale.US, " median=%.2f", medianExcessRatio))
+        .append(String.format(java.util.Locale.US, " mean=%.2f", meanExcessRatio))
+        .append(String.format(java.util.Locale.US, " max=%.2f", maxExcessRatio))
+        .append(String.format(java.util.Locale.US, " var=%.4f", varianceExcess))
+        .append(varianceExcess < 0.05 ? " (sustained)" : " (spiky)")
+        .append('\n');
+    sb.append("CDN: ttfbOutlier=").append(nTtfbOutlierSegments)
+        .append(" cacheHitSlow=").append(nCacheHitSlowSegments)
+        .append(" delivOut=").append(nDeliveryRateOutlierSegments)
+        .append(" retry=").append(nRetrySegments)
+        .append(" cdnEv=").append(nCdnEvidenceSegments)
+        .append('\n');
+    sb.append("Buffer: trend=").append(bufferTrend.name())
+        .append(" crossA=").append(crossTrackCorrelated)
+        .append(" abrAware=").append(abrWasAware)
+        .append('\n');
+    if (sessionTtfbQ1Ms >= 0) {
+      sb.append("Tukey TTFB: Q1=").append(sessionTtfbQ1Ms)
+          .append(" Q3=").append(sessionTtfbQ3Ms)
+          .append(" fence=").append(ttfbUpperFenceApplied).append("ms");
+    } else {
+      sb.append("Tukey TTFB: cold-start fence=").append(ttfbUpperFenceApplied).append("ms");
+    }
+    if (sessionDeliveryRateQ1Kbps >= 0) {
+      sb.append("  | Delivery: Q1=").append(sessionDeliveryRateQ1Kbps)
+          .append(" Q3=").append(sessionDeliveryRateQ3Kbps)
+          .append(" fence=").append(deliveryRateLowerFenceApplied).append("kbps");
+    }
+    sb.append('\n');
+    sb.append("Cohort: ").append(cohortNetworkType)
+        .append('/').append(cohortCacheBranch)
+        .append('/').append(cohortCdnHostname);
+    if (cohortRegion != null) sb.append('/').append(cohortRegion);
+    return sb.toString();
+  }
+
   private String severityIcon() {
     switch (cause) {
       case CDN_HTTP_ERROR:
