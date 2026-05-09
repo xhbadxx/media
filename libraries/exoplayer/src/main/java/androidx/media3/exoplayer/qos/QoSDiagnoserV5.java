@@ -23,6 +23,7 @@ import androidx.media3.exoplayer.qos.model.QoSInfo;
 import androidx.media3.exoplayer.qos.model.RebufferGroup;
 import androidx.media3.exoplayer.qos.model.SessionStatistics;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 
 /**
@@ -200,10 +201,302 @@ public final class QoSDiagnoserV5 {
       // mtp collapsed → fall through (likely client disconnect, not CDN).
     }
 
-    // TODO Tasks A5-A7: Step 3 cache branch + per-V evidence with Tukey, Step 4 cache-fork
-    // CDN check (4a HIT / 4b MISS / 4c MIXED), Step 5 bandwidth + variance modifier,
-    // Step 6 TRANSIENT default with full cohort dims.
-    return DiagnosisV5.transientNoVData(http4xxArr);
+    // Step 3 — Cache branch dispatch (AWS canonical: HIT slow → CDN edge; MISS slow → origin).
+    DiagnosisV5.CacheBranch cacheBranch = computeCacheBranch(vSegments);
+
+    // Resolve session-rolling Tukey fences from last V-segment's primary key.
+    QoSInfo lastSeg = vSegments.get(nV - 1);
+    String primaryKey = sessionKey(lastSeg);
+    SessionStatistics.TukeyFence ttfbFence =
+        sessionStats == null ? null : sessionStats.getTtfbFence(primaryKey);
+    SessionStatistics.TukeyFence deliveryFence =
+        sessionStats == null ? null : sessionStats.getDeliveryRateFence(primaryKey);
+
+    boolean usedColdStart = (ttfbFence == null);
+    int ttfbThreshold = ttfbFence != null ? ttfbFence.upperFence : TTFB_OUTLIER_FALLBACK_MS;
+    int deliveryLowerFence = deliveryFence != null ? deliveryFence.lowerFence : -1;
+
+    // Per-segment evidence (Tukey applied where fence available; absolute otherwise).
+    PerSegmentEvidence[] perSeg = new PerSegmentEvidence[nV];
+    double[] excessRatios = new double[nV];
+    int nSlow = 0;
+    int nCdnEvidence = 0;
+    int nTtfbOutlier = 0;
+    int nCacheHitSlow = 0;
+    int nDeliveryRateOutlier = 0;
+    for (int i = 0; i < nV; i++) {
+      perSeg[i] = computePerSegmentEvidence(vSegments.get(i), ttfbThreshold, deliveryLowerFence);
+      excessRatios[i] = perSeg[i].excessRatio;
+      if (perSeg[i].isSlow) nSlow++;
+      if (perSeg[i].isCdnEvidence) nCdnEvidence++;
+      if (perSeg[i].isTtfbOutlier) nTtfbOutlier++;
+      if (perSeg[i].isCacheHitSlow) nCacheHitSlow++;
+      if (perSeg[i].isDeliveryRateOutlier) nDeliveryRateOutlier++;
+    }
+
+    double medianExcess = median(excessRatios);
+    double meanExcess = mean(excessRatios);
+    double maxExcess = max(excessRatios);
+    double varianceExcess = variance(excessRatios, meanExcess);
+
+    // Audio cross-track correlation.
+    boolean crossTrackCorrelated = computeAudioCrossTrack(aSegments);
+
+    // Buffer trajectory (BOLA anchor — V4 algorithm reused).
+    DiagnosisV5.BufferTrend bufferTrend = analyzeBufferTrend(extractBlValues(vSegments));
+
+    // ABR awareness — only last V-segment.
+    boolean abrWasAware =
+        lastSeg.bitrateKbps > 0
+            && lastSeg.measuredThroughputKbps > 0
+            && lastSeg.measuredThroughputKbps < lastSeg.bitrateKbps;
+
+    // Update SessionStatistics POST-classification (avoid biasing current decision).
+    if (sessionStats != null) {
+      for (QoSInfo s : vSegments) {
+        String key = sessionKey(s);
+        if (s.ttfbMs >= 0) {
+          sessionStats.addTtfbSample(key, s.ttfbMs);
+        }
+        if (s.bitrateKbps > 0 && s.ttfbMs >= 0 && s.bytesLoaded > 0) {
+          long transferMs = Math.max(1L, s.loadDurationMs - s.ttfbMs);
+          int postTtfbKbps = (int) ((s.bytesLoaded * 8L) / transferMs);
+          sessionStats.addDeliveryRateSample(key, postTtfbKbps);
+        }
+      }
+    }
+
+    // TODO Tasks A6/A7: Step 4 cache-fork (4a HIT / 4b MISS / 4c MIXED) + Step 5 bandwidth
+    // majority + Step 6 TRANSIENT default. For Task A5: emit TRANSIENT with full evidence
+    // (placeholder until A6/A7 fire specific causes from same evidence).
+    return new DiagnosisV5(
+        DiagnosisV5.Cause.TRANSIENT,
+        cacheBranch,
+        nV,
+        nA,
+        http4xxArr,
+        nSlow,
+        medianExcess,
+        meanExcess,
+        maxExcess,
+        varianceExcess,
+        nCdnEvidence,
+        nTtfbOutlier,
+        nCacheHitSlow,
+        nDeliveryRateOutlier,
+        nRetryV,
+        crossTrackCorrelated,
+        abrWasAware,
+        bufferTrend,
+        ttfbFence != null ? ttfbFence.q1 : -1,
+        ttfbFence != null ? ttfbFence.q3 : -1,
+        ttfbThreshold,
+        deliveryFence != null ? deliveryFence.q1 : -1,
+        deliveryFence != null ? deliveryFence.q3 : -1,
+        deliveryLowerFence,
+        usedColdStart,
+        networkTypeStr(lastSeg.networkType),
+        cacheBranch.name(),
+        lastSeg.cdnProvider != null ? lastSeg.cdnProvider : "UNKNOWN",
+        /* cohortRegion= */ null,
+        hadRetries,
+        /* sanityFailReason= */ null);
+  }
+
+  // ===== Step 3 helpers =====
+
+  /**
+   * Cache-branch dispatch over V-segments (AWS canonical pattern).
+   * ≥{@link #CACHE_DOMINANT_NUM}/{@link #CACHE_DOMINANT_DENOM} = 80% same state ⇒ dominant.
+   */
+  static DiagnosisV5.CacheBranch computeCacheBranch(List<QoSInfo> vSegments) {
+    int nHit = 0;
+    int nMiss = 0;
+    int nKnown = 0;
+    for (QoSInfo s : vSegments) {
+      if ("HIT".equalsIgnoreCase(s.cacheStatus)) {
+        nHit++;
+        nKnown++;
+      } else if ("MISS".equalsIgnoreCase(s.cacheStatus)) {
+        nMiss++;
+        nKnown++;
+      }
+    }
+    if (nKnown == 0) return DiagnosisV5.CacheBranch.UNKNOWN;
+    if (nHit * CACHE_DOMINANT_DENOM >= nKnown * CACHE_DOMINANT_NUM) {
+      return DiagnosisV5.CacheBranch.HIT_DOMINANT;
+    }
+    if (nMiss * CACHE_DOMINANT_DENOM >= nKnown * CACHE_DOMINANT_NUM) {
+      return DiagnosisV5.CacheBranch.MISS_DOMINANT;
+    }
+    return DiagnosisV5.CacheBranch.MIXED;
+  }
+
+  /**
+   * Build session-rolling key for {@link SessionStatistics}: combines networkType,
+   * cacheStatus, cdnHostname so each baseline is per-environment.
+   */
+  static String sessionKey(QoSInfo s) {
+    String net = networkTypeStr(s.networkType);
+    String cache = s.cacheStatus != null ? s.cacheStatus : "UNKNOWN";
+    String cdn = s.cdnProvider != null ? s.cdnProvider : "UNKNOWN";
+    return net + "_" + cache + "_" + cdn;
+  }
+
+  /** Per-V-segment evidence flags + computed deltas. */
+  static final class PerSegmentEvidence {
+    final double excessRatio;
+    final boolean isSlow;
+    final double deliveryHealth;
+    final boolean isTtfbOutlier;
+    final boolean isDeliveryRateOutlier;
+    final boolean isCacheHitSlow;
+    final boolean isCdnEvidence;
+
+    PerSegmentEvidence(
+        double excessRatio,
+        boolean isSlow,
+        double deliveryHealth,
+        boolean isTtfbOutlier,
+        boolean isDeliveryRateOutlier,
+        boolean isCacheHitSlow,
+        boolean isCdnEvidence) {
+      this.excessRatio = excessRatio;
+      this.isSlow = isSlow;
+      this.deliveryHealth = deliveryHealth;
+      this.isTtfbOutlier = isTtfbOutlier;
+      this.isDeliveryRateOutlier = isDeliveryRateOutlier;
+      this.isCacheHitSlow = isCacheHitSlow;
+      this.isCdnEvidence = isCdnEvidence;
+    }
+  }
+
+  /**
+   * Compute evidence for one V-segment using the resolved Tukey thresholds. Falls back
+   * to V4-equivalent absolute checks when fences not available (cold start).
+   */
+  static PerSegmentEvidence computePerSegmentEvidence(
+      QoSInfo s, int ttfbThresholdMs, int deliveryLowerFenceKbps) {
+    long excessMs = Math.max(0L, s.loadDurationMs - s.chunkDurationMs);
+    double excessRatio = (double) excessMs / s.chunkDurationMs;
+    boolean isSlow = excessRatio > SLOW_RATIO;
+
+    double deliveryHealth = -1.0;
+    boolean isDeliveryHealthy = false;
+    boolean isDeliveryDeficit = false;
+    boolean isDeliveryRateOutlier = false;
+    if (s.bitrateKbps > 0 && s.ttfbMs >= 0 && s.bytesLoaded > 0) {
+      long transferMs = Math.max(1L, s.loadDurationMs - s.ttfbMs);
+      double postTtfbKbps = (s.bytesLoaded * 8.0) / transferMs;
+      deliveryHealth = postTtfbKbps / s.bitrateKbps;
+      isDeliveryHealthy = deliveryHealth >= DELIVERY_HEALTHY_RATIO;
+      isDeliveryDeficit = deliveryHealth < DELIVERY_DEFICIT_RATIO;
+      // Tukey lower-fence outlier: only meaningful when fence available (warm session).
+      if (deliveryLowerFenceKbps > 0 && postTtfbKbps < deliveryLowerFenceKbps) {
+        isDeliveryRateOutlier = true;
+      }
+    }
+
+    // Tukey upper-fence outlier on TTFB (or absolute fallback when cold-start).
+    boolean isTtfbOutlier = (s.ttfbMs > ttfbThresholdMs);
+
+    // V4 inherited rule: cache=HIT + delivery deficit + NOT ttfb outlier.
+    boolean isCacheHitSlow =
+        "HIT".equalsIgnoreCase(s.cacheStatus) && isDeliveryDeficit && !isTtfbOutlier;
+
+    // Combined CDN evidence — V5 adds delivery rate outlier branch.
+    boolean isCdnEvidence =
+        (isTtfbOutlier && isDeliveryHealthy) || isCacheHitSlow || isDeliveryRateOutlier;
+
+    return new PerSegmentEvidence(
+        excessRatio, isSlow, deliveryHealth,
+        isTtfbOutlier, isDeliveryRateOutlier, isCacheHitSlow, isCdnEvidence);
+  }
+
+  /** Audio cross-track correlation: ≥50% A-segments slow ⇒ correlated drain. */
+  static boolean computeAudioCrossTrack(List<QoSInfo> aSegments) {
+    int nA = aSegments.size();
+    if (nA == 0) return false;
+    int aSlow = 0;
+    for (QoSInfo a : aSegments) {
+      if (a.chunkDurationMs <= 0) continue;
+      long excessMs = Math.max(0L, a.loadDurationMs - a.chunkDurationMs);
+      double r = (double) excessMs / a.chunkDurationMs;
+      if (r > SLOW_RATIO) aSlow++;
+    }
+    return aSlow * 2 >= nA;
+  }
+
+  /** Extract bufferedDurationMs values from V-segments where available (≥0). */
+  static int[] extractBlValues(List<QoSInfo> vSegments) {
+    int[] tmp = new int[vSegments.size()];
+    int n = 0;
+    for (QoSInfo s : vSegments) {
+      if (s.bufferedDurationMs >= 0) tmp[n++] = s.bufferedDurationMs;
+    }
+    return Arrays.copyOf(tmp, n);
+  }
+
+  // ===== Buffer trend (BOLA anchor — V4 algorithm reused) =====
+
+  static DiagnosisV5.BufferTrend analyzeBufferTrend(int[] bl) {
+    if (bl == null || bl.length < 2) {
+      return DiagnosisV5.BufferTrend.UNAVAILABLE;
+    }
+    int n = bl.length;
+    int decreasing = 0;
+    int increasing = 0;
+    int min = bl[0];
+    int max = bl[0];
+    for (int i = 1; i < n; i++) {
+      if (bl[i] < bl[i - 1]) decreasing++;
+      else if (bl[i] > bl[i - 1]) increasing++;
+      if (bl[i] < min) min = bl[i];
+      if (bl[i] > max) max = bl[i];
+    }
+    int range = max - min;
+    int pairs = n - 1;
+    if (decreasing * 5 >= pairs * 4) return DiagnosisV5.BufferTrend.MONOTONIC_DRAIN;
+    if (range < FLAT_RANGE_MS) return DiagnosisV5.BufferTrend.FLAT;
+    if (increasing > 0 && decreasing > 0 && bl[n - 1] >= bl[0] * 0.9) {
+      return DiagnosisV5.BufferTrend.SPIKE;
+    }
+    return DiagnosisV5.BufferTrend.OSCILLATING;
+  }
+
+  // ===== Statistics helpers (median/mean/max/variance) =====
+
+  static double median(double[] values) {
+    if (values == null || values.length == 0) return 0.0;
+    double[] copy = Arrays.copyOf(values, values.length);
+    Arrays.sort(copy);
+    int n = copy.length;
+    if (n % 2 == 1) return copy[n / 2];
+    return (copy[n / 2 - 1] + copy[n / 2]) / 2.0;
+  }
+
+  static double mean(double[] values) {
+    if (values == null || values.length == 0) return 0.0;
+    double sum = 0.0;
+    for (double v : values) sum += v;
+    return sum / values.length;
+  }
+
+  static double max(double[] values) {
+    if (values == null || values.length == 0) return 0.0;
+    double m = values[0];
+    for (int i = 1; i < values.length; i++) if (values[i] > m) m = values[i];
+    return m;
+  }
+
+  static double variance(double[] values, double mean) {
+    if (values == null || values.length == 0) return 0.0;
+    double sum = 0.0;
+    for (double v : values) {
+      double d = v - mean;
+      sum += d * d;
+    }
+    return sum / values.length;
   }
 
   // ===== Filters (mirror V4 patterns) =====
