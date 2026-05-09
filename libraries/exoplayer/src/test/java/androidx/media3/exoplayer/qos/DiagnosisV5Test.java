@@ -50,4 +50,22 @@ public class DiagnosisV5Test {
     assertThat(r.sanityFailReason).isEqualTo("no_v_data");
     assertThat(r.httpErrorCodes).asList().containsExactly(404);
   }
+
+  @Test
+  public void toDisplaySummary_cdnHttpError_includesCodes() {
+    DiagnosisV5 r = DiagnosisV5.cdnHttpError(new int[] {503, 504});
+    String s = r.toDisplaySummary();
+    assertThat(s).contains("V5");
+    assertThat(s).contains("CDN_HTTP_ERROR");
+    assertThat(s).contains("503");
+    assertThat(s).contains("504");
+  }
+
+  @Test
+  public void toDisplaySummary_transientFromSanity_includesReason() {
+    DiagnosisV5 r = DiagnosisV5.transientFromSanity("ratio=2.5");
+    String s = r.toDisplaySummary();
+    assertThat(s).contains("TRANSIENT");
+    assertThat(s).contains("sanity=ratio=2.5");
+  }
 }

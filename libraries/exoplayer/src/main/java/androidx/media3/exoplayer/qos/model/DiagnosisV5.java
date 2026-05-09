@@ -265,6 +265,64 @@ public final class DiagnosisV5 {
         /* sanityFailReason= */ "no_v_data");
   }
 
+  /**
+   * Pre-formatted single-line summary suitable for UI rendering. Centralizes the
+   * V5 verdict format so consumers (FPT_Core overlay, debug HUD, support tickets)
+   * don't duplicate the format logic.
+   *
+   * <p>Format: {@code {severity} V5 · {cause} · {branch} · ...evidence... · {cohort}}.
+   */
+  public String toDisplaySummary() {
+    StringBuilder sb = new StringBuilder(256);
+    sb.append(severityIcon()).append(' ');
+    sb.append("V5 · ").append(cause.name());
+    sb.append(" · ").append(cacheBranch.name());
+
+    if (cause == Cause.CDN_HTTP_ERROR && httpErrorCodes.length > 0) {
+      sb.append(" · codes=").append(java.util.Arrays.toString(httpErrorCodes));
+    } else if (sanityFailReason != null && cause == Cause.TRANSIENT) {
+      sb.append(" · sanity=").append(sanityFailReason);
+    } else {
+      sb.append(" · nV=").append(nVSegments);
+      sb.append(" · slow=").append(nSlowSegments);
+      sb.append(
+          String.format(java.util.Locale.US, " · median=%.2f", medianExcessRatio));
+      if (nCdnEvidenceSegments > 0) {
+        sb.append(" · cdnEv=").append(nCdnEvidenceSegments);
+      }
+      if (nDeliveryRateOutlierSegments > 0) {
+        sb.append(" · delivOut=").append(nDeliveryRateOutlierSegments);
+      }
+      if (nRetrySegments > 0) {
+        sb.append(" · retry=").append(nRetrySegments);
+      }
+      sb.append(" · fence=").append(ttfbUpperFenceApplied).append("ms");
+      if (usedColdStartFallback) {
+        sb.append(" · cold");
+      }
+    }
+    sb.append(" · ")
+        .append(cohortNetworkType)
+        .append('/')
+        .append(cohortCacheBranch)
+        .append('/')
+        .append(cohortCdnHostname);
+    return sb.toString();
+  }
+
+  private String severityIcon() {
+    switch (cause) {
+      case CDN_HTTP_ERROR:
+        return "🔴"; // 🔴
+      case CDN_DELIVERY_SLOW:
+      case INSUFFICIENT_BANDWIDTH:
+        return "🟠"; // 🟠
+      case TRANSIENT:
+      default:
+        return "⚪"; // ⚪
+    }
+  }
+
   /** CDN_HTTP_ERROR factory — decisive 5xx fast-path, evidence fields not computed. */
   public static DiagnosisV5 cdnHttpError(int[] httpErrorCodes) {
     return new DiagnosisV5(
