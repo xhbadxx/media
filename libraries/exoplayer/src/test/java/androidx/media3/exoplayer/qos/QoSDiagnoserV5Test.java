@@ -362,6 +362,140 @@ public class QoSDiagnoserV5Test {
     assertThat(r.varianceExcess).isLessThan(0.05);
   }
 
+  // ===== Step 4 — Cache-fork CDN check (AWS canonical anchor) =====
+
+  @Test
+  public void step4a_hitDominant_cacheHitSlowMajority_returnsCdnDeliverySlow() {
+    // 4 V-segments all cache=HIT, low TTFB (not outlier), low bytes → delivery_health
+    // deficit. is_cache_hit_slow fires on majority → CDN_DELIVERY_SLOW(HIT_DOMINANT).
+    QoSInfo s1 = vSegmentHitDeficit(1_000L, 1_500);
+    QoSInfo s2 = vSegmentHitDeficit(3_500L, 1_000);
+    QoSInfo s3 = vSegmentHitDeficit(6_000L, 500);
+    QoSInfo s4 = vSegmentHitDeficit(8_500L, 0);
+    QoSInfo trigger = triggerSegment(11_000L, 0);
+    RebufferGroup group =
+        new RebufferGroup(
+            1, trigger.timestampMs, trigger,
+            Arrays.asList(s1, s2, s3, s4, trigger), null);
+
+    DiagnosisV5 r = QoSDiagnoserV5.diagnose(group, /* sessionStats= */ null);
+
+    assertThat(r.cause).isEqualTo(DiagnosisV5.Cause.CDN_DELIVERY_SLOW);
+    assertThat(r.cacheBranch).isEqualTo(DiagnosisV5.CacheBranch.HIT_DOMINANT);
+    assertThat(r.nCacheHitSlowSegments).isEqualTo(4);
+  }
+
+  @Test
+  public void step4a_hitDominant_deliveryRateOutlierMajority_returnsCdnDeliverySlow() {
+    // Pre-populate sessionStats with healthy delivery rates → lower fence = 475 kbps.
+    SessionStatistics sessionStats = new SessionStatistics();
+    int[] healthyRates = {700, 800, 850, 850, 950, 1000, 1050, 1100, 1100, 1200};
+    for (int v : healthyRates) {
+      sessionStats.addDeliveryRateSample("WIFI_HIT_fpt", v);
+    }
+    // Also seed TTFB so cold-start fallback doesn't fire (avoid TTFB-outlier path).
+    int[] healthyTtfb = {30, 40, 40, 50, 60, 70, 75, 80, 85, 90};
+    for (int v : healthyTtfb) {
+      sessionStats.addTtfbSample("WIFI_HIT_fpt", v);
+    }
+    // Current V-segments: cache=HIT, low TTFB (not outlier), post_ttfb < 475 kbps.
+    QoSInfo s1 = vSegmentHitLowDelivery(1_000L, 1_500);
+    QoSInfo s2 = vSegmentHitLowDelivery(3_500L, 1_000);
+    QoSInfo s3 = vSegmentHitLowDelivery(6_000L, 500);
+    QoSInfo s4 = vSegmentHitLowDelivery(8_500L, 0);
+    QoSInfo trigger = triggerSegment(11_000L, 0);
+    RebufferGroup group =
+        new RebufferGroup(
+            1, trigger.timestampMs, trigger,
+            Arrays.asList(s1, s2, s3, s4, trigger), null);
+
+    DiagnosisV5 r = QoSDiagnoserV5.diagnose(group, sessionStats);
+
+    assertThat(r.cause).isEqualTo(DiagnosisV5.Cause.CDN_DELIVERY_SLOW);
+    assertThat(r.cacheBranch).isEqualTo(DiagnosisV5.CacheBranch.HIT_DOMINANT);
+    assertThat(r.nDeliveryRateOutlierSegments).isAtLeast(3);
+  }
+
+  @Test
+  public void step4a_hitDominant_minorityEvidence_fallsThrough() {
+    // 4 cache=HIT but only 1 has delivery deficit → not majority → fall through.
+    QoSInfo s1 = vSegmentHitDeficit(1_000L, 1_500); // 1 deficit
+    QoSInfo s2 = vSegmentWithCache(3_500L, 1_000, "HIT"); // healthy
+    QoSInfo s3 = vSegmentWithCache(6_000L, 500, "HIT");
+    QoSInfo s4 = vSegmentWithCache(8_500L, 0, "HIT");
+    QoSInfo trigger = triggerSegment(11_000L, 0);
+    RebufferGroup group =
+        new RebufferGroup(
+            1, trigger.timestampMs, trigger,
+            Arrays.asList(s1, s2, s3, s4, trigger), null);
+
+    DiagnosisV5 r = QoSDiagnoserV5.diagnose(group, /* sessionStats= */ null);
+
+    assertThat(r.cause).isNotEqualTo(DiagnosisV5.Cause.CDN_DELIVERY_SLOW);
+    assertThat(r.cacheBranch).isEqualTo(DiagnosisV5.CacheBranch.HIT_DOMINANT);
+  }
+
+  @Test
+  public void step4b_missDominant_ttfbOutlierWithHealthyDelivery_returnsCdnDeliverySlow() {
+    // 4 V-segments cache=MISS, TTFB > 800ms (cold-start fallback) + delivery_health
+    // ≥ 0.90 → MISS-side decisive → CDN_DELIVERY_SLOW(MISS_DOMINANT).
+    QoSInfo s1 = vSegmentMissOutlierHealthy(1_000L, 1_500);
+    QoSInfo s2 = vSegmentMissOutlierHealthy(3_500L, 1_000);
+    QoSInfo s3 = vSegmentMissOutlierHealthy(6_000L, 500);
+    QoSInfo s4 = vSegmentMissOutlierHealthy(8_500L, 0);
+    QoSInfo trigger = triggerSegment(11_000L, 0);
+    RebufferGroup group =
+        new RebufferGroup(
+            1, trigger.timestampMs, trigger,
+            Arrays.asList(s1, s2, s3, s4, trigger), null);
+
+    DiagnosisV5 r = QoSDiagnoserV5.diagnose(group, /* sessionStats= */ null);
+
+    assertThat(r.cause).isEqualTo(DiagnosisV5.Cause.CDN_DELIVERY_SLOW);
+    assertThat(r.cacheBranch).isEqualTo(DiagnosisV5.CacheBranch.MISS_DOMINANT);
+    assertThat(r.nTtfbOutlierSegments).isAtLeast(3);
+  }
+
+  @Test
+  public void step4c_mixedCache_combinedEvidenceMajority_returnsCdnDeliverySlow() {
+    // 2 HIT + 2 MISS → MIXED branch. 2 HIT-deficit + 2 MISS-ttfb-outlier-healthy
+    // = 4/4 cdn_evidence → fires CDN_DELIVERY_SLOW(MIXED).
+    QoSInfo s1 = vSegmentHitDeficit(1_000L, 1_500);
+    QoSInfo s2 = vSegmentMissOutlierHealthy(3_500L, 1_000);
+    QoSInfo s3 = vSegmentHitDeficit(6_000L, 500);
+    QoSInfo s4 = vSegmentMissOutlierHealthy(8_500L, 0);
+    QoSInfo trigger = triggerSegment(11_000L, 0);
+    RebufferGroup group =
+        new RebufferGroup(
+            1, trigger.timestampMs, trigger,
+            Arrays.asList(s1, s2, s3, s4, trigger), null);
+
+    DiagnosisV5 r = QoSDiagnoserV5.diagnose(group, /* sessionStats= */ null);
+
+    assertThat(r.cause).isEqualTo(DiagnosisV5.Cause.CDN_DELIVERY_SLOW);
+    assertThat(r.cacheBranch).isEqualTo(DiagnosisV5.CacheBranch.MIXED);
+  }
+
+  @Test
+  public void step4_nVBelow3_skipsCheck() {
+    // Only 2 V-segments — below MIN_SEGMENTS_FOR_CDN, skip Step 4 even if all evidence
+    // would fire. Falls to placeholder TRANSIENT.
+    // Window math: ts gap=2500, bl 1000→0 → wallTime=5000, supply=4000, Δbl=-1000
+    //   demand=5000, ratio=0.80 ⇒ pass sanity.
+    QoSInfo s1 = vSegmentMissOutlierHealthy(1_000L, 1_000);
+    QoSInfo s2 = vSegmentMissOutlierHealthy(3_500L, 0);
+    QoSInfo trigger = triggerSegment(6_000L, 0);
+    RebufferGroup group =
+        new RebufferGroup(
+            1, trigger.timestampMs, trigger,
+            Arrays.asList(s1, s2, trigger), null);
+
+    DiagnosisV5 r = QoSDiagnoserV5.diagnose(group, /* sessionStats= */ null);
+
+    assertThat(r.cause).isNotEqualTo(DiagnosisV5.Cause.CDN_DELIVERY_SLOW);
+    assertThat(r.nVSegments).isEqualTo(2);
+  }
+
   // ===== Test fixture builders (mirror V4 patterns for consistency) =====
 
   /** V-segment with default mtp 5_000kbps, bitrate 2_000kbps (ABR-not-aware). */
@@ -499,6 +633,71 @@ public class QoSDiagnoserV5Test {
         .setBytesLoaded(220_160L)
         .setBitrateKbps(1_000)
         .setMeasuredThroughputKbps(1_200)
+        .setBufferedDurationMs(blMs)
+        .setNetworkType(C.NETWORK_TYPE_WIFI)
+        .setCacheStatus("MISS")
+        .setCdnProvider("fpt")
+        .build();
+  }
+
+  /**
+   * V-segment cache=HIT with delivery deficit: bytes 100KB / 1700ms transfer = 470kbps
+   * → delivery_health = 0.47 (< 0.70 deficit) AND ttfb=200 (not outlier).
+   * Fires {@code is_cache_hit_slow}.
+   */
+  private static QoSInfo vSegmentHitDeficit(long ts, int blMs) {
+    return new QoSInfo.Builder()
+        .setTimestampMs(ts)
+        .setTrackType(C.TRACK_TYPE_VIDEO)
+        .setChunkDurationMs(2_000L)
+        .setLoadDurationMs(1_900L)
+        .setTtfbMs(200)
+        .setBytesLoaded(100_000L) // 100KB → 470 kbps post-ttfb / 1000 bitrate = 0.47 deficit
+        .setBitrateKbps(1_000)
+        .setMeasuredThroughputKbps(1_500)
+        .setBufferedDurationMs(blMs)
+        .setNetworkType(C.NETWORK_TYPE_WIFI)
+        .setCacheStatus("HIT")
+        .setCdnProvider("fpt")
+        .build();
+  }
+
+  /**
+   * V-segment cache=HIT with delivery rate outlier (post_ttfb low, but ≥ 0.70 so not deficit
+   * triggering cache_hit_slow). bytes 80KB / 1700ms = 376 kbps. Below Tukey lower fence 475.
+   */
+  private static QoSInfo vSegmentHitLowDelivery(long ts, int blMs) {
+    return new QoSInfo.Builder()
+        .setTimestampMs(ts)
+        .setTrackType(C.TRACK_TYPE_VIDEO)
+        .setChunkDurationMs(2_000L)
+        .setLoadDurationMs(1_900L)
+        .setTtfbMs(50)
+        .setBytesLoaded(80_000L)
+        .setBitrateKbps(1_000)
+        .setMeasuredThroughputKbps(1_500)
+        .setBufferedDurationMs(blMs)
+        .setNetworkType(C.NETWORK_TYPE_WIFI)
+        .setCacheStatus("HIT")
+        .setCdnProvider("fpt")
+        .build();
+  }
+
+  /**
+   * V-segment cache=MISS with TTFB outlier + healthy delivery. ttfb=1500 (> 800 fallback),
+   * bytes ≈ 180KB / 1500ms transfer = 960 kbps → delivery_health 0.96 ≥ 0.90 (healthy).
+   * Fires MISS-side decisive evidence (origin pull slow start).
+   */
+  private static QoSInfo vSegmentMissOutlierHealthy(long ts, int blMs) {
+    return new QoSInfo.Builder()
+        .setTimestampMs(ts)
+        .setTrackType(C.TRACK_TYPE_VIDEO)
+        .setChunkDurationMs(2_000L)
+        .setLoadDurationMs(3_000L)
+        .setTtfbMs(1_500)
+        .setBytesLoaded(180_000L)
+        .setBitrateKbps(1_000)
+        .setMeasuredThroughputKbps(1_500)
         .setBufferedDurationMs(blMs)
         .setNetworkType(C.NETWORK_TYPE_WIFI)
         .setCacheStatus("MISS")

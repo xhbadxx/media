@@ -266,11 +266,40 @@ public final class QoSDiagnoserV5 {
       }
     }
 
-    // TODO Tasks A6/A7: Step 4 cache-fork (4a HIT / 4b MISS / 4c MIXED) + Step 5 bandwidth
-    // majority + Step 6 TRANSIENT default. For Task A5: emit TRANSIENT with full evidence
-    // (placeholder until A6/A7 fire specific causes from same evidence).
+    // Step 4 — Cache-fork CDN check (AWS canonical pattern). Each branch counts evidence
+    // attributable to that cache state and fires CDN_DELIVERY_SLOW on majority.
+    DiagnosisV5.Cause finalCause = DiagnosisV5.Cause.TRANSIENT;
+    if (nV >= MIN_SEGMENTS_FOR_CDN) {
+      if (cacheBranch == DiagnosisV5.CacheBranch.HIT_DOMINANT) {
+        // Step 4a — HIT side: cache_hit_slow OR delivery_rate_outlier (Tukey).
+        int nHitEvidence = 0;
+        for (PerSegmentEvidence p : perSeg) {
+          if (p.isCacheHitSlow || p.isDeliveryRateOutlier) nHitEvidence++;
+        }
+        if (nHitEvidence * 2 >= nV) {
+          finalCause = DiagnosisV5.Cause.CDN_DELIVERY_SLOW;
+        }
+      } else if (cacheBranch == DiagnosisV5.CacheBranch.MISS_DOMINANT) {
+        // Step 4b — MISS side: TTFB outlier + delivery healthy (origin pull slow start).
+        int nMissEvidence = 0;
+        for (PerSegmentEvidence p : perSeg) {
+          if (p.isTtfbOutlier && p.deliveryHealth >= DELIVERY_HEALTHY_RATIO) nMissEvidence++;
+        }
+        if (nMissEvidence * 2 >= nV) {
+          finalCause = DiagnosisV5.Cause.CDN_DELIVERY_SLOW;
+        }
+      } else {
+        // Step 4c — MIXED/UNKNOWN fallback: V4-style combined CDN evidence.
+        if (nCdnEvidence * 2 >= nV) {
+          finalCause = DiagnosisV5.Cause.CDN_DELIVERY_SLOW;
+        }
+      }
+    }
+
+    // TODO Task A7: Step 5 bandwidth majority + variance modifier (if finalCause still
+    // TRANSIENT). Until then, emit single DiagnosisV5 with computed cause.
     return new DiagnosisV5(
-        DiagnosisV5.Cause.TRANSIENT,
+        finalCause,
         cacheBranch,
         nV,
         nA,
