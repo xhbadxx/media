@@ -28,6 +28,7 @@ import androidx.media3.exoplayer.qos.model.Diagnosis;
 import androidx.media3.exoplayer.qos.model.DiagnosisV2;
 import androidx.media3.exoplayer.qos.model.DiagnosisV4;
 import androidx.media3.exoplayer.qos.model.DiagnosisV5;
+import androidx.media3.exoplayer.qos.model.DiagnosisV6;
 import androidx.media3.exoplayer.qos.model.QoSInfo;
 import androidx.media3.exoplayer.qos.model.RebufferGroup;
 import androidx.media3.exoplayer.qos.model.SessionStatistics;
@@ -193,6 +194,7 @@ public final class FPlayQoSMonitor {
     DiagnosisV2 v2 = QoSDiagnoserV2.diagnose(pipelineInput);
     DiagnosisV4 v4 = QoSDiagnoserV4.diagnose(pipelineInput);
     DiagnosisV5 v5 = QoSDiagnoserV5.diagnose(pipelineInput, sessionStats);
+    DiagnosisV6 v6 = QoSDiagnoserV6.diagnose(pipelineInput, sessionStats);
     StringBuilder log = new StringBuilder(512)
         .append("Rebuffer #").append(groupId).append(": ").append(diagnosis.summary())
         .append(" | v1.cause=").append(fullDiagnosis.cause)
@@ -253,6 +255,20 @@ public final class FPlayQoSMonitor {
           .append('/').append(v5.cohortCacheBranch)
           .append('/').append(v5.cohortCdnHostname);
     }
+    log.append(" | v6.cause=").append(v6.cause);
+    if (v6.cause == DiagnosisV6.Cause.UNKNOWN) {
+      log.append(" v6.reason=\"").append(v6.unknownReason).append('"');
+    } else {
+      log.append(" v6.nV=").append(v6.nV);
+      log.append(" v6.nDrained=").append(v6.nDrained);
+      log.append(" v6.nCdn=").append(v6.nCdnEvidence);
+      log.append(" v6.fence=").append(v6.ttfbFenceUpperMs).append("ms");
+      log.append(" v6.ttfb=").append(v6.lastTtfbMs).append("ms");
+      log.append(" v6.bl=").append(v6.lastBufferMs).append("ms");
+    }
+    if (v6.httpErrorCodes.length > 0) {
+      log.append(" v6.codes=").append(java.util.Arrays.toString(v6.httpErrorCodes));
+    }
     Log.i(TAG, log.toString());
     RebufferGroup group =
         new RebufferGroup(
@@ -264,7 +280,8 @@ public final class FPlayQoSMonitor {
             fullDiagnosis,
             v2,
             v4,
-            v5);
+            v5,
+            v6);
     rebufferGroups.add(group);
     while (rebufferGroups.size() > MAX_REBUFFER_GROUPS) {
       rebufferGroups.remove(0);
