@@ -100,4 +100,87 @@ public class DiagnosisV6Test {
             DiagnosisV6.Cause.CLIENT_INSUFFICIENT_BANDWIDTH,
             DiagnosisV6.Cause.UNKNOWN);
   }
+
+  // ===== UI helpers — toDisplaySummary =====
+
+  @Test
+  public void toDisplaySummary_cdn_includesCauseDrainedRatioFence() {
+    DiagnosisV6 r =
+        DiagnosisV6.classified(
+            DiagnosisV6.Cause.CDN_DELIVERY_SLOW, new int[0], 13, 4, 3, 200, 417, 4_200);
+    String s = r.toDisplaySummary();
+    assertThat(s).contains("V6");
+    assertThat(s).contains("CDN_DELIVERY_SLOW");
+    assertThat(s).contains("3/4"); // nCdn / nDrained
+    assertThat(s).contains("fence=200ms");
+  }
+
+  @Test
+  public void toDisplaySummary_client_includesCauseDrainedRatio() {
+    DiagnosisV6 r =
+        DiagnosisV6.classified(
+            DiagnosisV6.Cause.CLIENT_INSUFFICIENT_BANDWIDTH,
+            new int[0],
+            5,
+            5,
+            0,
+            150,
+            80,
+            1_500);
+    String s = r.toDisplaySummary();
+    assertThat(s).contains("CLIENT_INSUFFICIENT_BANDWIDTH");
+    assertThat(s).contains("0/5");
+  }
+
+  @Test
+  public void toDisplaySummary_unknown_includesReason() {
+    DiagnosisV6 r = DiagnosisV6.unknown("cold_start", new int[0]);
+    String s = r.toDisplaySummary();
+    assertThat(s).contains("UNKNOWN");
+    assertThat(s).contains("cold_start");
+  }
+
+  @Test
+  public void toDisplaySummary_withHttpErrorCodes_appendsCodesAfterCore() {
+    DiagnosisV6 r =
+        DiagnosisV6.classified(
+            DiagnosisV6.Cause.CLIENT_INSUFFICIENT_BANDWIDTH,
+            new int[] {503, 404},
+            5,
+            5,
+            0,
+            150,
+            80,
+            1_500);
+    String s = r.toDisplaySummary();
+    assertThat(s).contains("503");
+    assertThat(s).contains("404");
+  }
+
+  // ===== UI helpers — toFullDetail =====
+
+  @Test
+  public void toFullDetail_classified_multilineWithAllFields() {
+    DiagnosisV6 r =
+        DiagnosisV6.classified(
+            DiagnosisV6.Cause.CDN_DELIVERY_SLOW, new int[0], 13, 4, 3, 200, 417, 4_200);
+    String s = r.toFullDetail();
+    assertThat(s).contains("\n");
+    assertThat(s).contains("CDN_DELIVERY_SLOW");
+    assertThat(s).contains("nV=13");
+    assertThat(s).contains("drained=4");
+    assertThat(s).contains("cdnEv=3");
+    assertThat(s).contains("fence=200ms");
+    assertThat(s).contains("ttfb=417ms");
+    assertThat(s).contains("bl=4200ms");
+  }
+
+  @Test
+  public void toFullDetail_unknown_includesReasonNoEvidenceFields() {
+    DiagnosisV6 r = DiagnosisV6.unknown("no_drain", new int[] {503});
+    String s = r.toFullDetail();
+    assertThat(s).contains("UNKNOWN");
+    assertThat(s).contains("no_drain");
+    assertThat(s).contains("503");
+  }
 }

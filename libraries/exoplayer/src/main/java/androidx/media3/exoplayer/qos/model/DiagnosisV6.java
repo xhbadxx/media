@@ -122,4 +122,74 @@ public final class DiagnosisV6 {
         lastBufferMs,
         /* unknownReason= */ null);
   }
+
+  /**
+   * Single-line summary for HUD / overlay / support tickets. Centralized so consumers
+   * don't duplicate format logic.
+   *
+   * <p>Examples:
+   * <pre>
+   * 🔴 V6 · CDN_DELIVERY_SLOW · 3/4 drained · fence=200ms
+   * 🟠 V6 · CLIENT_INSUFFICIENT_BANDWIDTH · 0/5 drained
+   * ⚪ V6 · UNKNOWN · cold_start
+   * </pre>
+   */
+  public String toDisplaySummary() {
+    StringBuilder sb = new StringBuilder(128);
+    sb.append(severityIcon()).append(" V6 · ").append(cause.name());
+    if (cause == Cause.UNKNOWN) {
+      if (unknownReason != null) {
+        sb.append(" · ").append(unknownReason);
+      }
+    } else {
+      sb.append(" · ").append(nCdnEvidence).append('/').append(nDrained).append(" drained");
+      if (cause == Cause.CDN_DELIVERY_SLOW) {
+        sb.append(" · fence=").append(ttfbFenceUpperMs).append("ms");
+      }
+    }
+    if (httpErrorCodes.length > 0) {
+      sb.append(" · codes=").append(java.util.Arrays.toString(httpErrorCodes));
+    }
+    return sb.toString();
+  }
+
+  /**
+   * Multi-line full breakdown for expanded UI / debug HUD / support tickets. Each
+   * evidence section on its own line.
+   */
+  public String toFullDetail() {
+    StringBuilder sb = new StringBuilder(256);
+    sb.append("Cause: ").append(cause.name());
+    if (cause == Cause.UNKNOWN && unknownReason != null) {
+      sb.append(" · ").append(unknownReason);
+    }
+    sb.append('\n');
+    if (cause != Cause.UNKNOWN) {
+      sb.append("Evidence: nV=").append(nV)
+          .append(" drained=").append(nDrained)
+          .append(" cdnEv=").append(nCdnEvidence)
+          .append('\n');
+      sb.append("Last seg: ttfb=").append(lastTtfbMs).append("ms")
+          .append(" bl=").append(lastBufferMs).append("ms")
+          .append('\n');
+      sb.append("fence=").append(ttfbFenceUpperMs).append("ms");
+    }
+    if (httpErrorCodes.length > 0) {
+      if (cause != Cause.UNKNOWN) sb.append('\n');
+      sb.append("HTTP codes: ").append(java.util.Arrays.toString(httpErrorCodes));
+    }
+    return sb.toString();
+  }
+
+  private String severityIcon() {
+    switch (cause) {
+      case CDN_DELIVERY_SLOW:
+        return "🔴";
+      case CLIENT_INSUFFICIENT_BANDWIDTH:
+        return "🟠";
+      case UNKNOWN:
+      default:
+        return "⚪";
+    }
+  }
 }
