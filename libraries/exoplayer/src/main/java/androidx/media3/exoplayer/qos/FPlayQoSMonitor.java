@@ -155,6 +155,9 @@ public final class FPlayQoSMonitor {
           int postTtfbKbps = (int) ((last.bytesLoaded * 8L) / transferMs);
           sessionStats.addDeliveryRateSample(key, postTtfbKbps);
         }
+        if (last.measuredThroughputKbps > 0) {
+          sessionStats.addMtpSample(key, last.measuredThroughputKbps);
+        }
       };
 
   /**
@@ -262,6 +265,9 @@ public final class FPlayQoSMonitor {
       log.append(" v6.nV=").append(v6.nV);
       log.append(" v6.slow=").append(v6.nDrained);
       log.append(" v6.svrLag=").append(v6.nCdnEvidence);
+      if (v6.mtpCollapseDetected) {
+        log.append(" v6.mtpCollapse=1");
+      }
       log.append(" v6.fence=").append(v6.ttfbFenceUpperMs).append("ms");
       log.append(" v6.ttfb=").append(v6.lastTtfbMs).append("ms");
       log.append(" v6.bl=").append(v6.lastBufferMs).append("ms");

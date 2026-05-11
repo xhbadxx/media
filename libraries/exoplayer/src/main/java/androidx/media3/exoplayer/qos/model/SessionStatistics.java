@@ -49,6 +49,7 @@ public final class SessionStatistics {
 
   private final Map<String, Deque<Integer>> ttfbByKey = new HashMap<>();
   private final Map<String, Deque<Integer>> deliveryRateByKey = new HashMap<>();
+  private final Map<String, Deque<Integer>> mtpByKey = new HashMap<>();
 
   /** Add a TTFB sample (ms) for the given key. Auto-evicts oldest when over capacity. */
   public void addTtfbSample(String key, int ttfbMs) {
@@ -58,6 +59,11 @@ public final class SessionStatistics {
   /** Add a post-TTFB delivery rate sample (kbps) for the given key. */
   public void addDeliveryRateSample(String key, int kbps) {
     addSample(deliveryRateByKey, key, kbps);
+  }
+
+  /** Add an ABR-measured throughput (mtp) sample (kbps). Used for V6 mtp-collapse guard. */
+  public void addMtpSample(String key, int kbps) {
+    addSample(mtpByKey, key, kbps);
   }
 
   /** Returns Tukey fence over current TTFB samples, or {@code null} if &lt; min samples. */
@@ -70,6 +76,12 @@ public final class SessionStatistics {
   @Nullable
   public TukeyFence getDeliveryRateFence(String key) {
     return computeFence(deliveryRateByKey.get(key));
+  }
+
+  /** Returns Tukey fence over current mtp samples, or {@code null} if &lt; min samples. */
+  @Nullable
+  public TukeyFence getMtpFence(String key) {
+    return computeFence(mtpByKey.get(key));
   }
 
   private static void addSample(Map<String, Deque<Integer>> map, String key, int value) {

@@ -237,10 +237,84 @@ public class QoSDiagnoserV6Test {
     assertThat(r.nCdnEvidence).isEqualTo(1);
   }
 
+  // ===== Strict TTFB outlier + mtp-collapse guard (K=3 enhancements) =====
+
+  @Test
+  public void diagnose_strictFence_marginalTtfbOutlier_notCountedAsCdn() {
+    // TTFB samples spread: Q1=70, Q3=120, IQR=50. Upper(K=1.5)=195. Upper(K=3)=270.
+    // V segs with ttfb=200 → above K=1.5 upper, below K=3 strict upper → NOT CDN.
+    SessionStatistics stats = new SessionStatistics();
+    int[] ttfbSamples = {50, 60, 70, 80, 90, 100, 110, 120, 130, 140};
+    for (int v : ttfbSamples) stats.addTtfbSample(KEY_WIFI_MISS_FPT, v);
+
+    QoSInfo s1 = vSeg(1_000L, 2_000L, 3_000L, 200, 1_500);
+    QoSInfo s2 = vSeg(3_000L, 2_000L, 3_000L, 200, 1_500);
+    QoSInfo s3 = vSeg(5_000L, 2_000L, 3_000L, 200, 1_500);
+    QoSInfo trigger = triggerSeg(7_000L, 0);
+    RebufferGroup g =
+        new RebufferGroup(1, 7_000L, trigger, Arrays.asList(s1, s2, s3, trigger), null);
+    DiagnosisV6 r = QoSDiagnoserV6.diagnose(g, stats);
+
+    assertThat(r.cause).isEqualTo(DiagnosisV6.Cause.CLIENT_INSUFFICIENT_BANDWIDTH);
+    assertThat(r.nDrained).isEqualTo(3);
+    assertThat(r.nCdnEvidence).isEqualTo(0); // marginal outliers not counted
+    assertThat(r.ttfbFenceUpperMs).isEqualTo(270); // strict K=3 fence exposed
+  }
+
+  @Test
+  public void diagnose_strictFence_extremeTtfbOutlier_stillCountedAsCdn() {
+    // Same TTFB baseline, but ttfb=400 (above K=3 upper 270) → still CDN.
+    SessionStatistics stats = new SessionStatistics();
+    int[] ttfbSamples = {50, 60, 70, 80, 90, 100, 110, 120, 130, 140};
+    for (int v : ttfbSamples) stats.addTtfbSample(KEY_WIFI_MISS_FPT, v);
+
+    QoSInfo s1 = vSeg(1_000L, 2_000L, 3_000L, 400, 1_500); // extreme outlier
+    QoSInfo s2 = vSeg(3_000L, 2_000L, 3_000L, 400, 1_500);
+    QoSInfo s3 = vSeg(5_000L, 2_000L, 3_000L, 400, 1_500);
+    QoSInfo trigger = triggerSeg(7_000L, 0);
+    RebufferGroup g =
+        new RebufferGroup(1, 7_000L, trigger, Arrays.asList(s1, s2, s3, trigger), null);
+    DiagnosisV6 r = QoSDiagnoserV6.diagnose(g, stats);
+
+    assertThat(r.cause).isEqualTo(DiagnosisV6.Cause.CDN_DELIVERY_SLOW);
+    assertThat(r.nCdnEvidence).isEqualTo(3);
+  }
+
+  @Test
+  public void diagnose_mtpCollapsed_vetoesCdnEvidence_forcesClient() {
+    // TTFB fence: extreme outlier path active (ttfb=400 > strict 100).
+    // mtp baseline: 40-58 Mbps spread → lower fence around 29 Mbps. V mtp=10 Mbps =
+    // collapsed → vetoes CDN evidence even though ttfb is extreme outlier.
+    SessionStatistics stats = new SessionStatistics();
+    for (int i = 0; i < 10; i++) stats.addTtfbSample(KEY_WIFI_MISS_FPT, 100);
+    int[] mtpSamples = {40_000, 42_000, 44_000, 46_000, 48_000, 50_000, 52_000, 54_000,
+        56_000, 58_000};
+    for (int v : mtpSamples) stats.addMtpSample(KEY_WIFI_MISS_FPT, v);
+
+    QoSInfo s1 = vSegWithMtp(1_000L, 2_000L, 3_000L, 400, 1_500, 10_000); // collapsed
+    QoSInfo s2 = vSegWithMtp(3_000L, 2_000L, 3_000L, 400, 1_500, 10_000);
+    QoSInfo s3 = vSegWithMtp(5_000L, 2_000L, 3_000L, 400, 1_500, 10_000);
+    QoSInfo trigger = triggerSeg(7_000L, 0);
+    RebufferGroup g =
+        new RebufferGroup(1, 7_000L, trigger, Arrays.asList(s1, s2, s3, trigger), null);
+    DiagnosisV6 r = QoSDiagnoserV6.diagnose(g, stats);
+
+    assertThat(r.cause).isEqualTo(DiagnosisV6.Cause.CLIENT_INSUFFICIENT_BANDWIDTH);
+    assertThat(r.mtpCollapseDetected).isTrue();
+    assertThat(r.nDrained).isEqualTo(3);
+    assertThat(r.nCdnEvidence).isEqualTo(0); // all vetoed by mtp collapse
+  }
+
   // ===== Helpers =====
 
   /** WIFI / cache=MISS / cdn=fpt — matches {@link #sessionStatsWarm} key. */
   private static QoSInfo vSeg(long ts, long cdurMs, long loadDurMs, int ttfbMs, int blMs) {
+    return vSegWithMtp(ts, cdurMs, loadDurMs, ttfbMs, blMs, /* mtpKbps= */ 1_500);
+  }
+
+  /** vSeg overload with explicit measured throughput for mtp-collapse tests. */
+  private static QoSInfo vSegWithMtp(
+      long ts, long cdurMs, long loadDurMs, int ttfbMs, int blMs, int mtpKbps) {
     return new QoSInfo.Builder()
         .setTimestampMs(ts)
         .setTrackType(C.TRACK_TYPE_VIDEO)
@@ -251,7 +325,7 @@ public class QoSDiagnoserV6Test {
         .setBufferedDurationMs(blMs)
         .setBytesLoaded(240_000L)
         .setBitrateKbps(1_000)
-        .setMeasuredThroughputKbps(1_500)
+        .setMeasuredThroughputKbps(mtpKbps)
         .setNetworkType(C.NETWORK_TYPE_WIFI)
         .setCacheStatus("MISS")
         .setCdnProvider("fpt")

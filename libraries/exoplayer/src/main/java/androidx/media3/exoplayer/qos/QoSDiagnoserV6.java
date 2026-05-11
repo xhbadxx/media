@@ -52,6 +52,13 @@ public final class QoSDiagnoserV6 {
 
   static final int CDN_MAJORITY_DENOM = 2;
 
+  /**
+   * Strict Tukey multiplier (extreme outlier per Tukey 1977) used by V6 for TTFB. Tighter
+   * than {@link SessionStatistics#TUKEY_K}=1.5 — only segments with truly extreme TTFB
+   * count as CDN evidence, reducing false positives from network-path RTT fluctuations.
+   */
+  static final double TTFB_STRICT_TUKEY_K = 3.0;
+
   public static DiagnosisV6 diagnose(
       @Nullable RebufferGroup group, @Nullable SessionStatistics sessionStats) {
     if (group == null || group.entries == null || group.entries.isEmpty()) {
@@ -88,18 +95,39 @@ public final class QoSDiagnoserV6 {
     if (ttfbFence == null) {
       return DiagnosisV6.unknown("cold_start", httpErrorCodes);
     }
+    // mtp fence is optional — null when mtp samples haven't warmed yet. In that case
+    // the mtp-collapse guard is silently skipped (degrades to V6 without guard).
+    // (sessionStats != null guaranteed since ttfbFence != null above implies it.)
+    SessionStatistics.TukeyFence mtpFence = sessionStats.getMtpFence(key);
 
-    // Step 3: per-V evidence — count drained segs and how many have TTFB outlier.
+    // Strict TTFB outlier threshold: Q3 + 3·IQR (K=3 extreme outlier instead of
+    // SessionStatistics' default K=1.5). Reduces false-positive CDN claims from mild
+    // network-path RTT fluctuations.
+    int strictTtfbUpper =
+        ttfbFence.q3 + (int) Math.round(TTFB_STRICT_TUKEY_K * ttfbFence.iqr);
+
+    // Step 3: per-V evidence — count drained segs, TTFB extreme outliers, and how many
+    // have BOTH TTFB extreme outlier AND mtp NOT collapsed (= true CDN evidence).
     int nV = vSegs.size();
     int nDrained = 0;
     int nCdnEvidence = 0;
+    boolean mtpCollapseDetected = false;
     for (QoSInfo s : vSegs) {
       double excessRatio =
           (double) Math.max(0L, s.loadDurationMs - s.chunkDurationMs) / s.chunkDurationMs;
       boolean isDrained = excessRatio > SLOW_RATIO;
       if (!isDrained) continue;
       nDrained++;
-      if (s.ttfbMs > ttfbFence.upperFence) {
+      boolean isTtfbExtreme = s.ttfbMs > strictTtfbUpper;
+      // mtp-collapse guard: if ABR's measured throughput dropped below per-key Tukey
+      // lower fence, the bottleneck is network/Wi-Fi (CLIENT) — even if TTFB is high,
+      // it's a network-path symptom not server-side. Don't credit this as CDN evidence.
+      boolean isMtpCollapsed =
+          mtpFence != null
+              && s.measuredThroughputKbps > 0
+              && s.measuredThroughputKbps < mtpFence.lowerFence;
+      if (isMtpCollapsed) mtpCollapseDetected = true;
+      if (isTtfbExtreme && !isMtpCollapsed) {
         nCdnEvidence++;
       }
     }
@@ -120,9 +148,10 @@ public final class QoSDiagnoserV6 {
         nV,
         nDrained,
         nCdnEvidence,
-        ttfbFence.upperFence,
+        strictTtfbUpper,
         lastV.ttfbMs,
-        lastV.bufferedDurationMs);
+        lastV.bufferedDurationMs,
+        mtpCollapseDetected);
   }
 
   /** Collect 4xx + 5xx HTTP status codes from any errored entry — metadata only. */

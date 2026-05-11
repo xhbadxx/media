@@ -61,6 +61,14 @@ public final class DiagnosisV6 {
   public final int lastBufferMs;
 
   /**
+   * True if at least one drained V seg had {@code mtp < tukey_lower_fence(mtp)} — i.e.,
+   * ABR's measured throughput collapsed below the per-key baseline. Strong signal that
+   * the network path itself degraded (Wi-Fi/cellular), not just the CDN. Displayed as
+   * "(mtp-collapsed)" suffix in {@link #toDisplaySummary}.
+   */
+  public final boolean mtpCollapseDetected;
+
+  /**
    * Reason for UNKNOWN verdict: {@code "no_v_data"}, {@code "cold_start"}, or
    * {@code "no_drain"}. {@code null} for classified (CDN/CLIENT) verdicts.
    */
@@ -75,6 +83,7 @@ public final class DiagnosisV6 {
       int ttfbFenceUpperMs,
       int lastTtfbMs,
       int lastBufferMs,
+      boolean mtpCollapseDetected,
       @Nullable String unknownReason) {
     this.cause = cause;
     this.httpErrorCodes = httpErrorCodes;
@@ -84,6 +93,7 @@ public final class DiagnosisV6 {
     this.ttfbFenceUpperMs = ttfbFenceUpperMs;
     this.lastTtfbMs = lastTtfbMs;
     this.lastBufferMs = lastBufferMs;
+    this.mtpCollapseDetected = mtpCollapseDetected;
     this.unknownReason = unknownReason;
   }
 
@@ -98,6 +108,7 @@ public final class DiagnosisV6 {
         /* ttfbFenceUpperMs= */ -1,
         /* lastTtfbMs= */ -1,
         /* lastBufferMs= */ -1,
+        /* mtpCollapseDetected= */ false,
         reason);
   }
 
@@ -110,7 +121,8 @@ public final class DiagnosisV6 {
       int nCdnEvidence,
       int ttfbFenceUpperMs,
       int lastTtfbMs,
-      int lastBufferMs) {
+      int lastBufferMs,
+      boolean mtpCollapseDetected) {
     return new DiagnosisV6(
         cause,
         httpErrorCodes,
@@ -120,7 +132,23 @@ public final class DiagnosisV6 {
         ttfbFenceUpperMs,
         lastTtfbMs,
         lastBufferMs,
+        mtpCollapseDetected,
         /* unknownReason= */ null);
+  }
+
+  /** Backward-compat overload — defaults {@code mtpCollapseDetected=false}. */
+  public static DiagnosisV6 classified(
+      Cause cause,
+      int[] httpErrorCodes,
+      int nV,
+      int nDrained,
+      int nCdnEvidence,
+      int ttfbFenceUpperMs,
+      int lastTtfbMs,
+      int lastBufferMs) {
+    return classified(
+        cause, httpErrorCodes, nV, nDrained, nCdnEvidence,
+        ttfbFenceUpperMs, lastTtfbMs, lastBufferMs, /* mtpCollapseDetected= */ false);
   }
 
   /**
@@ -149,6 +177,9 @@ public final class DiagnosisV6 {
     } else {
       sb.append(" · slow=").append(nDrained)
           .append(" server-lag=").append(nCdnEvidence);
+      if (mtpCollapseDetected) {
+        sb.append(" (mtp-collapsed)");
+      }
       sb.append(" · fence=").append(ttfbFenceUpperMs).append("ms");
     }
     if (httpErrorCodes.length > 0) {
