@@ -59,6 +59,16 @@ public final class QoSDiagnoserV6 {
    */
   static final double TTFB_STRICT_TUKEY_K = 3.0;
 
+  /**
+   * Body-delivery health threshold: post-TTFB rate ≥ 90% of bitrate = healthy. Used to
+   * distinguish CDN slow-start (high TTFB, body then full bandwidth = real server lag)
+   * from network bandwidth shortage (high TTFB AND slow body = path/client issue).
+   *
+   * <p>Inherits V5 {@code DELIVERY_HEALTHY_RATIO=0.90} (AWS/Akamai canonical for cache
+   * miss edge slow-start pattern).
+   */
+  static final double BODY_HEALTHY_RATIO = 0.90;
+
   public static DiagnosisV6 diagnose(
       @Nullable RebufferGroup group, @Nullable SessionStatistics sessionStats) {
     if (group == null || group.entries == null || group.entries.isEmpty()) {
@@ -106,8 +116,8 @@ public final class QoSDiagnoserV6 {
     int strictTtfbUpper =
         ttfbFence.q3 + (int) Math.round(TTFB_STRICT_TUKEY_K * ttfbFence.iqr);
 
-    // Step 3: per-V evidence — count drained segs, TTFB extreme outliers, and how many
-    // have BOTH TTFB extreme outlier AND mtp NOT collapsed (= true CDN evidence).
+    // Step 3: per-V evidence — count drained segs, and how many qualify as true CDN
+    // evidence (= TTFB extreme outlier AND body delivery healthy AND mtp NOT collapsed).
     int nV = vSegs.size();
     int nDrained = 0;
     int nCdnEvidence = 0;
@@ -121,13 +131,25 @@ public final class QoSDiagnoserV6 {
       boolean isTtfbExtreme = s.ttfbMs > strictTtfbUpper;
       // mtp-collapse guard: if ABR's measured throughput dropped below per-key Tukey
       // lower fence, the bottleneck is network/Wi-Fi (CLIENT) — even if TTFB is high,
-      // it's a network-path symptom not server-side. Don't credit this as CDN evidence.
+      // it's a network-path symptom not server-side.
       boolean isMtpCollapsed =
           mtpFence != null
               && s.measuredThroughputKbps > 0
               && s.measuredThroughputKbps < mtpFence.lowerFence;
       if (isMtpCollapsed) mtpCollapseDetected = true;
-      if (isTtfbExtreme && !isMtpCollapsed) {
+      // Body-healthy check: post-TTFB delivery rate ≥ 90% of bitrate. Distinguishes
+      // CDN slow-start (high TTFB + fast body = server delayed start) from network
+      // bandwidth shortage (high TTFB + slow body = path/client issue).
+      boolean isBodyHealthy = false;
+      if (s.bitrateKbps > 0
+          && s.ttfbMs >= 0
+          && s.bytesLoaded > 0
+          && s.loadDurationMs > s.ttfbMs) {
+        long transferMs = s.loadDurationMs - s.ttfbMs;
+        double postTtfbKbps = (s.bytesLoaded * 8.0) / transferMs;
+        isBodyHealthy = postTtfbKbps >= s.bitrateKbps * BODY_HEALTHY_RATIO;
+      }
+      if (isTtfbExtreme && !isMtpCollapsed && isBodyHealthy) {
         nCdnEvidence++;
       }
     }

@@ -135,11 +135,13 @@ public class QoSDiagnoserV6Test {
 
   @Test
   public void diagnose_warmFence_allDrainedAllTtfbOutlier_returnsCdn() {
+    // CDN slow-start pattern: high TTFB (server delayed) + short loadDur (body fast).
+    // bytes=240KB, bitrate=1000, ttfb=500 loadDur=2400 → transferMs=1900 → rate=1010kbps
+    // → body ratio 1.01 ≥ 0.90 healthy ✓
     SessionStatistics stats = sessionStatsWarm(KEY_WIFI_MISS_FPT);
-    // supply=6000, bl 1500→1500→1500→0, wall=6000, ratio=1.25 → sanity passes
-    QoSInfo s1 = vSeg(1_000L, 2_000L, 3_000L, 200, 1_500); // drained + outlier
-    QoSInfo s2 = vSeg(3_000L, 2_000L, 3_500L, 250, 1_500); // drained + outlier
-    QoSInfo s3 = vSeg(5_000L, 2_000L, 4_000L, 300, 1_500); // drained + outlier
+    QoSInfo s1 = vSeg(1_000L, 2_000L, 2_400L, 500, 1_500); // drained + outlier + body healthy
+    QoSInfo s2 = vSeg(3_000L, 2_000L, 2_400L, 500, 1_500);
+    QoSInfo s3 = vSeg(5_000L, 2_000L, 2_400L, 500, 1_500);
     QoSInfo trigger = triggerSeg(7_000L, 0);
     RebufferGroup g =
         new RebufferGroup(1, 7_000L, trigger, Arrays.asList(s1, s2, s3, trigger), null);
@@ -149,7 +151,7 @@ public class QoSDiagnoserV6Test {
     assertThat(r.nDrained).isEqualTo(3);
     assertThat(r.nCdnEvidence).isEqualTo(3);
     assertThat(r.ttfbFenceUpperMs).isEqualTo(100);
-    assertThat(r.lastTtfbMs).isEqualTo(300);
+    assertThat(r.lastTtfbMs).isEqualTo(500);
     assertThat(r.lastBufferMs).isEqualTo(1_500);
   }
 
@@ -157,8 +159,8 @@ public class QoSDiagnoserV6Test {
   public void diagnose_warmFence_drainedNoTtfbOutlier_returnsClient() {
     SessionStatistics stats = sessionStatsWarm(KEY_WIFI_MISS_FPT);
     QoSInfo s1 = vSeg(1_000L, 2_000L, 3_000L, 50, 1_500); // drained, healthy ttfb
-    QoSInfo s2 = vSeg(3_000L, 2_000L, 3_500L, 60, 1_500); // drained, healthy ttfb
-    QoSInfo s3 = vSeg(5_000L, 2_000L, 4_000L, 70, 1_500); // drained, healthy ttfb
+    QoSInfo s2 = vSeg(3_000L, 2_000L, 3_500L, 60, 1_500);
+    QoSInfo s3 = vSeg(5_000L, 2_000L, 4_000L, 70, 1_500);
     QoSInfo trigger = triggerSeg(7_000L, 0);
     RebufferGroup g =
         new RebufferGroup(1, 7_000L, trigger, Arrays.asList(s1, s2, s3, trigger), null);
@@ -169,14 +171,33 @@ public class QoSDiagnoserV6Test {
   }
 
   @Test
-  public void diagnose_warmFence_majorityCdnEvidence75pct_returnsCdn() {
-    // 4 drained, 3 with TTFB outlier (75%). 3*2=6 ≥ 4 ✓
-    // supply=8000, bl 1500→1500→1500→1500→0, wall=8000, ratio=9500/8000=1.19 → sanity passes
+  public void diagnose_warmFence_drainedTtfbOutlierButBodySlow_returnsClient() {
+    // Real-world r9 pattern: ttfb high (server response slightly delayed) + body slow
+    // (post-TTFB rate << bitrate) = network bandwidth shortage, not CDN. Body-healthy
+    // veto kicks in → CLIENT.
     SessionStatistics stats = sessionStatsWarm(KEY_WIFI_MISS_FPT);
-    QoSInfo s1 = vSeg(1_000L, 2_000L, 3_000L, 200, 1_500); // drained + outlier
-    QoSInfo s2 = vSeg(3_000L, 2_000L, 3_000L, 200, 1_500); // drained + outlier
-    QoSInfo s3 = vSeg(5_000L, 2_000L, 3_000L, 200, 1_500); // drained + outlier
-    QoSInfo s4 = vSeg(7_000L, 2_000L, 3_000L, 50, 1_500); // drained, no outlier
+    // ttfb=200 (outlier > strict 100) + loadDur=4000 → transferMs=3800 → rate=505kbps
+    // → body ratio 0.505 < 0.90 unhealthy → NOT counted as CDN evidence
+    QoSInfo s1 = vSeg(1_000L, 2_000L, 4_000L, 200, 1_500);
+    QoSInfo s2 = vSeg(3_000L, 2_000L, 4_000L, 200, 1_500);
+    QoSInfo s3 = vSeg(5_000L, 2_000L, 4_000L, 200, 1_500);
+    QoSInfo trigger = triggerSeg(7_000L, 0);
+    RebufferGroup g =
+        new RebufferGroup(1, 7_000L, trigger, Arrays.asList(s1, s2, s3, trigger), null);
+    DiagnosisV6 r = QoSDiagnoserV6.diagnose(g, stats);
+    assertThat(r.cause).isEqualTo(DiagnosisV6.Cause.CLIENT_INSUFFICIENT_BANDWIDTH);
+    assertThat(r.nDrained).isEqualTo(3);
+    assertThat(r.nCdnEvidence).isEqualTo(0); // all vetoed by body-slow check
+  }
+
+  @Test
+  public void diagnose_warmFence_majorityCdnEvidence75pct_returnsCdn() {
+    // 4 drained, 3 with TTFB outlier AND body healthy (75%). 3*2=6 ≥ 4 ✓
+    SessionStatistics stats = sessionStatsWarm(KEY_WIFI_MISS_FPT);
+    QoSInfo s1 = vSeg(1_000L, 2_000L, 2_400L, 500, 1_500); // drained + outlier + healthy body
+    QoSInfo s2 = vSeg(3_000L, 2_000L, 2_400L, 500, 1_500);
+    QoSInfo s3 = vSeg(5_000L, 2_000L, 2_400L, 500, 1_500);
+    QoSInfo s4 = vSeg(7_000L, 2_000L, 3_000L, 50, 1_500); // drained, no ttfb outlier
     QoSInfo trigger = triggerSeg(9_000L, 0);
     RebufferGroup g =
         new RebufferGroup(
@@ -189,12 +210,12 @@ public class QoSDiagnoserV6Test {
 
   @Test
   public void diagnose_warmFence_minorityCdnEvidence25pct_returnsClient() {
-    // 4 drained, 1 with TTFB outlier (25%). 1*2=2 < 4
+    // 4 drained, 1 with TTFB outlier + body healthy (25%). 1*2=2 < 4 → CLIENT
     SessionStatistics stats = sessionStatsWarm(KEY_WIFI_MISS_FPT);
-    QoSInfo s1 = vSeg(1_000L, 2_000L, 3_000L, 200, 1_500); // drained + outlier
+    QoSInfo s1 = vSeg(1_000L, 2_000L, 2_400L, 500, 1_500); // drained + outlier + healthy body
     QoSInfo s2 = vSeg(3_000L, 2_000L, 3_000L, 50, 1_500); // drained, no outlier
-    QoSInfo s3 = vSeg(5_000L, 2_000L, 3_000L, 50, 1_500); // drained, no outlier
-    QoSInfo s4 = vSeg(7_000L, 2_000L, 3_000L, 50, 1_500); // drained, no outlier
+    QoSInfo s3 = vSeg(5_000L, 2_000L, 3_000L, 50, 1_500);
+    QoSInfo s4 = vSeg(7_000L, 2_000L, 3_000L, 50, 1_500);
     QoSInfo trigger = triggerSeg(9_000L, 0);
     RebufferGroup g =
         new RebufferGroup(
@@ -223,11 +244,12 @@ public class QoSDiagnoserV6Test {
   }
 
   @Test
-  public void diagnose_singleVSeg_extremelySlowAndOutlier_returnsCdn() {
-    // nDrained=1, nCdnEvidence=1. 1*2=2 ≥ 1 ✓
-    // supply=2000, bl 1500→0, delta=-1500, demand=3500, wall=3500 → ratio=1.0 → sanity ok
+  public void diagnose_singleVSeg_outlierAndBodyHealthy_returnsCdn() {
+    // CDN slow-start single-spike: high TTFB but body delivered at full rate.
+    // ttfb=600, loadDur=2400 → transferMs=1800 → rate=1067kbps → body ratio 1.07 ✓
+    // supply=2000, bl 1500→0, demand=3500, wall=3500 → ratio=1.0 → sanity ok
     SessionStatistics stats = sessionStatsWarm(KEY_WIFI_MISS_FPT);
-    QoSInfo s1 = vSeg(1_000L, 2_000L, 6_000L, 500, 1_500); // huge drain + outlier
+    QoSInfo s1 = vSeg(1_000L, 2_000L, 2_400L, 600, 1_500);
     QoSInfo trigger = triggerSeg(4_500L, 0);
     RebufferGroup g =
         new RebufferGroup(1, 4_500L, trigger, Arrays.asList(s1, trigger), null);
@@ -262,15 +284,16 @@ public class QoSDiagnoserV6Test {
   }
 
   @Test
-  public void diagnose_strictFence_extremeTtfbOutlier_stillCountedAsCdn() {
-    // Same TTFB baseline, but ttfb=400 (above K=3 upper 270) → still CDN.
+  public void diagnose_strictFence_extremeTtfbOutlier_andBodyHealthy_returnsCdn() {
+    // Same TTFB baseline, ttfb=400 (above K=3 upper 270) + short loadDur (body healthy).
+    // ttfb=400 + loadDur=2300 → transferMs=1900 → rate=1010kbps → ratio 1.01 ✓
     SessionStatistics stats = new SessionStatistics();
     int[] ttfbSamples = {50, 60, 70, 80, 90, 100, 110, 120, 130, 140};
     for (int v : ttfbSamples) stats.addTtfbSample(KEY_WIFI_MISS_FPT, v);
 
-    QoSInfo s1 = vSeg(1_000L, 2_000L, 3_000L, 400, 1_500); // extreme outlier
-    QoSInfo s2 = vSeg(3_000L, 2_000L, 3_000L, 400, 1_500);
-    QoSInfo s3 = vSeg(5_000L, 2_000L, 3_000L, 400, 1_500);
+    QoSInfo s1 = vSeg(1_000L, 2_000L, 2_300L, 400, 1_500);
+    QoSInfo s2 = vSeg(3_000L, 2_000L, 2_300L, 400, 1_500);
+    QoSInfo s3 = vSeg(5_000L, 2_000L, 2_300L, 400, 1_500);
     QoSInfo trigger = triggerSeg(7_000L, 0);
     RebufferGroup g =
         new RebufferGroup(1, 7_000L, trigger, Arrays.asList(s1, s2, s3, trigger), null);
