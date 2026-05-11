@@ -71,6 +71,15 @@ public final class QoSDiagnoserV6 {
       return DiagnosisV6.unknown("no_v_data", httpErrorCodes);
     }
 
+    // Step 1.5: sanity gate (reuse V1). Drain proxy excessRatio and Tukey TTFB
+    // checks both assume 1× playback. Filter non-1× windows (paused / sped /
+    // seeked / degenerate) so they don't yield bogus CDN vs CLIENT verdicts.
+    QoSDiagnoser.WindowMetrics metrics = QoSDiagnoser.computeWindowMetrics(group);
+    String sanityFail = QoSDiagnoser.applySanityG1ate(metrics);
+    if (sanityFail != null) {
+      return DiagnosisV6.unknown("sanity:" + sanityFail, httpErrorCodes);
+    }
+
     // Step 2: cold-start check via Tukey fence on (network, cache, cdn) key.
     QoSInfo lastV = vSegs.get(vSegs.size() - 1);
     String key = QoSDiagnoserV5.sessionKey(lastV);
