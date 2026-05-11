@@ -272,6 +272,9 @@ public final class FPlayQoSMonitor {
       log.append(" v6.ttfb=").append(v6.lastTtfbMs).append("ms");
       log.append(" v6.bl=").append(v6.lastBufferMs).append("ms");
     }
+    if (v6.nRetries > 0) {
+      log.append(" v6.retry=").append(v6.nRetries);
+    }
     if (v6.httpErrorCodes.length > 0) {
       log.append(" v6.codes=").append(java.util.Arrays.toString(v6.httpErrorCodes));
     }

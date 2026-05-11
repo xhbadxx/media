@@ -69,6 +69,14 @@ public final class DiagnosisV6 {
   public final boolean mtpCollapseDetected;
 
   /**
+   * Number of V segs in the rebuffer window that had {@code retryCount > 0} (i.e.,
+   * required ≥1 reload due to transient failures). Metadata only — does not drive
+   * classification (V6 leaves retry-decisive logic to V5 / aggregated dashboards).
+   * Displayed as "retry=N" in {@link #toDisplaySummary} when > 0.
+   */
+  public final int nRetries;
+
+  /**
    * Reason for UNKNOWN verdict: {@code "no_v_data"}, {@code "cold_start"}, or
    * {@code "no_drain"}. {@code null} for classified (CDN/CLIENT) verdicts.
    */
@@ -84,6 +92,7 @@ public final class DiagnosisV6 {
       int lastTtfbMs,
       int lastBufferMs,
       boolean mtpCollapseDetected,
+      int nRetries,
       @Nullable String unknownReason) {
     this.cause = cause;
     this.httpErrorCodes = httpErrorCodes;
@@ -94,11 +103,17 @@ public final class DiagnosisV6 {
     this.lastTtfbMs = lastTtfbMs;
     this.lastBufferMs = lastBufferMs;
     this.mtpCollapseDetected = mtpCollapseDetected;
+    this.nRetries = nRetries;
     this.unknownReason = unknownReason;
   }
 
-  /** UNKNOWN verdict (cold_start / no_v_data / no_drain). */
+  /** UNKNOWN verdict (cold_start / no_v_data / no_drain / sanity:...). */
   public static DiagnosisV6 unknown(String reason, int[] httpErrorCodes) {
+    return unknown(reason, httpErrorCodes, /* nRetries= */ 0);
+  }
+
+  /** UNKNOWN verdict with retry count metadata. */
+  public static DiagnosisV6 unknown(String reason, int[] httpErrorCodes, int nRetries) {
     return new DiagnosisV6(
         Cause.UNKNOWN,
         httpErrorCodes,
@@ -109,6 +124,7 @@ public final class DiagnosisV6 {
         /* lastTtfbMs= */ -1,
         /* lastBufferMs= */ -1,
         /* mtpCollapseDetected= */ false,
+        nRetries,
         reason);
   }
 
@@ -122,7 +138,8 @@ public final class DiagnosisV6 {
       int ttfbFenceUpperMs,
       int lastTtfbMs,
       int lastBufferMs,
-      boolean mtpCollapseDetected) {
+      boolean mtpCollapseDetected,
+      int nRetries) {
     return new DiagnosisV6(
         cause,
         httpErrorCodes,
@@ -133,10 +150,11 @@ public final class DiagnosisV6 {
         lastTtfbMs,
         lastBufferMs,
         mtpCollapseDetected,
+        nRetries,
         /* unknownReason= */ null);
   }
 
-  /** Backward-compat overload — defaults {@code mtpCollapseDetected=false}. */
+  /** Backward-compat overload — defaults {@code mtpCollapseDetected=false} and {@code nRetries=0}. */
   public static DiagnosisV6 classified(
       Cause cause,
       int[] httpErrorCodes,
@@ -148,7 +166,24 @@ public final class DiagnosisV6 {
       int lastBufferMs) {
     return classified(
         cause, httpErrorCodes, nV, nDrained, nCdnEvidence,
-        ttfbFenceUpperMs, lastTtfbMs, lastBufferMs, /* mtpCollapseDetected= */ false);
+        ttfbFenceUpperMs, lastTtfbMs, lastBufferMs,
+        /* mtpCollapseDetected= */ false, /* nRetries= */ 0);
+  }
+
+  /** Backward-compat overload — defaults {@code nRetries=0}. */
+  public static DiagnosisV6 classified(
+      Cause cause,
+      int[] httpErrorCodes,
+      int nV,
+      int nDrained,
+      int nCdnEvidence,
+      int ttfbFenceUpperMs,
+      int lastTtfbMs,
+      int lastBufferMs,
+      boolean mtpCollapseDetected) {
+    return classified(
+        cause, httpErrorCodes, nV, nDrained, nCdnEvidence,
+        ttfbFenceUpperMs, lastTtfbMs, lastBufferMs, mtpCollapseDetected, /* nRetries= */ 0);
   }
 
   /**
@@ -182,6 +217,9 @@ public final class DiagnosisV6 {
       }
       sb.append(" · fence=").append(ttfbFenceUpperMs).append("ms");
     }
+    if (nRetries > 0) {
+      sb.append(" · retry=").append(nRetries);
+    }
     if (httpErrorCodes.length > 0) {
       sb.append(" · codes=").append(java.util.Arrays.toString(httpErrorCodes));
     }
@@ -202,15 +240,18 @@ public final class DiagnosisV6 {
     if (cause != Cause.UNKNOWN) {
       sb.append("Evidence: nV=").append(nV)
           .append(" slow=").append(nDrained)
-          .append(" server-lag=").append(nCdnEvidence)
-          .append('\n');
+          .append(" server-lag=").append(nCdnEvidence);
+      if (nRetries > 0) sb.append(" retry=").append(nRetries);
+      sb.append('\n');
       sb.append("Last seg: ttfb=").append(lastTtfbMs).append("ms")
           .append(" bl=").append(lastBufferMs).append("ms")
           .append('\n');
       sb.append("fence=").append(ttfbFenceUpperMs).append("ms");
+    } else if (nRetries > 0) {
+      sb.append("retry=").append(nRetries);
     }
     if (httpErrorCodes.length > 0) {
-      if (cause != Cause.UNKNOWN) sb.append('\n');
+      if (cause != Cause.UNKNOWN || nRetries > 0) sb.append('\n');
       sb.append("HTTP codes: ").append(java.util.Arrays.toString(httpErrorCodes));
     }
     return sb.toString();

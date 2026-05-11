@@ -118,11 +118,14 @@ public final class QoSDiagnoserV6 {
 
     // Step 3: per-V evidence — count drained segs, and how many qualify as true CDN
     // evidence (= TTFB extreme outlier AND body delivery healthy AND mtp NOT collapsed).
+    // Also count retries across ALL V segs (metadata only, not classification driver).
     int nV = vSegs.size();
     int nDrained = 0;
     int nCdnEvidence = 0;
+    int nRetries = 0;
     boolean mtpCollapseDetected = false;
     for (QoSInfo s : vSegs) {
+      if (s.retryCount > 0) nRetries++;
       double excessRatio =
           (double) Math.max(0L, s.loadDurationMs - s.chunkDurationMs) / s.chunkDurationMs;
       boolean isDrained = excessRatio > SLOW_RATIO;
@@ -156,7 +159,7 @@ public final class QoSDiagnoserV6 {
 
     // Step 4: classify.
     if (nDrained == 0) {
-      return DiagnosisV6.unknown("no_drain", httpErrorCodes);
+      return DiagnosisV6.unknown("no_drain", httpErrorCodes, nRetries);
     }
     DiagnosisV6.Cause cause =
         (nCdnEvidence * CDN_MAJORITY_DENOM >= nDrained * CDN_MAJORITY_NUM)
@@ -173,7 +176,8 @@ public final class QoSDiagnoserV6 {
         strictTtfbUpper,
         lastV.ttfbMs,
         lastV.bufferedDurationMs,
-        mtpCollapseDetected);
+        mtpCollapseDetected,
+        nRetries);
   }
 
   /** Collect 4xx + 5xx HTTP status codes from any errored entry — metadata only. */

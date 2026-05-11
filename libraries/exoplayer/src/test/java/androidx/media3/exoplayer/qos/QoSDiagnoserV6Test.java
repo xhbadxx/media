@@ -328,6 +328,25 @@ public class QoSDiagnoserV6Test {
     assertThat(r.nCdnEvidence).isEqualTo(0); // all vetoed by mtp collapse
   }
 
+  // ===== Retry metadata =====
+
+  @Test
+  public void diagnose_segmentsWithRetries_nRetriesCounted_doesNotDriveCause() {
+    // 3 V segs drained + body slow (CLIENT verdict). 2 of them had retries (transient
+    // load failure → reload). nRetries counted but cause stays CLIENT (retry doesn't
+    // override the body-slow verdict).
+    SessionStatistics stats = sessionStatsWarm(KEY_WIFI_MISS_FPT);
+    QoSInfo s1 = vSegWithRetries(1_000L, 2_000L, 4_000L, 200, 1_500, /* retries= */ 1);
+    QoSInfo s2 = vSegWithRetries(3_000L, 2_000L, 4_000L, 200, 1_500, /* retries= */ 1);
+    QoSInfo s3 = vSeg(5_000L, 2_000L, 4_000L, 200, 1_500);
+    QoSInfo trigger = triggerSeg(7_000L, 0);
+    RebufferGroup g =
+        new RebufferGroup(1, 7_000L, trigger, Arrays.asList(s1, s2, s3, trigger), null);
+    DiagnosisV6 r = QoSDiagnoserV6.diagnose(g, stats);
+    assertThat(r.cause).isEqualTo(DiagnosisV6.Cause.CLIENT_INSUFFICIENT_BANDWIDTH);
+    assertThat(r.nRetries).isEqualTo(2);
+  }
+
   // ===== Helpers =====
 
   /** WIFI / cache=MISS / cdn=fpt — matches {@link #sessionStatsWarm} key. */
@@ -349,6 +368,27 @@ public class QoSDiagnoserV6Test {
         .setBytesLoaded(240_000L)
         .setBitrateKbps(1_000)
         .setMeasuredThroughputKbps(mtpKbps)
+        .setNetworkType(C.NETWORK_TYPE_WIFI)
+        .setCacheStatus("MISS")
+        .setCdnProvider("fpt")
+        .build();
+  }
+
+  /** vSeg overload with explicit retry count for retry-metadata tests. */
+  private static QoSInfo vSegWithRetries(
+      long ts, long cdurMs, long loadDurMs, int ttfbMs, int blMs, int retries) {
+    return new QoSInfo.Builder()
+        .setTimestampMs(ts)
+        .setTrackType(C.TRACK_TYPE_VIDEO)
+        .setStatus(QoSInfo.LoadStatus.COMPLETED)
+        .setChunkDurationMs(cdurMs)
+        .setLoadDurationMs(loadDurMs)
+        .setTtfbMs(ttfbMs)
+        .setBufferedDurationMs(blMs)
+        .setBytesLoaded(240_000L)
+        .setBitrateKbps(1_000)
+        .setMeasuredThroughputKbps(1_500)
+        .setRetryCount(retries)
         .setNetworkType(C.NETWORK_TYPE_WIFI)
         .setCacheStatus("MISS")
         .setCdnProvider("fpt")
