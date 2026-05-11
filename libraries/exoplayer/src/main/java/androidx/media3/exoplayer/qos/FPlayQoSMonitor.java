@@ -132,6 +132,31 @@ public final class FPlayQoSMonitor {
       };
 
   /**
+   * Feeds every COMPLETED V scored segment into {@link #sessionStats} so the V5 rolling
+   * Tukey fence baselines warm up from healthy traffic — not only from segments captured
+   * inside rebuffer windows. Without this observer, {@link QoSDiagnoserV5#diagnose} would
+   * only ever see samples that were already abnormal (the rebuffer snapshot), which both
+   * starves the fence (cold-start fallback dominates) and biases it toward elevated TTFB
+   * once it does warm. With it, the very first rebuffer in a session can already use a
+   * Tukey-derived threshold instead of the 800ms cold fallback.
+   */
+  private final QoSObserver sessionStatsObserver =
+      entries -> {
+        if (entries.isEmpty()) return;
+        QoSInfo last = entries.get(entries.size() - 1);
+        if (!QoSDiagnoserV5.isCompletedScoredSegment(last)) return;
+        String key = QoSDiagnoserV5.sessionKey(last);
+        if (last.ttfbMs >= 0) {
+          sessionStats.addTtfbSample(key, last.ttfbMs);
+        }
+        if (last.bitrateKbps > 0 && last.ttfbMs >= 0 && last.bytesLoaded > 0) {
+          long transferMs = Math.max(1L, last.loadDurationMs - last.ttfbMs);
+          int postTtfbKbps = (int) ((last.bytesLoaded * 8L) / transferMs);
+          sessionStats.addDeliveryRateSample(key, postTtfbKbps);
+        }
+      };
+
+  /**
    * Captures a {@link RebufferGroup} on every entry with {@code bs=true}, debounced
    * by {@link #REBUFFER_COOLDOWN_MS} so audio+video duplicates from the same rebuffer
    * event produce a single group. Runs on the same thread that called
@@ -306,6 +331,7 @@ public final class FPlayQoSMonitor {
     player.addAnalyticsListener(analyticsHook);
     player.addListener(playerHook);
     QoSMonitor.getInstance().addObserver(debugObserver);
+    QoSMonitor.getInstance().addObserver(sessionStatsObserver);
     QoSMonitor.getInstance().addObserver(groupCaptureObserver);
     activePlayer = player;
     activeAnalyticsHook = analyticsHook;

@@ -251,20 +251,11 @@ public final class QoSDiagnoserV5 {
             && lastSeg.measuredThroughputKbps > 0
             && lastSeg.measuredThroughputKbps < lastSeg.bitrateKbps;
 
-    // Update SessionStatistics POST-classification (avoid biasing current decision).
-    if (sessionStats != null) {
-      for (QoSInfo s : vSegments) {
-        String key = sessionKey(s);
-        if (s.ttfbMs >= 0) {
-          sessionStats.addTtfbSample(key, s.ttfbMs);
-        }
-        if (s.bitrateKbps > 0 && s.ttfbMs >= 0 && s.bytesLoaded > 0) {
-          long transferMs = Math.max(1L, s.loadDurationMs - s.ttfbMs);
-          int postTtfbKbps = (int) ((s.bytesLoaded * 8L) / transferMs);
-          sessionStats.addDeliveryRateSample(key, postTtfbKbps);
-        }
-      }
-    }
+    // diagnose() is read-only against sessionStats. The host (FPlayQoSMonitor's
+    // sessionStatsObserver) feeds every COMPLETED V scored segment into sessionStats
+    // independently — that way the rolling Tukey fence warms up from healthy traffic
+    // throughout the session, not only from V-segments captured inside rebuffer windows
+    // (which would both starve the fence and bias it toward elevated TTFB).
 
     // Step 4 — Cache-fork CDN check (AWS canonical pattern). Each branch counts evidence
     // attributable to that cache state and fires CDN_DELIVERY_SLOW on majority.
