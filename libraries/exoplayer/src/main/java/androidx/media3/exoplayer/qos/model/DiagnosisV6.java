@@ -127,10 +127,15 @@ public final class DiagnosisV6 {
    * Single-line summary for HUD / overlay / support tickets. Centralized so consumers
    * don't duplicate format logic.
    *
+   * <p>Field meanings: {@code slow} = number of V segs whose load drained the buffer
+   * ({@code excessRatio > 0.10}); {@code server-lag} = of those, how many also had TTFB
+   * outlier ({@code ttfb > tukey_upper_fence}). Cause = CDN when ≥50% slow segs are
+   * server-lag; else CLIENT.
+   *
    * <p>Examples:
    * <pre>
-   * 🔴 V6 · CDN_DELIVERY_SLOW · 3/4 drained · fence=200ms
-   * 🟠 V6 · CLIENT_INSUFFICIENT_BANDWIDTH · 0/5 drained
+   * 🔴 V6 · CDN_DELIVERY_SLOW · slow=2 server-lag=2 · fence=93ms
+   * 🟠 V6 · CLIENT_INSUFFICIENT_BANDWIDTH · slow=1 server-lag=0 · fence=150ms
    * ⚪ V6 · UNKNOWN · cold_start
    * </pre>
    */
@@ -142,10 +147,9 @@ public final class DiagnosisV6 {
         sb.append(" · ").append(unknownReason);
       }
     } else {
-      sb.append(" · ").append(nCdnEvidence).append('/').append(nDrained).append(" drained");
-      if (cause == Cause.CDN_DELIVERY_SLOW) {
-        sb.append(" · fence=").append(ttfbFenceUpperMs).append("ms");
-      }
+      sb.append(" · slow=").append(nDrained)
+          .append(" server-lag=").append(nCdnEvidence);
+      sb.append(" · fence=").append(ttfbFenceUpperMs).append("ms");
     }
     if (httpErrorCodes.length > 0) {
       sb.append(" · codes=").append(java.util.Arrays.toString(httpErrorCodes));
@@ -166,8 +170,8 @@ public final class DiagnosisV6 {
     sb.append('\n');
     if (cause != Cause.UNKNOWN) {
       sb.append("Evidence: nV=").append(nV)
-          .append(" drained=").append(nDrained)
-          .append(" cdnEv=").append(nCdnEvidence)
+          .append(" slow=").append(nDrained)
+          .append(" server-lag=").append(nCdnEvidence)
           .append('\n');
       sb.append("Last seg: ttfb=").append(lastTtfbMs).append("ms")
           .append(" bl=").append(lastBufferMs).append("ms")
