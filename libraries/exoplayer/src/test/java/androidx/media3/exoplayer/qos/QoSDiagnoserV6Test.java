@@ -45,30 +45,30 @@ public class QoSDiagnoserV6Test {
   // ===== Defensive cases =====
 
   @Test
-  public void diagnose_nullGroup_returnsUnknownNoVData() {
+  public void diagnose_nullGroup_returnsUnknownEmptyGroup() {
     DiagnosisV6 r = QoSDiagnoserV6.diagnose(null, sessionStatsWarm(KEY_WIFI_MISS_FPT));
-    assertThat(r.cause).isEqualTo(DiagnosisV6.Cause.UNKNOWN);
-    assertThat(r.unknownReason).isEqualTo("no_v_data");
+    assertThat(r.cause).isEqualTo(DiagnosisV6.Cause.INCONCLUSIVE);
+    assertThat(r.reason).isEqualTo(DiagnosisV6.Reason.EMPTY_GROUP);
   }
 
   @Test
-  public void diagnose_emptyEntries_returnsUnknownNoVData() {
+  public void diagnose_emptyEntries_returnsUnknownEmptyGroup() {
     QoSInfo trigger = triggerSeg(0L, 0);
     RebufferGroup g = new RebufferGroup(1, 0L, trigger, Arrays.asList(), null);
     DiagnosisV6 r = QoSDiagnoserV6.diagnose(g, sessionStatsWarm(KEY_WIFI_MISS_FPT));
-    assertThat(r.cause).isEqualTo(DiagnosisV6.Cause.UNKNOWN);
-    assertThat(r.unknownReason).isEqualTo("no_v_data");
+    assertThat(r.cause).isEqualTo(DiagnosisV6.Cause.INCONCLUSIVE);
+    assertThat(r.reason).isEqualTo(DiagnosisV6.Reason.EMPTY_GROUP);
   }
 
   @Test
-  public void diagnose_onlyErrorSegmentsNoCompleted_returnsUnknownNoVDataWithHttpCodes() {
+  public void diagnose_onlyErrorSegmentsNoCompleted_returnsUnknownNoCompletedVSegWithHttpCodes() {
     QoSInfo err = errorSeg(1_000L, 503);
     QoSInfo trigger = triggerSeg(2_000L, 0);
     RebufferGroup g =
         new RebufferGroup(1, 2_000L, trigger, Arrays.asList(err, trigger), null);
     DiagnosisV6 r = QoSDiagnoserV6.diagnose(g, sessionStatsWarm(KEY_WIFI_MISS_FPT));
-    assertThat(r.cause).isEqualTo(DiagnosisV6.Cause.UNKNOWN);
-    assertThat(r.unknownReason).isEqualTo("no_v_data");
+    assertThat(r.cause).isEqualTo(DiagnosisV6.Cause.INCONCLUSIVE);
+    assertThat(r.reason).isEqualTo(DiagnosisV6.Reason.NO_COMPLETED_V_SEG);
     assertThat(r.httpErrorCodes).asList().containsExactly(503);
   }
 
@@ -82,8 +82,9 @@ public class QoSDiagnoserV6Test {
     RebufferGroup g =
         new RebufferGroup(1, 1_000L, trigger, Arrays.asList(s1, trigger), null);
     DiagnosisV6 r = QoSDiagnoserV6.diagnose(g, sessionStatsWarm(KEY_WIFI_MISS_FPT));
-    assertThat(r.cause).isEqualTo(DiagnosisV6.Cause.UNKNOWN);
-    assertThat(r.unknownReason).startsWith("sanity:");
+    assertThat(r.cause).isEqualTo(DiagnosisV6.Cause.INCONCLUSIVE);
+    assertThat(r.reason).isEqualTo(DiagnosisV6.Reason.SANITY_FAIL);
+    assertThat(r.reasonDetail).isNotEmpty();
   }
 
   // ===== Cold-start =====
@@ -95,8 +96,8 @@ public class QoSDiagnoserV6Test {
     RebufferGroup g =
         new RebufferGroup(1, 4_500L, trigger, Arrays.asList(s1, trigger), null);
     DiagnosisV6 r = QoSDiagnoserV6.diagnose(g, /* sessionStats= */ null);
-    assertThat(r.cause).isEqualTo(DiagnosisV6.Cause.UNKNOWN);
-    assertThat(r.unknownReason).isEqualTo("cold_start");
+    assertThat(r.cause).isEqualTo(DiagnosisV6.Cause.INCONCLUSIVE);
+    assertThat(r.reason).isEqualTo(DiagnosisV6.Reason.COLD_START);
   }
 
   @Test
@@ -110,8 +111,28 @@ public class QoSDiagnoserV6Test {
     RebufferGroup g =
         new RebufferGroup(1, 4_500L, trigger, Arrays.asList(s1, trigger), null);
     DiagnosisV6 r = QoSDiagnoserV6.diagnose(g, stats);
-    assertThat(r.cause).isEqualTo(DiagnosisV6.Cause.UNKNOWN);
-    assertThat(r.unknownReason).isEqualTo("cold_start");
+    assertThat(r.cause).isEqualTo(DiagnosisV6.Cause.INCONCLUSIVE);
+    assertThat(r.reason).isEqualTo(DiagnosisV6.Reason.COLD_START);
+  }
+
+  // ===== Track switch =====
+
+  @Test
+  public void diagnose_initSegmentTrigger_returnsInconclusiveTrackSwitch() {
+    // Simulates a track-switch artifact: bs=true fires on an init.mp4 (chunkDurationMs=0,
+    // bytesLoaded>0) during a bitrate change, while several V segs in the window drained
+    // due to transition turbulence. Without this guard, V6 would classify CLIENT based on
+    // residual drained segs even though the real cause is the track switch itself.
+    SessionStatistics stats = sessionStatsWarm(KEY_WIFI_MISS_FPT);
+    QoSInfo s1 = vSeg(1_000L, 2_000L, 2_400L, 80, 1_500); // drained but transition noise
+    QoSInfo s2 = vSeg(3_000L, 2_000L, 2_400L, 80, 1_500);
+    QoSInfo s3 = vSeg(5_000L, 2_000L, 2_400L, 80, 1_500);
+    QoSInfo trigger = initTriggerSeg(7_000L, 0); // bl=0 passes sanity gate
+    RebufferGroup g =
+        new RebufferGroup(1, 7_000L, trigger, Arrays.asList(s1, s2, s3, trigger), null);
+    DiagnosisV6 r = QoSDiagnoserV6.diagnose(g, stats);
+    assertThat(r.cause).isEqualTo(DiagnosisV6.Cause.INCONCLUSIVE);
+    assertThat(r.reason).isEqualTo(DiagnosisV6.Reason.TRACK_SWITCH);
   }
 
   // ===== No drain =====
@@ -127,8 +148,8 @@ public class QoSDiagnoserV6Test {
     RebufferGroup g =
         new RebufferGroup(1, 7_000L, trigger, Arrays.asList(s1, s2, s3, trigger), null);
     DiagnosisV6 r = QoSDiagnoserV6.diagnose(g, stats);
-    assertThat(r.cause).isEqualTo(DiagnosisV6.Cause.UNKNOWN);
-    assertThat(r.unknownReason).isEqualTo("no_drain");
+    assertThat(r.cause).isEqualTo(DiagnosisV6.Cause.INCONCLUSIVE);
+    assertThat(r.reason).isEqualTo(DiagnosisV6.Reason.NO_DRAIN);
   }
 
   // ===== Classified =====
@@ -146,7 +167,7 @@ public class QoSDiagnoserV6Test {
     RebufferGroup g =
         new RebufferGroup(1, 7_000L, trigger, Arrays.asList(s1, s2, s3, trigger), null);
     DiagnosisV6 r = QoSDiagnoserV6.diagnose(g, stats);
-    assertThat(r.cause).isEqualTo(DiagnosisV6.Cause.CDN_DELIVERY_SLOW);
+    assertThat(r.cause).isEqualTo(DiagnosisV6.Cause.CDN);
     assertThat(r.nV).isEqualTo(3);
     assertThat(r.nDrained).isEqualTo(3);
     assertThat(r.nCdnEvidence).isEqualTo(3);
@@ -165,7 +186,7 @@ public class QoSDiagnoserV6Test {
     RebufferGroup g =
         new RebufferGroup(1, 7_000L, trigger, Arrays.asList(s1, s2, s3, trigger), null);
     DiagnosisV6 r = QoSDiagnoserV6.diagnose(g, stats);
-    assertThat(r.cause).isEqualTo(DiagnosisV6.Cause.CLIENT_INSUFFICIENT_BANDWIDTH);
+    assertThat(r.cause).isEqualTo(DiagnosisV6.Cause.CLIENT);
     assertThat(r.nDrained).isEqualTo(3);
     assertThat(r.nCdnEvidence).isEqualTo(0);
   }
@@ -185,7 +206,7 @@ public class QoSDiagnoserV6Test {
     RebufferGroup g =
         new RebufferGroup(1, 7_000L, trigger, Arrays.asList(s1, s2, s3, trigger), null);
     DiagnosisV6 r = QoSDiagnoserV6.diagnose(g, stats);
-    assertThat(r.cause).isEqualTo(DiagnosisV6.Cause.CLIENT_INSUFFICIENT_BANDWIDTH);
+    assertThat(r.cause).isEqualTo(DiagnosisV6.Cause.CLIENT);
     assertThat(r.nDrained).isEqualTo(3);
     assertThat(r.nCdnEvidence).isEqualTo(0); // all vetoed by body-slow check
   }
@@ -203,7 +224,7 @@ public class QoSDiagnoserV6Test {
         new RebufferGroup(
             1, 9_000L, trigger, Arrays.asList(s1, s2, s3, s4, trigger), null);
     DiagnosisV6 r = QoSDiagnoserV6.diagnose(g, stats);
-    assertThat(r.cause).isEqualTo(DiagnosisV6.Cause.CDN_DELIVERY_SLOW);
+    assertThat(r.cause).isEqualTo(DiagnosisV6.Cause.CDN);
     assertThat(r.nDrained).isEqualTo(4);
     assertThat(r.nCdnEvidence).isEqualTo(3);
   }
@@ -221,7 +242,7 @@ public class QoSDiagnoserV6Test {
         new RebufferGroup(
             1, 9_000L, trigger, Arrays.asList(s1, s2, s3, s4, trigger), null);
     DiagnosisV6 r = QoSDiagnoserV6.diagnose(g, stats);
-    assertThat(r.cause).isEqualTo(DiagnosisV6.Cause.CLIENT_INSUFFICIENT_BANDWIDTH);
+    assertThat(r.cause).isEqualTo(DiagnosisV6.Cause.CLIENT);
     assertThat(r.nDrained).isEqualTo(4);
     assertThat(r.nCdnEvidence).isEqualTo(1);
   }
@@ -239,7 +260,7 @@ public class QoSDiagnoserV6Test {
         new RebufferGroup(
             1, 7_000L, trigger, Arrays.asList(s1, err, s2, s3, trigger), null);
     DiagnosisV6 r = QoSDiagnoserV6.diagnose(g, stats);
-    assertThat(r.cause).isEqualTo(DiagnosisV6.Cause.CLIENT_INSUFFICIENT_BANDWIDTH);
+    assertThat(r.cause).isEqualTo(DiagnosisV6.Cause.CLIENT);
     assertThat(r.httpErrorCodes).asList().containsExactly(503);
   }
 
@@ -254,7 +275,7 @@ public class QoSDiagnoserV6Test {
     RebufferGroup g =
         new RebufferGroup(1, 4_500L, trigger, Arrays.asList(s1, trigger), null);
     DiagnosisV6 r = QoSDiagnoserV6.diagnose(g, stats);
-    assertThat(r.cause).isEqualTo(DiagnosisV6.Cause.CDN_DELIVERY_SLOW);
+    assertThat(r.cause).isEqualTo(DiagnosisV6.Cause.CDN);
     assertThat(r.nDrained).isEqualTo(1);
     assertThat(r.nCdnEvidence).isEqualTo(1);
   }
@@ -277,7 +298,7 @@ public class QoSDiagnoserV6Test {
         new RebufferGroup(1, 7_000L, trigger, Arrays.asList(s1, s2, s3, trigger), null);
     DiagnosisV6 r = QoSDiagnoserV6.diagnose(g, stats);
 
-    assertThat(r.cause).isEqualTo(DiagnosisV6.Cause.CLIENT_INSUFFICIENT_BANDWIDTH);
+    assertThat(r.cause).isEqualTo(DiagnosisV6.Cause.CLIENT);
     assertThat(r.nDrained).isEqualTo(3);
     assertThat(r.nCdnEvidence).isEqualTo(0); // marginal outliers not counted
     assertThat(r.ttfbFenceUpperMs).isEqualTo(270); // strict K=3 fence exposed
@@ -299,7 +320,7 @@ public class QoSDiagnoserV6Test {
         new RebufferGroup(1, 7_000L, trigger, Arrays.asList(s1, s2, s3, trigger), null);
     DiagnosisV6 r = QoSDiagnoserV6.diagnose(g, stats);
 
-    assertThat(r.cause).isEqualTo(DiagnosisV6.Cause.CDN_DELIVERY_SLOW);
+    assertThat(r.cause).isEqualTo(DiagnosisV6.Cause.CDN);
     assertThat(r.nCdnEvidence).isEqualTo(3);
   }
 
@@ -322,7 +343,7 @@ public class QoSDiagnoserV6Test {
         new RebufferGroup(1, 7_000L, trigger, Arrays.asList(s1, s2, s3, trigger), null);
     DiagnosisV6 r = QoSDiagnoserV6.diagnose(g, stats);
 
-    assertThat(r.cause).isEqualTo(DiagnosisV6.Cause.CLIENT_INSUFFICIENT_BANDWIDTH);
+    assertThat(r.cause).isEqualTo(DiagnosisV6.Cause.CLIENT);
     assertThat(r.mtpCollapseDetected).isTrue();
     assertThat(r.nDrained).isEqualTo(3);
     assertThat(r.nCdnEvidence).isEqualTo(0); // all vetoed by mtp collapse
@@ -343,7 +364,7 @@ public class QoSDiagnoserV6Test {
     RebufferGroup g =
         new RebufferGroup(1, 7_000L, trigger, Arrays.asList(s1, s2, s3, trigger), null);
     DiagnosisV6 r = QoSDiagnoserV6.diagnose(g, stats);
-    assertThat(r.cause).isEqualTo(DiagnosisV6.Cause.CLIENT_INSUFFICIENT_BANDWIDTH);
+    assertThat(r.cause).isEqualTo(DiagnosisV6.Cause.CLIENT);
     assertThat(r.nRetries).isEqualTo(2);
   }
 
@@ -411,6 +432,24 @@ public class QoSDiagnoserV6Test {
         .setTrackType(C.TRACK_TYPE_VIDEO)
         .setBufferedDurationMs(blMs)
         .setBufferStarvationFlag(true)
+        .build();
+  }
+
+  /**
+   * Init-segment trigger: completed load with bytes but no chunkDurationMs (i.e., a
+   * non-media load like init.mp4 or index.mpd that happened to fire bs=true during a
+   * track switch or manifest refresh).
+   */
+  private static QoSInfo initTriggerSeg(long ts, int blMs) {
+    return new QoSInfo.Builder()
+        .setTimestampMs(ts)
+        .setTrackType(C.TRACK_TYPE_VIDEO)
+        .setBufferedDurationMs(blMs)
+        .setStatus(QoSInfo.LoadStatus.COMPLETED)
+        .setBytesLoaded(1_700L) // ~1.7KB init.mp4
+        .setLoadDurationMs(46L)
+        .setBufferStarvationFlag(true)
+        // chunkDurationMs intentionally not set (0) — distinguishes from media segments
         .build();
   }
 

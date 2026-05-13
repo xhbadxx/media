@@ -27,9 +27,10 @@ public class DiagnosisV6Test {
 
   @Test
   public void unknown_factory_attachesReasonAndDefaults() {
-    DiagnosisV6 r = DiagnosisV6.unknown("cold_start", new int[0]);
-    assertThat(r.cause).isEqualTo(DiagnosisV6.Cause.UNKNOWN);
-    assertThat(r.unknownReason).isEqualTo("cold_start");
+    DiagnosisV6 r = DiagnosisV6.inconclusive(DiagnosisV6.Reason.COLD_START, new int[0]);
+    assertThat(r.cause).isEqualTo(DiagnosisV6.Cause.INCONCLUSIVE);
+    assertThat(r.reason).isEqualTo(DiagnosisV6.Reason.COLD_START);
+    assertThat(r.reasonDetail).isNull();
     assertThat(r.httpErrorCodes).isEmpty();
     // Numeric debug fields stay sentinel for UNKNOWN paths.
     assertThat(r.nV).isEqualTo(0);
@@ -42,17 +43,27 @@ public class DiagnosisV6Test {
 
   @Test
   public void unknown_factory_attachesHttpCodes() {
-    DiagnosisV6 r = DiagnosisV6.unknown("no_v_data", new int[] {404, 503});
-    assertThat(r.cause).isEqualTo(DiagnosisV6.Cause.UNKNOWN);
-    assertThat(r.unknownReason).isEqualTo("no_v_data");
+    DiagnosisV6 r =
+        DiagnosisV6.inconclusive(DiagnosisV6.Reason.EMPTY_GROUP, new int[] {404, 503});
+    assertThat(r.cause).isEqualTo(DiagnosisV6.Cause.INCONCLUSIVE);
+    assertThat(r.reason).isEqualTo(DiagnosisV6.Reason.EMPTY_GROUP);
     assertThat(r.httpErrorCodes).asList().containsExactly(404, 503).inOrder();
+  }
+
+  @Test
+  public void unknown_factory_withDetail_carriesSanitySubReason() {
+    DiagnosisV6 r =
+        DiagnosisV6.inconclusive(
+            DiagnosisV6.Reason.SANITY_FAIL, "demand_low", new int[0], /* nRetries= */ 0);
+    assertThat(r.reason).isEqualTo(DiagnosisV6.Reason.SANITY_FAIL);
+    assertThat(r.reasonDetail).isEqualTo("demand_low");
   }
 
   @Test
   public void classified_factory_setsAllFields() {
     DiagnosisV6 r =
         DiagnosisV6.classified(
-            DiagnosisV6.Cause.CDN_DELIVERY_SLOW,
+            DiagnosisV6.Cause.CDN,
             new int[] {503},
             /* nV= */ 13,
             /* nDrained= */ 4,
@@ -60,7 +71,7 @@ public class DiagnosisV6Test {
             /* ttfbFenceUpperMs= */ 200,
             /* lastTtfbMs= */ 417,
             /* lastBufferMs= */ 4200);
-    assertThat(r.cause).isEqualTo(DiagnosisV6.Cause.CDN_DELIVERY_SLOW);
+    assertThat(r.cause).isEqualTo(DiagnosisV6.Cause.CDN);
     assertThat(r.httpErrorCodes).asList().containsExactly(503);
     assertThat(r.nV).isEqualTo(13);
     assertThat(r.nDrained).isEqualTo(4);
@@ -68,15 +79,16 @@ public class DiagnosisV6Test {
     assertThat(r.ttfbFenceUpperMs).isEqualTo(200);
     assertThat(r.lastTtfbMs).isEqualTo(417);
     assertThat(r.lastBufferMs).isEqualTo(4200);
-    // Classified verdicts have no unknownReason.
-    assertThat(r.unknownReason).isNull();
+    // Classified verdicts have no reason.
+    assertThat(r.reason).isNull();
+    assertThat(r.reasonDetail).isNull();
   }
 
   @Test
   public void classified_factory_emptyHttpCodesAllowed() {
     DiagnosisV6 r =
         DiagnosisV6.classified(
-            DiagnosisV6.Cause.CLIENT_INSUFFICIENT_BANDWIDTH,
+            DiagnosisV6.Cause.CLIENT,
             new int[0],
             5,
             5,
@@ -84,9 +96,9 @@ public class DiagnosisV6Test {
             150,
             80,
             1500);
-    assertThat(r.cause).isEqualTo(DiagnosisV6.Cause.CLIENT_INSUFFICIENT_BANDWIDTH);
+    assertThat(r.cause).isEqualTo(DiagnosisV6.Cause.CLIENT);
     assertThat(r.httpErrorCodes).isEmpty();
-    assertThat(r.unknownReason).isNull();
+    assertThat(r.reason).isNull();
   }
 
   @Test
@@ -96,9 +108,9 @@ public class DiagnosisV6Test {
     assertThat(all)
         .asList()
         .containsExactly(
-            DiagnosisV6.Cause.CDN_DELIVERY_SLOW,
-            DiagnosisV6.Cause.CLIENT_INSUFFICIENT_BANDWIDTH,
-            DiagnosisV6.Cause.UNKNOWN);
+            DiagnosisV6.Cause.CDN,
+            DiagnosisV6.Cause.CLIENT,
+            DiagnosisV6.Cause.INCONCLUSIVE);
   }
 
   // ===== UI helpers — toDisplaySummary =====
@@ -107,10 +119,10 @@ public class DiagnosisV6Test {
   public void toDisplaySummary_cdn_includesCauseSlowServerLagFence() {
     DiagnosisV6 r =
         DiagnosisV6.classified(
-            DiagnosisV6.Cause.CDN_DELIVERY_SLOW, new int[0], 13, 4, 3, 200, 417, 4_200);
+            DiagnosisV6.Cause.CDN, new int[0], 13, 4, 3, 200, 417, 4_200);
     String s = r.toDisplaySummary();
     assertThat(s).contains("V6");
-    assertThat(s).contains("CDN_DELIVERY_SLOW");
+    assertThat(s).contains("CDN");
     assertThat(s).contains("slow=4");
     assertThat(s).contains("server-lag=3");
     assertThat(s).contains("fence=200ms");
@@ -120,7 +132,7 @@ public class DiagnosisV6Test {
   public void toDisplaySummary_client_includesSlowAndZeroServerLag() {
     DiagnosisV6 r =
         DiagnosisV6.classified(
-            DiagnosisV6.Cause.CLIENT_INSUFFICIENT_BANDWIDTH,
+            DiagnosisV6.Cause.CLIENT,
             new int[0],
             5,
             5,
@@ -129,7 +141,7 @@ public class DiagnosisV6Test {
             80,
             1_500);
     String s = r.toDisplaySummary();
-    assertThat(s).contains("CLIENT_INSUFFICIENT_BANDWIDTH");
+    assertThat(s).contains("CLIENT");
     assertThat(s).contains("slow=5");
     assertThat(s).contains("server-lag=0");
     assertThat(s).contains("fence=150ms");
@@ -137,17 +149,27 @@ public class DiagnosisV6Test {
 
   @Test
   public void toDisplaySummary_unknown_includesReason() {
-    DiagnosisV6 r = DiagnosisV6.unknown("cold_start", new int[0]);
+    DiagnosisV6 r = DiagnosisV6.inconclusive(DiagnosisV6.Reason.COLD_START, new int[0]);
     String s = r.toDisplaySummary();
-    assertThat(s).contains("UNKNOWN");
+    assertThat(s).contains("INCONCLUSIVE");
     assertThat(s).contains("cold_start");
+  }
+
+  @Test
+  public void toDisplaySummary_unknownSanityWithDetail_appendsCodeColonDetail() {
+    DiagnosisV6 r =
+        DiagnosisV6.inconclusive(
+            DiagnosisV6.Reason.SANITY_FAIL, "demand_low", new int[0], /* nRetries= */ 0);
+    String s = r.toDisplaySummary();
+    assertThat(s).contains("INCONCLUSIVE");
+    assertThat(s).contains("sanity_fail:demand_low");
   }
 
   @Test
   public void toDisplaySummary_withHttpErrorCodes_appendsCodesAfterCore() {
     DiagnosisV6 r =
         DiagnosisV6.classified(
-            DiagnosisV6.Cause.CLIENT_INSUFFICIENT_BANDWIDTH,
+            DiagnosisV6.Cause.CLIENT,
             new int[] {503, 404},
             5,
             5,
@@ -166,23 +188,24 @@ public class DiagnosisV6Test {
   public void toFullDetail_classified_multilineWithAllFields() {
     DiagnosisV6 r =
         DiagnosisV6.classified(
-            DiagnosisV6.Cause.CDN_DELIVERY_SLOW, new int[0], 13, 4, 3, 200, 417, 4_200);
+            DiagnosisV6.Cause.CDN, new int[0], 13, 4, 3, 200, 417, 4_200);
     String s = r.toFullDetail();
     assertThat(s).contains("\n");
-    assertThat(s).contains("CDN_DELIVERY_SLOW");
-    assertThat(s).contains("nV=13");
-    assertThat(s).contains("slow=4");
-    assertThat(s).contains("server-lag=3");
-    assertThat(s).contains("fence=200ms");
-    assertThat(s).contains("ttfb=417ms");
-    assertThat(s).contains("bl=4200ms");
+    assertThat(s).contains("CDN");
+    assertThat(s).contains("V segments: 13");
+    assertThat(s).contains("Buffer drained: 4");
+    assertThat(s).contains("Server-lag (CDN): 3");
+    assertThat(s).contains("TTFB fence: 200ms");
+    assertThat(s).contains("Last TTFB: 417ms");
+    assertThat(s).contains("Last buffer: 4200ms");
+    assertThat(s).contains("Network drop");
   }
 
   @Test
   public void toFullDetail_unknown_includesReasonNoEvidenceFields() {
-    DiagnosisV6 r = DiagnosisV6.unknown("no_drain", new int[] {503});
+    DiagnosisV6 r = DiagnosisV6.inconclusive(DiagnosisV6.Reason.NO_DRAIN, new int[] {503});
     String s = r.toFullDetail();
-    assertThat(s).contains("UNKNOWN");
+    assertThat(s).contains("INCONCLUSIVE");
     assertThat(s).contains("no_drain");
     assertThat(s).contains("503");
   }

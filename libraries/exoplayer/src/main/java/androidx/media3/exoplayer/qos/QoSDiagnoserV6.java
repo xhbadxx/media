@@ -72,7 +72,7 @@ public final class QoSDiagnoserV6 {
   public static DiagnosisV6 diagnose(
       @Nullable RebufferGroup group, @Nullable SessionStatistics sessionStats) {
     if (group == null || group.entries == null || group.entries.isEmpty()) {
-      return DiagnosisV6.unknown("no_v_data", new int[0]);
+      return DiagnosisV6.inconclusive(DiagnosisV6.Reason.EMPTY_GROUP, new int[0]);
     }
 
     int[] httpErrorCodes = collectHttpErrorCodes(group.entries);
@@ -85,7 +85,19 @@ public final class QoSDiagnoserV6 {
       }
     }
     if (vSegs.isEmpty()) {
-      return DiagnosisV6.unknown("no_v_data", httpErrorCodes);
+      return DiagnosisV6.inconclusive(DiagnosisV6.Reason.NO_COMPLETED_V_SEG, httpErrorCodes);
+    }
+
+    // Step 1.4: track-switch / manifest-refresh guard. When bs=true fires on a non-media
+    // load (init.mp4 of a new track variant or an index.mpd refresh), the trigger has
+    // {@code chunkDurationMs <= 0} despite carrying bytes. This MUST run before the
+    // sanity gate because a bitrate switch typically pauses playback briefly, producing
+    // a {@code demand_ratio} outside [0.7, 1.3] — which would otherwise mis-classify the
+    // event as SANITY_FAIL when the underlying cause is the track switch itself.
+    if (group.trigger != null
+        && group.trigger.chunkDurationMs <= 0L
+        && group.trigger.bytesLoaded > 0L) {
+      return DiagnosisV6.inconclusive(DiagnosisV6.Reason.TRACK_SWITCH, httpErrorCodes);
     }
 
     // Step 1.5: sanity gate (reuse V1). Drain proxy excessRatio and Tukey TTFB
@@ -94,7 +106,8 @@ public final class QoSDiagnoserV6 {
     QoSDiagnoser.WindowMetrics metrics = QoSDiagnoser.computeWindowMetrics(group);
     String sanityFail = QoSDiagnoser.applySanityG1ate(metrics);
     if (sanityFail != null) {
-      return DiagnosisV6.unknown("sanity:" + sanityFail, httpErrorCodes);
+      return DiagnosisV6.inconclusive(
+          DiagnosisV6.Reason.SANITY_FAIL, sanityFail, httpErrorCodes, /* nRetries= */ 0);
     }
 
     // Step 2: cold-start check via Tukey fence on (network, cache, cdn) key.
@@ -103,7 +116,7 @@ public final class QoSDiagnoserV6 {
     SessionStatistics.TukeyFence ttfbFence =
         sessionStats == null ? null : sessionStats.getTtfbFence(key);
     if (ttfbFence == null) {
-      return DiagnosisV6.unknown("cold_start", httpErrorCodes);
+      return DiagnosisV6.inconclusive(DiagnosisV6.Reason.COLD_START, httpErrorCodes);
     }
     // mtp fence is optional — null when mtp samples haven't warmed yet. In that case
     // the mtp-collapse guard is silently skipped (degrades to V6 without guard).
@@ -159,12 +172,12 @@ public final class QoSDiagnoserV6 {
 
     // Step 4: classify.
     if (nDrained == 0) {
-      return DiagnosisV6.unknown("no_drain", httpErrorCodes, nRetries);
+      return DiagnosisV6.inconclusive(DiagnosisV6.Reason.NO_DRAIN, httpErrorCodes, nRetries);
     }
     DiagnosisV6.Cause cause =
         (nCdnEvidence * CDN_MAJORITY_DENOM >= nDrained * CDN_MAJORITY_NUM)
-            ? DiagnosisV6.Cause.CDN_DELIVERY_SLOW
-            : DiagnosisV6.Cause.CLIENT_INSUFFICIENT_BANDWIDTH;
+            ? DiagnosisV6.Cause.CDN
+            : DiagnosisV6.Cause.CLIENT;
 
     // Step 5: attach metadata.
     return DiagnosisV6.classified(

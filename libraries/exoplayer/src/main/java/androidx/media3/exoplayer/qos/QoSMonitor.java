@@ -20,9 +20,13 @@ import androidx.media3.common.util.UnstableApi;
 import androidx.media3.exoplayer.qos.model.QoSInfo;
 import androidx.media3.exoplayer.qos.observer.QoSObserver;
 import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * Singleton collector. Thread-safe via {@link CopyOnWriteArrayList} for both the entry buffer
@@ -64,6 +68,15 @@ public final class QoSMonitor {
 
   private final AtomicBoolean pendingBsVideo = new AtomicBoolean(false);
 
+  /**
+   * Session-wide HTTP error histogram, keyed by status code (4xx/5xx). Populated by
+   * {@link #recordHttpError(int)} from {@code QoSAnalyticsHook.onLoadError} on every
+   * failed load (including retry-cancelled attempts), independent of the rebuffer
+   * entry buffer. Cleared on {@link #clear()} so each new playback session starts
+   * fresh.
+   */
+  private final Map<Integer, AtomicInteger> httpErrorHistogram = new ConcurrentHashMap<>();
+
   private QoSMonitor() {}
 
   public void recordInfo(QoSInfo info) {
@@ -77,13 +90,33 @@ public final class QoSMonitor {
     }
   }
 
-  /** Resets the entry buffer. Observers are notified with an empty snapshot. */
+  /** Resets the entry buffer + HTTP error histogram. Observers notified with empty snapshot. */
   public void clear() {
     entries.clear();
+    httpErrorHistogram.clear();
     List<QoSInfo> snapshot = Collections.unmodifiableList(entries);
     for (QoSObserver o : observers) {
       o.onEntriesChanged(snapshot);
     }
+  }
+
+  /** Increments the session-wide HTTP error tally for {@code statusCode}. */
+  public void recordHttpError(int statusCode) {
+    httpErrorHistogram
+        .computeIfAbsent(statusCode, k -> new AtomicInteger(0))
+        .incrementAndGet();
+  }
+
+  /**
+   * Returns an immutable snapshot of the HTTP error histogram (status code → count).
+   * Ordered by status code ascending for stable display ordering.
+   */
+  public Map<Integer, Integer> getHttpErrorHistogram() {
+    LinkedHashMap<Integer, Integer> out = new LinkedHashMap<>();
+    httpErrorHistogram.entrySet().stream()
+        .sorted(Map.Entry.comparingByKey())
+        .forEach(e -> out.put(e.getKey(), e.getValue().get()));
+    return Collections.unmodifiableMap(out);
   }
 
   public List<QoSInfo> getEntries() {

@@ -30,11 +30,55 @@ import androidx.media3.common.util.UnstableApi;
 @UnstableApi
 public final class DiagnosisV6 {
 
-  /** Three mutually exclusive verdicts. */
+  /**
+   * Three mutually exclusive verdicts.
+   *
+   * <p>Names deliberately broad: V6 attributes only at top-level (server-side vs client-side
+   * vs couldn't decide). Sub-causes (e.g. CDN cache-miss vs origin overload, or CLIENT
+   * network vs ABR) are NOT distinguished — evidence fields on the diagnosis convey detail.
+   */
   public enum Cause {
-    CDN_DELIVERY_SLOW,
-    CLIENT_INSUFFICIENT_BANDWIDTH,
-    UNKNOWN
+    /** Server-side responsible (TTFB outlier + body healthy + mtp not collapsed). */
+    CDN,
+    /** Not-CDN drained the buffer (network/ABR/throttle — V6 does not differentiate). */
+    CLIENT,
+    /** Couldn't reach a CDN/CLIENT verdict. See {@link Reason} for why. */
+    INCONCLUSIVE
+  }
+
+  /**
+   * Why an INCONCLUSIVE verdict was emitted. {@code null} when {@link #cause} is CDN/CLIENT.
+   * The {@code code} suffix is the stable string used in logs and on-screen displays.
+   */
+  public enum Reason {
+    /** Defensive input guard: rebuffer group is null or has no entries at all. */
+    EMPTY_GROUP("empty_group"),
+    /** Had entries but none qualified as completed V scored segments after filter. */
+    NO_COMPLETED_V_SEG("no_completed_v_seg"),
+    /** Sanity gate vetoed the window (non-1× playback rate). Detail carries sub-reason. */
+    SANITY_FAIL("sanity_fail"),
+    /** TTFB baseline not yet warm (< {@code MIN_SAMPLES_FOR_TUKEY} samples for the key). */
+    COLD_START("cold_start"),
+    /**
+     * Trigger was a non-media segment (init.mp4 / index.mpd / manifest refresh) — bs=true
+     * fired during a track switch or manifest refresh, not a real playback stall. Classifies
+     * as INCONCLUSIVE so the verdict doesn't pin the cause on CDN or CLIENT when the
+     * "rebuffer" is a transient transition artifact.
+     */
+    TRACK_SWITCH("track_switch"),
+    /** All V segments were healthy ({@code excessRatio ≤ SLOW_RATIO}); nothing to classify. */
+    NO_DRAIN("no_drain");
+
+    public final String code;
+
+    Reason(String code) {
+      this.code = code;
+    }
+
+    @Override
+    public String toString() {
+      return code;
+    }
   }
 
   public final Cause cause;
@@ -42,7 +86,7 @@ public final class DiagnosisV6 {
   /** 4xx + 5xx HTTP status codes seen in window. Metadata only — never drives classification. */
   public final int[] httpErrorCodes;
 
-  /** Number of completed V scored segments examined. {@code 0} for UNKNOWN(no_v_data). */
+  /** Number of completed V scored segments examined. {@code 0} for all INCONCLUSIVE paths. */
   public final int nV;
 
   /** Number of V segs where {@code excessRatio > SLOW_RATIO} (buffer drained during load). */
@@ -51,13 +95,13 @@ public final class DiagnosisV6 {
   /** Number of drained V segs that ALSO had {@code ttfb > tukey_upper_fence}. */
   public final int nCdnEvidence;
 
-  /** Resolved Tukey upper fence (ms) used for TTFB outlier check. {@code -1} for UNKNOWN. */
+  /** Resolved Tukey upper fence (ms) used for TTFB outlier check. {@code -1} for INCONCLUSIVE. */
   public final int ttfbFenceUpperMs;
 
-  /** Last V seg TTFB (ms). {@code -1} for UNKNOWN. */
+  /** Last V seg TTFB (ms). {@code -1} for INCONCLUSIVE. */
   public final int lastTtfbMs;
 
-  /** Last V seg buffered duration (ms). {@code -1} for UNKNOWN. */
+  /** Last V seg buffered duration (ms). {@code -1} for INCONCLUSIVE. */
   public final int lastBufferMs;
 
   /**
@@ -76,11 +120,14 @@ public final class DiagnosisV6 {
    */
   public final int nRetries;
 
+  /** Why an INCONCLUSIVE verdict was emitted. {@code null} for classified (CDN/CLIENT) verdicts. */
+  @Nullable public final Reason reason;
+
   /**
-   * Reason for UNKNOWN verdict: {@code "no_v_data"}, {@code "cold_start"}, or
-   * {@code "no_drain"}. {@code null} for classified (CDN/CLIENT) verdicts.
+   * Sub-reason detail (e.g. which sanity-gate condition failed). Only populated when
+   * {@link #reason} is {@link Reason#SANITY_FAIL}; {@code null} otherwise.
    */
-  @Nullable public final String unknownReason;
+  @Nullable public final String reasonDetail;
 
   private DiagnosisV6(
       Cause cause,
@@ -93,7 +140,8 @@ public final class DiagnosisV6 {
       int lastBufferMs,
       boolean mtpCollapseDetected,
       int nRetries,
-      @Nullable String unknownReason) {
+      @Nullable Reason reason,
+      @Nullable String reasonDetail) {
     this.cause = cause;
     this.httpErrorCodes = httpErrorCodes;
     this.nV = nV;
@@ -104,18 +152,25 @@ public final class DiagnosisV6 {
     this.lastBufferMs = lastBufferMs;
     this.mtpCollapseDetected = mtpCollapseDetected;
     this.nRetries = nRetries;
-    this.unknownReason = unknownReason;
+    this.reason = reason;
+    this.reasonDetail = reasonDetail;
   }
 
-  /** UNKNOWN verdict (cold_start / no_v_data / no_drain / sanity:...). */
-  public static DiagnosisV6 unknown(String reason, int[] httpErrorCodes) {
-    return unknown(reason, httpErrorCodes, /* nRetries= */ 0);
+  /** INCONCLUSIVE verdict (cold_start / empty_group / no_completed_v_seg / no_drain). */
+  public static DiagnosisV6 inconclusive(Reason reason, int[] httpErrorCodes) {
+    return inconclusive(reason, /* detail= */ null, httpErrorCodes, /* nRetries= */ 0);
   }
 
-  /** UNKNOWN verdict with retry count metadata. */
-  public static DiagnosisV6 unknown(String reason, int[] httpErrorCodes, int nRetries) {
+  /** INCONCLUSIVE verdict with retry count metadata. */
+  public static DiagnosisV6 inconclusive(Reason reason, int[] httpErrorCodes, int nRetries) {
+    return inconclusive(reason, /* detail= */ null, httpErrorCodes, nRetries);
+  }
+
+  /** INCONCLUSIVE verdict with sub-reason detail (used for {@link Reason#SANITY_FAIL}). */
+  public static DiagnosisV6 inconclusive(
+      Reason reason, @Nullable String detail, int[] httpErrorCodes, int nRetries) {
     return new DiagnosisV6(
-        Cause.UNKNOWN,
+        Cause.INCONCLUSIVE,
         httpErrorCodes,
         /* nV= */ 0,
         /* nDrained= */ 0,
@@ -125,10 +180,11 @@ public final class DiagnosisV6 {
         /* lastBufferMs= */ -1,
         /* mtpCollapseDetected= */ false,
         nRetries,
-        reason);
+        reason,
+        detail);
   }
 
-  /** CDN_DELIVERY_SLOW or CLIENT_INSUFFICIENT_BANDWIDTH verdict with full evidence fields. */
+  /** CDN or CLIENT verdict with full evidence fields. */
   public static DiagnosisV6 classified(
       Cause cause,
       int[] httpErrorCodes,
@@ -151,7 +207,8 @@ public final class DiagnosisV6 {
         lastBufferMs,
         mtpCollapseDetected,
         nRetries,
-        /* unknownReason= */ null);
+        /* reason= */ null,
+        /* reasonDetail= */ null);
   }
 
   /** Backward-compat overload — defaults {@code mtpCollapseDetected=false} and {@code nRetries=0}. */
@@ -197,17 +254,21 @@ public final class DiagnosisV6 {
    *
    * <p>Examples:
    * <pre>
-   * 🔴 V6 · CDN_DELIVERY_SLOW · slow=2 server-lag=2 · fence=93ms
-   * 🟠 V6 · CLIENT_INSUFFICIENT_BANDWIDTH · slow=1 server-lag=0 · fence=150ms
-   * ⚪ V6 · UNKNOWN · cold_start
+   * 🔴 V6 · CDN · slow=2 server-lag=2 · fence=93ms
+   * 🟠 V6 · CLIENT · slow=1 server-lag=0 · fence=150ms
+   * ⚪ V6 · INCONCLUSIVE · cold_start
+   * ⚪ V6 · INCONCLUSIVE · sanity_fail:demand_low
    * </pre>
    */
   public String toDisplaySummary() {
     StringBuilder sb = new StringBuilder(128);
     sb.append(severityIcon()).append(" V6 · ").append(cause.name());
-    if (cause == Cause.UNKNOWN) {
-      if (unknownReason != null) {
-        sb.append(" · ").append(unknownReason);
+    if (cause == Cause.INCONCLUSIVE) {
+      if (reason != null) {
+        sb.append(" · ").append(reason.code);
+        if (reasonDetail != null) {
+          sb.append(":").append(reasonDetail);
+        }
       }
     } else {
       sb.append(" · slow=").append(nDrained)
@@ -233,37 +294,37 @@ public final class DiagnosisV6 {
   public String toFullDetail() {
     StringBuilder sb = new StringBuilder(256);
     sb.append("Cause: ").append(cause.name());
-    if (cause == Cause.UNKNOWN && unknownReason != null) {
-      sb.append(" · ").append(unknownReason);
+    if (cause == Cause.INCONCLUSIVE && reason != null) {
+      sb.append(" · ").append(reason.code);
+      if (reasonDetail != null) {
+        sb.append(":").append(reasonDetail);
+      }
     }
-    sb.append('\n');
-    if (cause != Cause.UNKNOWN) {
-      sb.append("Evidence: nV=").append(nV)
-          .append(" slow=").append(nDrained)
-          .append(" server-lag=").append(nCdnEvidence);
-      if (nRetries > 0) sb.append(" retry=").append(nRetries);
-      sb.append('\n');
-      sb.append("Last seg: ttfb=").append(lastTtfbMs).append("ms")
-          .append(" bl=").append(lastBufferMs).append("ms")
-          .append('\n');
-      sb.append("fence=").append(ttfbFenceUpperMs).append("ms");
-    } else if (nRetries > 0) {
-      sb.append("retry=").append(nRetries);
+    if (cause != Cause.INCONCLUSIVE) {
+      sb.append('\n').append("V segments: ").append(nV);
+      sb.append('\n').append("Buffer drained: ").append(nDrained);
+      sb.append('\n').append("Server-lag (CDN): ").append(nCdnEvidence);
+      sb.append('\n').append("TTFB fence: ").append(ttfbFenceUpperMs).append("ms");
+      sb.append('\n').append("Last TTFB: ").append(lastTtfbMs).append("ms");
+      sb.append('\n').append("Last buffer: ").append(lastBufferMs).append("ms");
+      sb.append('\n').append("Network drop: ").append(mtpCollapseDetected ? "yes" : "no");
+    }
+    if (nRetries > 0) {
+      sb.append('\n').append("Retries: ").append(nRetries);
     }
     if (httpErrorCodes.length > 0) {
-      if (cause != Cause.UNKNOWN || nRetries > 0) sb.append('\n');
-      sb.append("HTTP codes: ").append(java.util.Arrays.toString(httpErrorCodes));
+      sb.append('\n').append("HTTP codes: ").append(java.util.Arrays.toString(httpErrorCodes));
     }
     return sb.toString();
   }
 
   private String severityIcon() {
     switch (cause) {
-      case CDN_DELIVERY_SLOW:
+      case CDN:
         return "🔴";
-      case CLIENT_INSUFFICIENT_BANDWIDTH:
+      case CLIENT:
         return "🟠";
-      case UNKNOWN:
+      case INCONCLUSIVE:
       default:
         return "⚪";
     }

@@ -166,14 +166,21 @@ public final class QoSAnalyticsHook implements AnalyticsListener {
       MediaLoadData mediaLoadData,
       IOException error,
       boolean wasCanceled) {
+    int httpCode = -1;
+    if (error instanceof HttpDataSource.InvalidResponseCodeException) {
+      httpCode = ((HttpDataSource.InvalidResponseCodeException) error).responseCode;
+    }
+    // Always tally HTTP 4xx/5xx into the session histogram, even on wasCanceled=true.
+    // ExoPlayer's retry mechanism dispatches the failed attempt as wasCanceled=true
+    // before starting the retry — recording into the histogram (not into rebuffer
+    // entries) gives full visibility into CDN errors without polluting V6 evidence.
+    if (httpCode >= 400 && httpCode <= 599) {
+      QoSMonitor.getInstance().recordHttpError(httpCode);
+    }
     if (wasCanceled) {
       startSnapshots.remove(loadEventInfo.loadTaskId);
       discardTtfb(loadEventInfo);
       return;
-    }
-    int httpCode = -1;
-    if (error instanceof HttpDataSource.InvalidResponseCodeException) {
-      httpCode = ((HttpDataSource.InvalidResponseCodeException) error).responseCode;
     }
     QoSInfo info = buildBaseInfo(loadEventInfo, mediaLoadData)
         .setStatus(QoSInfo.LoadStatus.ERROR)

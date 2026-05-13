@@ -259,8 +259,15 @@ public final class FPlayQoSMonitor {
           .append('/').append(v5.cohortCdnHostname);
     }
     log.append(" | v6.cause=").append(v6.cause);
-    if (v6.cause == DiagnosisV6.Cause.UNKNOWN) {
-      log.append(" v6.reason=\"").append(v6.unknownReason).append('"');
+    if (v6.cause == DiagnosisV6.Cause.INCONCLUSIVE) {
+      log.append(" v6.reason=\"");
+      if (v6.reason != null) {
+        log.append(v6.reason.code);
+        if (v6.reasonDetail != null) {
+          log.append(':').append(v6.reasonDetail);
+        }
+      }
+      log.append('"');
     } else {
       log.append(" v6.nV=").append(v6.nV);
       log.append(" v6.slow=").append(v6.nDrained);
