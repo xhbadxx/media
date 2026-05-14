@@ -99,6 +99,124 @@ public class QoSDiagnoserV7Test {
     assertThat(d.reason).isEqualTo(DiagnosisV7.Reason.TRACK_SWITCH);
   }
 
+  // ===== Cold-start =====
+
+  @Test
+  public void diagnose_nullSessionStats_returnsInconclusiveColdStart() {
+    QoSInfo s1 = vSeg(1_000L, 2_000L, 1_900L, 80, 1_500);
+    QoSInfo trigger = triggerSeg(4_500L, 0);
+    RebufferGroup g =
+        new RebufferGroup(1, 4_500L, trigger, Arrays.asList(s1, trigger), null);
+    DiagnosisV7 d = QoSDiagnoserV7.diagnose(g, /* sessionStats= */ null);
+    assertThat(d.cause).isEqualTo(DiagnosisV7.Cause.INCONCLUSIVE);
+    assertThat(d.reason).isEqualTo(DiagnosisV7.Reason.COLD_START);
+  }
+
+  @Test
+  public void diagnose_lessThanMinSamples_returnsInconclusiveColdStart() {
+    SessionStatistics stats = new SessionStatistics();
+    for (int i = 0; i < 5; i++) {
+      stats.addTtfbSample(KEY_WIFI_MISS_FPT, 100);
+    }
+    QoSInfo s1 = vSeg(1_000L, 2_000L, 1_900L, 80, 1_500);
+    QoSInfo trigger = triggerSeg(4_500L, 0);
+    RebufferGroup g =
+        new RebufferGroup(1, 4_500L, trigger, Arrays.asList(s1, trigger), null);
+    DiagnosisV7 d = QoSDiagnoserV7.diagnose(g, stats);
+    assertThat(d.cause).isEqualTo(DiagnosisV7.Cause.INCONCLUSIVE);
+    assertThat(d.reason).isEqualTo(DiagnosisV7.Reason.COLD_START);
+  }
+
+  // ===== No drain =====
+
+  @Test
+  public void diagnose_warmFenceZeroDrained_returnsInconclusiveNoDrain() {
+    SessionStatistics stats = sessionStatsWarmFull(KEY_WIFI_MISS_FPT);
+    QoSInfo s1 = vSeg(1_000L, 2_000L, 1_900L, 80, 1_500);
+    QoSInfo s2 = vSeg(3_000L, 2_000L, 1_950L, 90, 1_500);
+    QoSInfo s3 = vSeg(5_000L, 2_000L, 2_050L, 95, 1_500);
+    QoSInfo trigger = triggerSeg(7_000L, 0);
+    RebufferGroup g =
+        new RebufferGroup(1, 7_000L, trigger, Arrays.asList(s1, s2, s3, trigger), null);
+    DiagnosisV7 d = QoSDiagnoserV7.diagnose(g, stats);
+    assertThat(d.cause).isEqualTo(DiagnosisV7.Cause.INCONCLUSIVE);
+    assertThat(d.reason).isEqualTo(DiagnosisV7.Reason.NO_DRAIN);
+  }
+
+  // ===== V-side classification (V6 parity, no audio yet) =====
+
+  @Test
+  public void diagnose_vOnly_allDrainedAllTtfbOutlier_returnsCdn() {
+    // V CDN slow-start: ttfb=500 (> strict K=3 fence = 100) + body healthy (rate ~1010kbps).
+    SessionStatistics stats = sessionStatsWarmFull(KEY_WIFI_MISS_FPT);
+    QoSInfo s1 = vSeg(1_000L, 2_000L, 2_400L, 500, 1_500);
+    QoSInfo s2 = vSeg(3_000L, 2_000L, 2_400L, 500, 1_500);
+    QoSInfo s3 = vSeg(5_000L, 2_000L, 2_400L, 500, 1_500);
+    QoSInfo trigger = triggerSeg(7_000L, 0);
+    RebufferGroup g =
+        new RebufferGroup(1, 7_000L, trigger, Arrays.asList(s1, s2, s3, trigger), null);
+    DiagnosisV7 d = QoSDiagnoserV7.diagnose(g, stats);
+    assertThat(d.cause).isEqualTo(DiagnosisV7.Cause.CDN);
+    assertThat(d.nV).isEqualTo(3);
+    assertThat(d.nVDrained).isEqualTo(3);
+    assertThat(d.nVCdnEvidence).isEqualTo(3);
+    assertThat(d.nADrained).isEqualTo(0);
+    assertThat(d.nACdnEvidence).isEqualTo(0);
+    assertThat(d.ttfbFenceUpperVMs).isEqualTo(100);
+    assertThat(d.lastTtfbMs).isEqualTo(500);
+    assertThat(d.lastBufferMs).isEqualTo(1_500);
+  }
+
+  @Test
+  public void diagnose_vOnly_drainedNoTtfbOutlier_returnsClient() {
+    SessionStatistics stats = sessionStatsWarmFull(KEY_WIFI_MISS_FPT);
+    QoSInfo s1 = vSeg(1_000L, 2_000L, 3_000L, 50, 1_500);
+    QoSInfo s2 = vSeg(3_000L, 2_000L, 3_500L, 60, 1_500);
+    QoSInfo s3 = vSeg(5_000L, 2_000L, 4_000L, 70, 1_500);
+    QoSInfo trigger = triggerSeg(7_000L, 0);
+    RebufferGroup g =
+        new RebufferGroup(1, 7_000L, trigger, Arrays.asList(s1, s2, s3, trigger), null);
+    DiagnosisV7 d = QoSDiagnoserV7.diagnose(g, stats);
+    assertThat(d.cause).isEqualTo(DiagnosisV7.Cause.CLIENT);
+    assertThat(d.nVDrained).isEqualTo(3);
+    assertThat(d.nVCdnEvidence).isEqualTo(0);
+  }
+
+  @Test
+  public void diagnose_vOnly_mtpCollapsed_vetoesCdnEvidence_forcesClient() {
+    SessionStatistics stats = new SessionStatistics();
+    for (int i = 0; i < 10; i++) stats.addTtfbSample(KEY_WIFI_MISS_FPT, 100);
+    int[] mtpSamples = {
+        40_000, 42_000, 44_000, 46_000, 48_000, 50_000, 52_000, 54_000, 56_000, 58_000};
+    for (int v : mtpSamples) stats.addMtpSample(KEY_WIFI_MISS_FPT, v);
+
+    QoSInfo s1 = vSegWithMtp(1_000L, 2_000L, 3_000L, 400, 1_500, 10_000);
+    QoSInfo s2 = vSegWithMtp(3_000L, 2_000L, 3_000L, 400, 1_500, 10_000);
+    QoSInfo s3 = vSegWithMtp(5_000L, 2_000L, 3_000L, 400, 1_500, 10_000);
+    QoSInfo trigger = triggerSeg(7_000L, 0);
+    RebufferGroup g =
+        new RebufferGroup(1, 7_000L, trigger, Arrays.asList(s1, s2, s3, trigger), null);
+    DiagnosisV7 d = QoSDiagnoserV7.diagnose(g, stats);
+    assertThat(d.cause).isEqualTo(DiagnosisV7.Cause.CLIENT);
+    assertThat(d.mtpCollapseDetected).isTrue();
+    assertThat(d.nVDrained).isEqualTo(3);
+    assertThat(d.nVCdnEvidence).isEqualTo(0);
+  }
+
+  @Test
+  public void diagnose_vOnly_segmentsWithRetries_nRetriesCounted() {
+    SessionStatistics stats = sessionStatsWarmFull(KEY_WIFI_MISS_FPT);
+    QoSInfo s1 = vSegWithRetries(1_000L, 2_000L, 4_000L, 200, 1_500, /* retries= */ 1);
+    QoSInfo s2 = vSegWithRetries(3_000L, 2_000L, 4_000L, 200, 1_500, /* retries= */ 1);
+    QoSInfo s3 = vSeg(5_000L, 2_000L, 4_000L, 200, 1_500);
+    QoSInfo trigger = triggerSeg(7_000L, 0);
+    RebufferGroup g =
+        new RebufferGroup(1, 7_000L, trigger, Arrays.asList(s1, s2, s3, trigger), null);
+    DiagnosisV7 d = QoSDiagnoserV7.diagnose(g, stats);
+    assertThat(d.cause).isEqualTo(DiagnosisV7.Cause.CLIENT);
+    assertThat(d.nRetries).isEqualTo(2);
+  }
+
   // ===== Sanity gate =====
 
   @Test

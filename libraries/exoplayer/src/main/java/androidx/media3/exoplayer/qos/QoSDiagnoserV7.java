@@ -103,8 +103,86 @@ public final class QoSDiagnoserV7 {
           DiagnosisV7.Reason.SANITY_FAIL, sanityFail, httpErrorCodes, /* nRetries= */ 0);
     }
 
-    // PLACEHOLDER: cold-start + per-V + per-A + merge in Task A2b/A2c.
-    return DiagnosisV7.inconclusive(DiagnosisV7.Reason.COLD_START, httpErrorCodes);
+    // Step 2: cold-start check via Tukey fence on V key.
+    QoSInfo lastV = vSegs.get(vSegs.size() - 1);
+    String vKey = QoSDiagnoserV5.sessionKey(lastV);
+    SessionStatistics.TukeyFence ttfbFence =
+        sessionStats == null ? null : sessionStats.getTtfbFence(vKey);
+    if (ttfbFence == null) {
+      return DiagnosisV7.inconclusive(DiagnosisV7.Reason.COLD_START, httpErrorCodes);
+    }
+    SessionStatistics.TukeyFence mtpFence = sessionStats.getMtpFence(vKey);
+
+    int strictTtfbUpperV =
+        ttfbFence.q3 + (int) Math.round(TTFB_STRICT_TUKEY_K * ttfbFence.iqr);
+
+    // Step 3: per-V evidence.
+    int nV = vSegs.size();
+    int nVDrained = 0;
+    int nVCdnEvidence = 0;
+    int nRetries = 0;
+    boolean mtpCollapseDetected = false;
+    for (QoSInfo s : vSegs) {
+      if (s.retryCount > 0) nRetries++;
+      double excessRatio =
+          (double) Math.max(0L, s.loadDurationMs - s.chunkDurationMs) / s.chunkDurationMs;
+      boolean isDrained = excessRatio > SLOW_RATIO;
+      if (!isDrained) continue;
+      nVDrained++;
+      boolean isTtfbExtreme = s.ttfbMs > strictTtfbUpperV;
+      boolean isMtpCollapsed =
+          mtpFence != null
+              && s.measuredThroughputKbps > 0
+              && s.measuredThroughputKbps < mtpFence.lowerFence;
+      if (isMtpCollapsed) mtpCollapseDetected = true;
+      boolean isBodyHealthy = false;
+      if (s.bitrateKbps > 0
+          && s.ttfbMs >= 0
+          && s.bytesLoaded > 0
+          && s.loadDurationMs > s.ttfbMs) {
+        long transferMs = s.loadDurationMs - s.ttfbMs;
+        double postTtfbKbps = (s.bytesLoaded * 8.0) / transferMs;
+        isBodyHealthy = postTtfbKbps >= s.bitrateKbps * BODY_HEALTHY_RATIO;
+      }
+      if (isTtfbExtreme && !isMtpCollapsed && isBodyHealthy) {
+        nVCdnEvidence++;
+      }
+    }
+
+    // Step 3.5 PLACEHOLDER — audio loop in Task A2c.
+    int nA = aSegs.size();
+    int nADrained = 0;
+    int nACdnEvidence = 0;
+    int strictTtfbUpperA = -1;
+
+    // Step 4: classify on combined V+A counts.
+    int nDrainedTotal = nVDrained + nADrained;
+    int nCdnEvTotal = nVCdnEvidence + nACdnEvidence;
+    if (nDrainedTotal == 0) {
+      return DiagnosisV7.inconclusive(
+          DiagnosisV7.Reason.NO_DRAIN, httpErrorCodes, nRetries);
+    }
+    DiagnosisV7.Cause cause =
+        (nCdnEvTotal * CDN_MAJORITY_DENOM >= nDrainedTotal * CDN_MAJORITY_NUM)
+            ? DiagnosisV7.Cause.CDN
+            : DiagnosisV7.Cause.CLIENT;
+
+    // Step 5: attach metadata.
+    return DiagnosisV7.classified(
+        cause,
+        httpErrorCodes,
+        nV,
+        nA,
+        nVDrained,
+        nADrained,
+        nVCdnEvidence,
+        nACdnEvidence,
+        strictTtfbUpperV,
+        strictTtfbUpperA,
+        lastV.ttfbMs,
+        lastV.bufferedDurationMs,
+        mtpCollapseDetected,
+        nRetries);
   }
 
   /** Collect 4xx + 5xx HTTP status codes from any errored entry — metadata only. */
