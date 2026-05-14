@@ -231,6 +231,143 @@ public class QoSDiagnoserV7Test {
     assertThat(d.reasonDetail).isNotEmpty();
   }
 
+  // ===== Audio classification (A2c) =====
+
+  @Test
+  public void diagnose_audioFenceColdStart_skipsAudioEvidence_vDrives() {
+    // V fence warm but audio fence absent → A-side silently skipped, V drives verdict.
+    SessionStatistics stats = sessionStatsWarmV(KEY_WIFI_MISS_FPT); // V only
+    // V CDN: 3 drained + ttfbExtreme + body healthy.
+    QoSInfo s1 = vSeg(1_000L, 2_000L, 2_400L, 500, 1_500);
+    QoSInfo s2 = vSeg(3_000L, 2_000L, 2_400L, 500, 1_500);
+    QoSInfo s3 = vSeg(5_000L, 2_000L, 2_400L, 500, 1_500);
+    // 1 audio drained — should NOT be counted because audioFence is null.
+    QoSInfo a1 = aSeg(6_000L, 1_800L, 2_400L, 300);
+    QoSInfo trigger = triggerSeg(7_000L, 0);
+    RebufferGroup g =
+        new RebufferGroup(
+            1, 7_000L, trigger, Arrays.asList(s1, s2, s3, a1, trigger), null);
+    DiagnosisV7 d = QoSDiagnoserV7.diagnose(g, stats);
+    assertThat(d.cause).isEqualTo(DiagnosisV7.Cause.CDN);
+    assertThat(d.nVDrained).isEqualTo(3);
+    assertThat(d.nVCdnEvidence).isEqualTo(3);
+    assertThat(d.nADrained).isEqualTo(0); // audioFence null → A skipped
+    assertThat(d.nACdnEvidence).isEqualTo(0);
+    assertThat(d.ttfbFenceUpperAMs).isEqualTo(-1);
+  }
+
+  @Test
+  public void diagnose_vAndACdn_audioCorroborates_strongerCdn() {
+    // V 3 CDN + A 2 CDN → nDrained=5, nCdnEv=5, gate pass → CDN.
+    SessionStatistics stats = sessionStatsWarmFull(KEY_WIFI_MISS_FPT);
+    QoSInfo s1 = vSeg(1_000L, 2_000L, 2_400L, 500, 1_500);
+    QoSInfo s2 = vSeg(3_000L, 2_000L, 2_400L, 500, 1_500);
+    QoSInfo s3 = vSeg(5_000L, 2_000L, 2_400L, 500, 1_500);
+    // Audio drained + ttfb=300 (>50 strict) + body healthy (transferMs=1700 →
+    // 230400/1700 ≈ 135.5kbps ≥ 115.2 (= 128 × 0.90)).
+    QoSInfo a1 = aSeg(2_000L, 1_800L, 2_000L, 300);
+    QoSInfo a2 = aSeg(4_000L, 1_800L, 2_000L, 300);
+    QoSInfo trigger = triggerSeg(7_000L, 0);
+    RebufferGroup g =
+        new RebufferGroup(
+            1, 7_000L, trigger, Arrays.asList(s1, s2, s3, a1, a2, trigger), null);
+    DiagnosisV7 d = QoSDiagnoserV7.diagnose(g, stats);
+    assertThat(d.cause).isEqualTo(DiagnosisV7.Cause.CDN);
+    assertThat(d.nVDrained).isEqualTo(3);
+    assertThat(d.nVCdnEvidence).isEqualTo(3);
+    assertThat(d.nADrained).isEqualTo(2);
+    assertThat(d.nACdnEvidence).isEqualTo(2);
+    assertThat(d.nDrainedTotal()).isEqualTo(5);
+    assertThat(d.nCdnEvidenceTotal()).isEqualTo(5);
+  }
+
+  @Test
+  public void diagnose_vCdnAudioBodySlow_dropsBelowGate_returnsClient() {
+    // V 4 CDN + A 5 drained but body slow (postKbps ≈ 49 < 115.2 → not healthy).
+    // nDrained=9, nCdnEv=4 (V only), 4×2=8 < 9 → CLIENT.
+    SessionStatistics stats = sessionStatsWarmFull(KEY_WIFI_MISS_FPT);
+    QoSInfo s1 = vSeg(1_000L, 2_000L, 2_400L, 500, 1_500);
+    QoSInfo s2 = vSeg(3_000L, 2_000L, 2_400L, 500, 1_500);
+    QoSInfo s3 = vSeg(5_000L, 2_000L, 2_400L, 500, 1_500);
+    QoSInfo s4 = vSeg(7_000L, 2_000L, 2_400L, 500, 1_500);
+    // Audio loadDur=5000 → drained (excess=1.78); transferMs=4700, postKbps=49 < 115.
+    QoSInfo a1 = aSeg(2_000L, 1_800L, 5_000L, 300);
+    QoSInfo a2 = aSeg(4_000L, 1_800L, 5_000L, 300);
+    QoSInfo a3 = aSeg(6_000L, 1_800L, 5_000L, 300);
+    QoSInfo a4 = aSeg(8_000L, 1_800L, 5_000L, 300);
+    QoSInfo a5 = aSeg(9_000L, 1_800L, 5_000L, 300);
+    QoSInfo trigger = triggerSeg(11_000L, 0);
+    RebufferGroup g =
+        new RebufferGroup(
+            1,
+            11_000L,
+            trigger,
+            Arrays.asList(s1, s2, s3, s4, a1, a2, a3, a4, a5, trigger),
+            null);
+    DiagnosisV7 d = QoSDiagnoserV7.diagnose(g, stats);
+    assertThat(d.cause).isEqualTo(DiagnosisV7.Cause.CLIENT);
+    assertThat(d.nDrainedTotal()).isEqualTo(9);
+    assertThat(d.nCdnEvidenceTotal()).isEqualTo(4);
+    assertThat(d.nVDrained).isEqualTo(4);
+    assertThat(d.nADrained).isEqualTo(5);
+    assertThat(d.nACdnEvidence).isEqualTo(0); // all vetoed by body-slow
+  }
+
+  @Test
+  public void diagnose_audioOnlyDrained_vHealthy_returnsClient() {
+    // V healthy (no drain) + A 3 drained body-slow → nDrained=3, nCdnEv=0 → CLIENT.
+    SessionStatistics stats = sessionStatsWarmFull(KEY_WIFI_MISS_FPT);
+    QoSInfo s1 = vSeg(1_000L, 2_000L, 1_900L, 80, 1_500);
+    QoSInfo s2 = vSeg(3_000L, 2_000L, 1_950L, 90, 1_500);
+    QoSInfo s3 = vSeg(5_000L, 2_000L, 2_050L, 95, 1_500); // excess=0.025 not drained
+    QoSInfo a1 = aSeg(2_000L, 1_800L, 5_000L, 300);
+    QoSInfo a2 = aSeg(4_000L, 1_800L, 5_000L, 300);
+    QoSInfo a3 = aSeg(6_000L, 1_800L, 5_000L, 300);
+    QoSInfo trigger = triggerSeg(7_000L, 0);
+    RebufferGroup g =
+        new RebufferGroup(
+            1, 7_000L, trigger, Arrays.asList(s1, s2, s3, a1, a2, a3, trigger), null);
+    DiagnosisV7 d = QoSDiagnoserV7.diagnose(g, stats);
+    assertThat(d.cause).isEqualTo(DiagnosisV7.Cause.CLIENT);
+    assertThat(d.nVDrained).isEqualTo(0);
+    assertThat(d.nADrained).isEqualTo(3);
+    assertThat(d.nACdnEvidence).isEqualTo(0);
+  }
+
+  @Test
+  public void diagnose_audioFenceExposed_strictTtfbUpperA_setOnClassified() {
+    SessionStatistics stats = sessionStatsWarmFull(KEY_WIFI_MISS_FPT);
+    QoSInfo s1 = vSeg(1_000L, 2_000L, 2_400L, 500, 1_500);
+    QoSInfo s2 = vSeg(3_000L, 2_000L, 2_400L, 500, 1_500);
+    QoSInfo s3 = vSeg(5_000L, 2_000L, 2_400L, 500, 1_500);
+    QoSInfo a1 = aSeg(2_000L, 1_800L, 2_000L, 300);
+    QoSInfo trigger = triggerSeg(7_000L, 0);
+    RebufferGroup g =
+        new RebufferGroup(
+            1, 7_000L, trigger, Arrays.asList(s1, s2, s3, a1, trigger), null);
+    DiagnosisV7 d = QoSDiagnoserV7.diagnose(g, stats);
+    // Strict K=3 on audioFence with all samples=50 → Q1=Q3=50, IQR=0 → upper=50.
+    assertThat(d.ttfbFenceUpperAMs).isEqualTo(50);
+    assertThat(d.ttfbFenceUpperVMs).isEqualTo(100);
+  }
+
+  @Test
+  public void diagnose_audioNoDrain_vNoDrain_returnsNoDrain() {
+    SessionStatistics stats = sessionStatsWarmFull(KEY_WIFI_MISS_FPT);
+    QoSInfo s1 = vSeg(1_000L, 2_000L, 1_900L, 80, 1_500);
+    QoSInfo s2 = vSeg(3_000L, 2_000L, 1_950L, 90, 1_500);
+    QoSInfo s3 = vSeg(5_000L, 2_000L, 2_050L, 95, 1_500);
+    QoSInfo a1 = aSeg(2_000L, 1_800L, 1_800L, 40);
+    QoSInfo a2 = aSeg(4_000L, 1_800L, 1_850L, 45);
+    QoSInfo trigger = triggerSeg(7_000L, 0);
+    RebufferGroup g =
+        new RebufferGroup(
+            1, 7_000L, trigger, Arrays.asList(s1, s2, s3, a1, a2, trigger), null);
+    DiagnosisV7 d = QoSDiagnoserV7.diagnose(g, stats);
+    assertThat(d.cause).isEqualTo(DiagnosisV7.Cause.INCONCLUSIVE);
+    assertThat(d.reason).isEqualTo(DiagnosisV7.Reason.NO_DRAIN);
+  }
+
   // ===== Helpers (shared with A2b/A2c tests) =====
 
   /** Video seg: WIFI / MISS / fpt CDN, cdur=2000, bytesLoaded=240KB, bitrate=1000kbps. */

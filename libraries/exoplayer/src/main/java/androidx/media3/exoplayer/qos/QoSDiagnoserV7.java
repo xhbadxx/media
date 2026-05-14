@@ -149,11 +149,38 @@ public final class QoSDiagnoserV7 {
       }
     }
 
-    // Step 3.5 PLACEHOLDER — audio loop in Task A2c.
+    // Step 3.5: per-A evidence. Audio fence cold-start → A side silently skipped
+    // (V drives verdict). No mtp guard on audio side (mtp = V-side ABR measurement).
     int nA = aSegs.size();
     int nADrained = 0;
     int nACdnEvidence = 0;
     int strictTtfbUpperA = -1;
+    SessionStatistics.TukeyFence audioTtfbFence =
+        aSegs.isEmpty() ? null : sessionStats.getAudioTtfbFence(vKey);
+    if (audioTtfbFence != null) {
+      strictTtfbUpperA =
+          audioTtfbFence.q3 + (int) Math.round(TTFB_STRICT_TUKEY_K * audioTtfbFence.iqr);
+      for (QoSInfo s : aSegs) {
+        double excessRatio =
+            (double) Math.max(0L, s.loadDurationMs - s.chunkDurationMs) / s.chunkDurationMs;
+        boolean isDrained = excessRatio > SLOW_RATIO;
+        if (!isDrained) continue;
+        nADrained++;
+        boolean isTtfbExtreme = s.ttfbMs > strictTtfbUpperA;
+        boolean isBodyHealthy = false;
+        if (s.bitrateKbps > 0
+            && s.ttfbMs >= 0
+            && s.bytesLoaded > 0
+            && s.loadDurationMs > s.ttfbMs) {
+          long transferMs = s.loadDurationMs - s.ttfbMs;
+          double postTtfbKbps = (s.bytesLoaded * 8.0) / transferMs;
+          isBodyHealthy = postTtfbKbps >= s.bitrateKbps * BODY_HEALTHY_RATIO;
+        }
+        if (isTtfbExtreme && isBodyHealthy) {
+          nACdnEvidence++;
+        }
+      }
+    }
 
     // Step 4: classify on combined V+A counts.
     int nDrainedTotal = nVDrained + nADrained;
