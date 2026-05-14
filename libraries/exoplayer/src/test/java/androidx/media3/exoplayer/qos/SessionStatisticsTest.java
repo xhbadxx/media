@@ -93,4 +93,57 @@ public class SessionStatisticsTest {
     // lower = Q1 - 1.5 * IQR = 850 - 375 = 475
     assertThat(f.lowerFence).isEqualTo(475);
   }
+
+  // ===== V7 audio fence tests =====
+
+  @Test
+  public void addAudioTtfb_storesAndComputesFence() {
+    SessionStatistics s = new SessionStatistics();
+    int[] samples = {90, 100, 100, 110, 140, 160, 175, 200, 200, 225};
+    for (int v : samples) {
+      s.addAudioTtfbSample("WIFI_MISS_fpt", v);
+    }
+    TukeyFence f = s.getAudioTtfbFence("WIFI_MISS_fpt");
+    assertThat(f).isNotNull();
+    assertThat(f.q1).isEqualTo(100);
+    assertThat(f.q3).isEqualTo(200);
+    assertThat(f.iqr).isEqualTo(100);
+    assertThat(f.upperFence).isEqualTo(350); // 200 + 1.5 * 100
+  }
+
+  @Test
+  public void addAudioDeliveryRate_storesAndComputesFence() {
+    SessionStatistics s = new SessionStatistics();
+    int[] samples = {180, 200, 200, 210, 220, 230, 240, 250, 250, 260};
+    for (int v : samples) {
+      s.addAudioDeliveryRateSample("WIFI_MISS_fpt", v);
+    }
+    TukeyFence f = s.getAudioDeliveryRateFence("WIFI_MISS_fpt");
+    assertThat(f).isNotNull();
+    assertThat(f.q1).isEqualTo(200);
+    assertThat(f.q3).isEqualTo(250);
+    assertThat(f.iqr).isEqualTo(50);
+    // lower = max(0, 200 - 75) = 125
+    assertThat(f.lowerFence).isEqualTo(125);
+  }
+
+  @Test
+  public void audioMap_isolatedFromVideoMap() {
+    SessionStatistics s = new SessionStatistics();
+    // Fill audio with high TTFBs.
+    for (int i = 0; i < 12; i++) {
+      s.addAudioTtfbSample("WIFI_MISS_fpt", 1000 + i);
+    }
+    // V map should be untouched.
+    assertThat(s.getTtfbFence("WIFI_MISS_fpt")).isNull();
+    // Now fill V with low TTFBs.
+    for (int i = 0; i < 12; i++) {
+      s.addTtfbSample("WIFI_MISS_fpt", 100 + i);
+    }
+    // Both fences should exist with different values.
+    assertThat(s.getTtfbFence("WIFI_MISS_fpt")).isNotNull();
+    assertThat(s.getAudioTtfbFence("WIFI_MISS_fpt")).isNotNull();
+    assertThat(s.getAudioTtfbFence("WIFI_MISS_fpt").q1)
+        .isGreaterThan(s.getTtfbFence("WIFI_MISS_fpt").q3);
+  }
 }

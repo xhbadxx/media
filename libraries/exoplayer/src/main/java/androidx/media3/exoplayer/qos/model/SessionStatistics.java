@@ -50,6 +50,8 @@ public final class SessionStatistics {
   private final Map<String, Deque<Integer>> ttfbByKey = new HashMap<>();
   private final Map<String, Deque<Integer>> deliveryRateByKey = new HashMap<>();
   private final Map<String, Deque<Integer>> mtpByKey = new HashMap<>();
+  private final Map<String, Deque<Integer>> audioTtfbByKey = new HashMap<>();
+  private final Map<String, Deque<Integer>> audioDeliveryRateByKey = new HashMap<>();
 
   /** Add a TTFB sample (ms) for the given key. Auto-evicts oldest when over capacity. */
   public void addTtfbSample(String key, int ttfbMs) {
@@ -64,6 +66,16 @@ public final class SessionStatistics {
   /** Add an ABR-measured throughput (mtp) sample (kbps). Used for V6 mtp-collapse guard. */
   public void addMtpSample(String key, int kbps) {
     addSample(mtpByKey, key, kbps);
+  }
+
+  /** Add an audio TTFB sample (ms) for the given key. Used by V7 audio fence. */
+  public void addAudioTtfbSample(String key, int ttfbMs) {
+    addSample(audioTtfbByKey, key, ttfbMs);
+  }
+
+  /** Add an audio post-TTFB delivery-rate sample (kbps). Used by V7 audio fence. */
+  public void addAudioDeliveryRateSample(String key, int kbps) {
+    addSample(audioDeliveryRateByKey, key, kbps);
   }
 
   /** Returns Tukey fence over current TTFB samples, or {@code null} if &lt; min samples. */
@@ -82,6 +94,18 @@ public final class SessionStatistics {
   @Nullable
   public TukeyFence getMtpFence(String key) {
     return computeFence(mtpByKey.get(key));
+  }
+
+  /** Returns Tukey fence over current audio TTFB samples, or {@code null} if &lt; min. */
+  @Nullable
+  public TukeyFence getAudioTtfbFence(String key) {
+    return computeFence(audioTtfbByKey.get(key));
+  }
+
+  /** Returns Tukey fence over current audio delivery-rate samples, or {@code null} if &lt; min. */
+  @Nullable
+  public TukeyFence getAudioDeliveryRateFence(String key) {
+    return computeFence(audioDeliveryRateByKey.get(key));
   }
 
   private static void addSample(Map<String, Deque<Integer>> map, String key, int value) {
