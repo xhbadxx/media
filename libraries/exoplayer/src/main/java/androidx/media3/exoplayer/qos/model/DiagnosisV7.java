@@ -193,6 +193,101 @@ public final class DiagnosisV7 {
         detail);
   }
 
+  /**
+   * Single-line summary for HUD / overlay / support tickets. Centralized so consumers
+   * don't duplicate format logic.
+   *
+   * <p>Field meanings: {@code vSlow}/{@code aSlow} = V/A drained counts;
+   * {@code vSvrLag}/{@code aSvrLag} = V/A CDN-evidence counts; gate fires CDN when
+   * {@code (vSvrLag + aSvrLag) × 2 ≥ (vSlow + aSlow)}.
+   *
+   * <p>Examples:
+   * <pre>
+   * 🔴 V7 · CDN · vSlow=3 aSlow=2 vSvrLag=3 aSvrLag=2 · fenceV=500ms fenceA=200ms
+   * 🟠 V7 · CLIENT · vSlow=4 aSlow=0 vSvrLag=0 aSvrLag=0 · fenceV=100ms fenceA=-1ms
+   * ⚪ V7 · INCONCLUSIVE · cold_start
+   * </pre>
+   */
+  public String toDisplaySummary() {
+    StringBuilder sb = new StringBuilder(160);
+    sb.append(severityIcon()).append(" V7 · ").append(cause.name());
+    if (cause == Cause.INCONCLUSIVE) {
+      if (reason != null) {
+        sb.append(" · ").append(reason.code);
+        if (reasonDetail != null) {
+          sb.append(":").append(reasonDetail);
+        }
+      }
+    } else {
+      sb.append(" · vSlow=").append(nVDrained)
+          .append(" aSlow=").append(nADrained)
+          .append(" vSvrLag=").append(nVCdnEvidence)
+          .append(" aSvrLag=").append(nACdnEvidence);
+      if (mtpCollapseDetected) {
+        sb.append(" (mtp-collapsed)");
+      }
+      sb.append(" · fenceV=").append(ttfbFenceUpperVMs).append("ms");
+      sb.append(" fenceA=").append(ttfbFenceUpperAMs).append("ms");
+    }
+    if (nRetries > 0) {
+      sb.append(" · retry=").append(nRetries);
+    }
+    if (httpErrorCodes.length > 0) {
+      sb.append(" · codes=").append(java.util.Arrays.toString(httpErrorCodes));
+    }
+    return sb.toString();
+  }
+
+  /**
+   * Multi-line full breakdown for expanded UI / debug HUD / support tickets. Each
+   * evidence section on its own line. Audio-side rows omitted when fence A is cold
+   * (i.e., {@code ttfbFenceUpperAMs == -1}).
+   */
+  public String toFullDetail() {
+    StringBuilder sb = new StringBuilder(320);
+    sb.append("Cause: ").append(cause.name());
+    if (cause == Cause.INCONCLUSIVE && reason != null) {
+      sb.append(" · ").append(reason.code);
+      if (reasonDetail != null) {
+        sb.append(":").append(reasonDetail);
+      }
+    }
+    if (cause != Cause.INCONCLUSIVE) {
+      sb.append('\n').append("V segments: ").append(nV);
+      sb.append('\n').append("A segments: ").append(nA);
+      sb.append('\n').append("V drained: ").append(nVDrained);
+      sb.append('\n').append("A drained: ").append(nADrained);
+      sb.append('\n').append("V server-lag (CDN): ").append(nVCdnEvidence);
+      sb.append('\n').append("A server-lag (CDN): ").append(nACdnEvidence);
+      sb.append('\n').append("TTFB fence V: ").append(ttfbFenceUpperVMs).append("ms");
+      if (ttfbFenceUpperAMs >= 0) {
+        sb.append('\n').append("TTFB fence A: ").append(ttfbFenceUpperAMs).append("ms");
+      }
+      sb.append('\n').append("Last V TTFB: ").append(lastTtfbMs).append("ms");
+      sb.append('\n').append("Last V buffer: ").append(lastBufferMs).append("ms");
+      sb.append('\n').append("Network drop: ").append(mtpCollapseDetected ? "yes" : "no");
+    }
+    if (nRetries > 0) {
+      sb.append('\n').append("Retries: ").append(nRetries);
+    }
+    if (httpErrorCodes.length > 0) {
+      sb.append('\n').append("HTTP codes: ").append(java.util.Arrays.toString(httpErrorCodes));
+    }
+    return sb.toString();
+  }
+
+  private String severityIcon() {
+    switch (cause) {
+      case CDN:
+        return "🔴";
+      case CLIENT:
+        return "🟠";
+      case INCONCLUSIVE:
+      default:
+        return "⚪";
+    }
+  }
+
   /** CDN or CLIENT verdict with full V+A evidence fields. */
   public static DiagnosisV7 classified(
       Cause cause,

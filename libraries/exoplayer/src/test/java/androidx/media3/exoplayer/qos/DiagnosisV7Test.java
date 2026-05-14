@@ -127,4 +127,67 @@ public class DiagnosisV7Test {
   public void cause_enum_hasThreeValues() {
     assertThat(DiagnosisV7.Cause.values()).hasLength(3);
   }
+
+  // ===== Display helpers =====
+
+  @Test
+  public void toDisplaySummary_cdn_includesIconAndVABreakdown() {
+    DiagnosisV7 d =
+        DiagnosisV7.classified(
+            DiagnosisV7.Cause.CDN, new int[] {503},
+            4, 3, 3, 2, 3, 2, 500, 200, 800, 1500, false, 1);
+    String s = d.toDisplaySummary();
+    assertThat(s).contains("V7");
+    assertThat(s).contains("CDN");
+    assertThat(s).contains("vSlow=3");
+    assertThat(s).contains("aSlow=2");
+    assertThat(s).contains("vSvrLag=3");
+    assertThat(s).contains("aSvrLag=2");
+    assertThat(s).contains("fenceV=500ms");
+    assertThat(s).contains("fenceA=200ms");
+    assertThat(s).contains("retry=1");
+    assertThat(s).contains("503");
+  }
+
+  @Test
+  public void toDisplaySummary_inconclusive_showsReasonAndDetail() {
+    DiagnosisV7 d =
+        DiagnosisV7.inconclusive(
+            DiagnosisV7.Reason.SANITY_FAIL, "demand_ratio=1.85", new int[0], 0);
+    String s = d.toDisplaySummary();
+    assertThat(s).contains("V7");
+    assertThat(s).contains("INCONCLUSIVE");
+    assertThat(s).contains("sanity_fail");
+    assertThat(s).contains("demand_ratio=1.85");
+  }
+
+  @Test
+  public void toFullDetail_cdn_includesVABreakdown() {
+    DiagnosisV7 d =
+        DiagnosisV7.classified(
+            DiagnosisV7.Cause.CLIENT, new int[0],
+            4, 3, 3, 2, 0, 0, 500, 200, 400, 2000, true, 0);
+    String s = d.toFullDetail();
+    assertThat(s).contains("Cause: CLIENT");
+    assertThat(s).contains("V segments: 4");
+    assertThat(s).contains("A segments: 3");
+    assertThat(s).contains("V drained: 3");
+    assertThat(s).contains("A drained: 2");
+    assertThat(s).contains("V server-lag (CDN): 0");
+    assertThat(s).contains("A server-lag (CDN): 0");
+    assertThat(s).contains("TTFB fence V: 500ms");
+    assertThat(s).contains("TTFB fence A: 200ms");
+    assertThat(s).contains("Network drop: yes");
+  }
+
+  @Test
+  public void toFullDetail_audioColdStartFenceAMinusOne_omitsFenceALine() {
+    DiagnosisV7 d =
+        DiagnosisV7.classified(
+            DiagnosisV7.Cause.CDN, new int[0],
+            4, 0, 3, 0, 3, 0, 500, /* ttfbFenceUpperAMs= */ -1, 800, 1500, false, 0);
+    String s = d.toFullDetail();
+    assertThat(s).contains("TTFB fence V: 500ms");
+    assertThat(s).doesNotContain("TTFB fence A");
+  }
 }
