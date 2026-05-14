@@ -29,6 +29,7 @@ import androidx.media3.exoplayer.qos.model.DiagnosisV2;
 import androidx.media3.exoplayer.qos.model.DiagnosisV4;
 import androidx.media3.exoplayer.qos.model.DiagnosisV5;
 import androidx.media3.exoplayer.qos.model.DiagnosisV6;
+import androidx.media3.exoplayer.qos.model.DiagnosisV7;
 import androidx.media3.exoplayer.qos.model.QoSInfo;
 import androidx.media3.exoplayer.qos.model.RebufferGroup;
 import androidx.media3.exoplayer.qos.model.SessionStatistics;
@@ -145,18 +146,30 @@ public final class FPlayQoSMonitor {
       entries -> {
         if (entries.isEmpty()) return;
         QoSInfo last = entries.get(entries.size() - 1);
-        if (!QoSDiagnoserV5.isCompletedScoredSegment(last)) return;
-        String key = QoSDiagnoserV5.sessionKey(last);
-        if (last.ttfbMs >= 0) {
-          sessionStats.addTtfbSample(key, last.ttfbMs);
-        }
-        if (last.bitrateKbps > 0 && last.ttfbMs >= 0 && last.bytesLoaded > 0) {
-          long transferMs = Math.max(1L, last.loadDurationMs - last.ttfbMs);
-          int postTtfbKbps = (int) ((last.bytesLoaded * 8L) / transferMs);
-          sessionStats.addDeliveryRateSample(key, postTtfbKbps);
-        }
-        if (last.measuredThroughputKbps > 0) {
-          sessionStats.addMtpSample(key, last.measuredThroughputKbps);
+        if (QoSDiagnoserV5.isCompletedScoredSegment(last)) {
+          String key = QoSDiagnoserV5.sessionKey(last);
+          if (last.ttfbMs >= 0) {
+            sessionStats.addTtfbSample(key, last.ttfbMs);
+          }
+          if (last.bitrateKbps > 0 && last.ttfbMs >= 0 && last.bytesLoaded > 0) {
+            long transferMs = Math.max(1L, last.loadDurationMs - last.ttfbMs);
+            int postTtfbKbps = (int) ((last.bytesLoaded * 8L) / transferMs);
+            sessionStats.addDeliveryRateSample(key, postTtfbKbps);
+          }
+          if (last.measuredThroughputKbps > 0) {
+            sessionStats.addMtpSample(key, last.measuredThroughputKbps);
+          }
+        } else if (QoSDiagnoserV5.isCompletedAudioSegment(last)) {
+          // V7 audio fence feed — separate Maps, same key scheme. No audio mtp.
+          String aKey = QoSDiagnoserV5.sessionKey(last);
+          if (last.ttfbMs >= 0) {
+            sessionStats.addAudioTtfbSample(aKey, last.ttfbMs);
+          }
+          if (last.bitrateKbps > 0 && last.ttfbMs >= 0 && last.bytesLoaded > 0) {
+            long transferMs = Math.max(1L, last.loadDurationMs - last.ttfbMs);
+            int postTtfbKbps = (int) ((last.bytesLoaded * 8L) / transferMs);
+            sessionStats.addAudioDeliveryRateSample(aKey, postTtfbKbps);
+          }
         }
       };
 
@@ -198,6 +211,7 @@ public final class FPlayQoSMonitor {
     DiagnosisV4 v4 = QoSDiagnoserV4.diagnose(pipelineInput);
     DiagnosisV5 v5 = QoSDiagnoserV5.diagnose(pipelineInput, sessionStats);
     DiagnosisV6 v6 = QoSDiagnoserV6.diagnose(pipelineInput, sessionStats);
+    DiagnosisV7 v7 = QoSDiagnoserV7.diagnose(pipelineInput, sessionStats);
     StringBuilder log = new StringBuilder(512)
         .append("Rebuffer #").append(groupId).append(": ").append(diagnosis.summary())
         .append(" | v1.cause=").append(fullDiagnosis.cause)
@@ -285,6 +299,29 @@ public final class FPlayQoSMonitor {
     if (v6.httpErrorCodes.length > 0) {
       log.append(" v6.codes=").append(java.util.Arrays.toString(v6.httpErrorCodes));
     }
+    log.append(" | v7.cause=").append(v7.cause);
+    if (v7.cause == DiagnosisV7.Cause.INCONCLUSIVE) {
+      log.append(" v7.reason=\"");
+      if (v7.reason != null) {
+        log.append(v7.reason.code);
+        if (v7.reasonDetail != null) {
+          log.append(':').append(v7.reasonDetail);
+        }
+      }
+      log.append('"');
+    } else {
+      log.append(" v7.nV=").append(v7.nV);
+      log.append(" v7.nA=").append(v7.nA);
+      log.append(" v7.nVD=").append(v7.nVDrained);
+      log.append(" v7.nAD=").append(v7.nADrained);
+      log.append(" v7.nVCE=").append(v7.nVCdnEvidence);
+      log.append(" v7.nACE=").append(v7.nACdnEvidence);
+      if (v7.mtpCollapseDetected) {
+        log.append(" v7.mtpCollapse=1");
+      }
+      log.append(" v7.fenceV=").append(v7.ttfbFenceUpperVMs).append("ms");
+      log.append(" v7.fenceA=").append(v7.ttfbFenceUpperAMs).append("ms");
+    }
     Log.i(TAG, log.toString());
     RebufferGroup group =
         new RebufferGroup(
@@ -297,7 +334,8 @@ public final class FPlayQoSMonitor {
             v2,
             v4,
             v5,
-            v6);
+            v6,
+            v7);
     rebufferGroups.add(group);
     while (rebufferGroups.size() > MAX_REBUFFER_GROUPS) {
       rebufferGroups.remove(0);
