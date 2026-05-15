@@ -178,12 +178,13 @@ public class QoSDiagnoserV8Test {
     assertThat(d.ttfbFenceUpperVMs).isEqualTo(100);
     assertThat(d.cohortNetworkType).isEqualTo("WIFI");
     assertThat(d.cohortCdnProvider).isEqualTo("fpt");
-    // V8 new fields — nVAbrLag and ttfbQ1V still default (B2/B6 tasks)
+    // V8 new fields — nVAbrLag populated in B2; B6: quartiles now populated from fence.
+    // sessionStatsWarmFull: 10 V samples all=100 → Q1=Q3=median=100.
     assertThat(d.nVAbrLag).isEqualTo(0);
     // B4: all 3 segs identical excess=0.2 → peak at index 0 (first drained)
     assertThat(d.drainPeakSegIdxV).isEqualTo(0);
     assertThat(d.drainPeakRatioV).isWithin(0.001).of(0.2);
-    assertThat(d.ttfbQ1V).isEqualTo(-1);
+    assertThat(d.ttfbQ1V).isEqualTo(100);
   }
 
   @Test
@@ -613,6 +614,71 @@ public class QoSDiagnoserV8Test {
     assertThat(d.cause).isEqualTo(DiagnosisV8.Cause.CDN);
     assertThat(d.nRetries).isEqualTo(2);   // V retries only
     assertThat(d.nARetries).isEqualTo(1);  // A retries only
+  }
+
+  // ===== V8 B6: baseline quartiles (ttfbQ1V/MedianV/Q3V + ttfbQ1A/MedianA/Q3A) =====
+
+  @Test
+  public void diagnose_classified_populatesBaselineQuartiles() {
+    // V + A TTFB distribution: {100, 150, 200, 250, 300, 400, 500, 600, 700, 800} (n=10).
+    // Tukey hinges (n=10 even):
+    //   lower half = [100,150,200,250,300] → Q1 = median of 5 = index 2 = 200
+    //   upper half = [400,500,600,700,800] → Q3 = median of 5 = index 2 = 600
+    //   median of all 10 = (sorted[4]+sorted[5])/2 = (300+400)/2 = 350
+    SessionStatistics stats = new SessionStatistics();
+    int[] ttfbSamples = {100, 150, 200, 250, 300, 400, 500, 600, 700, 800};
+    for (int s : ttfbSamples) stats.addTtfbSample(KEY_WIFI_MISS_FPT, s);
+    for (int s : ttfbSamples) stats.addAudioTtfbSample(KEY_WIFI_MISS_FPT, s);
+
+    // strict K=3 upper for V: Q3 + 3*IQR = 600 + 3*(600-200) = 1800
+    // strict K=3 upper for A: same distribution → 1800
+    // V ttfb=50 < 1800 → NOT ttfb-extreme → NETWORK verdict (fine — we only need classified path).
+    // V drained: loadDur=3_000 > cdur=2_000 × 1.10 = 2_200 ✓
+    // Audio seg included so aSegs non-empty → audioTtfbFence lookup fires.
+    // Audio loadDur=1_900 > cdur=1_800×1.10=1_980? No — 1_900 < 1_980 → NOT drained (OK).
+    QoSInfo s1 = vSeg(1_000L, 2_000L, 3_000L, 50, 1_500);
+    QoSInfo s2 = vSeg(3_000L, 2_000L, 3_000L, 50, 1_500);
+    QoSInfo s3 = vSeg(5_000L, 2_000L, 3_000L, 50, 1_500);
+    QoSInfo a1 = aSeg(2_000L, 1_800L, 1_900L, 40); // not drained — A fence still resolves
+    QoSInfo trigger = triggerSeg(7_000L, 0);
+    RebufferGroup g =
+        new RebufferGroup(1, 7_000L, trigger, Arrays.asList(s1, s2, s3, a1, trigger), null);
+
+    DiagnosisV8 d = QoSDiagnoserV8.diagnose(g, stats);
+
+    assertThat(d.cause).isEqualTo(DiagnosisV8.Cause.NETWORK); // drained but no ttfb-extreme
+    assertThat(d.ttfbQ1V).isEqualTo(200);
+    assertThat(d.ttfbMedianV).isEqualTo(350);
+    assertThat(d.ttfbQ3V).isEqualTo(600);
+    assertThat(d.ttfbQ1A).isEqualTo(200);
+    assertThat(d.ttfbMedianA).isEqualTo(350);
+    assertThat(d.ttfbQ3A).isEqualTo(600);
+  }
+
+  @Test
+  public void diagnose_classified_audioColdStart_quartilesA_areMinusOne() {
+    // V warm (diverse samples), no audio TTFB samples → audioFence null → A quartiles -1.
+    SessionStatistics stats = new SessionStatistics();
+    int[] ttfbSamples = {100, 150, 200, 250, 300, 400, 500, 600, 700, 800};
+    for (int s : ttfbSamples) stats.addTtfbSample(KEY_WIFI_MISS_FPT, s);
+    // (No addAudioTtfbSample — audio cold-start)
+
+    QoSInfo s1 = vSeg(1_000L, 2_000L, 3_000L, 50, 1_500);
+    QoSInfo s2 = vSeg(3_000L, 2_000L, 3_000L, 50, 1_500);
+    QoSInfo s3 = vSeg(5_000L, 2_000L, 3_000L, 50, 1_500);
+    QoSInfo trigger = triggerSeg(7_000L, 0);
+    RebufferGroup g =
+        new RebufferGroup(1, 7_000L, trigger, Arrays.asList(s1, s2, s3, trigger), null);
+
+    DiagnosisV8 d = QoSDiagnoserV8.diagnose(g, stats);
+
+    assertThat(d.cause).isEqualTo(DiagnosisV8.Cause.NETWORK);
+    assertThat(d.ttfbQ1V).isEqualTo(200);
+    assertThat(d.ttfbMedianV).isEqualTo(350);
+    assertThat(d.ttfbQ3V).isEqualTo(600);
+    assertThat(d.ttfbQ1A).isEqualTo(-1);
+    assertThat(d.ttfbMedianA).isEqualTo(-1);
+    assertThat(d.ttfbQ3A).isEqualTo(-1);
   }
 
   // ===== Helpers (mirrors QoSDiagnoserV7Test helpers) =====

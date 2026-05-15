@@ -285,12 +285,12 @@ public final class QoSDiagnoserV8 {
         /* drainPeakRatioA= */ drainPeakRatioA,
         /* drainPeakSegIdxA= */ drainPeakSegIdxA,
         /* nARetries= */ nARetries,
-        /* ttfbQ1V= */ -1,
-        /* ttfbMedianV= */ -1,
-        /* ttfbQ3V= */ -1,
-        /* ttfbQ1A= */ -1,
-        /* ttfbMedianA= */ -1,
-        /* ttfbQ3A= */ -1);
+        /* ttfbQ1V= */ ttfbFence.q1,
+        /* ttfbMedianV= */ ttfbFence.median,
+        /* ttfbQ3V= */ ttfbFence.q3,
+        /* ttfbQ1A= */ audioTtfbFence != null ? audioTtfbFence.q1 : -1,
+        /* ttfbMedianA= */ audioTtfbFence != null ? audioTtfbFence.median : -1,
+        /* ttfbQ3A= */ audioTtfbFence != null ? audioTtfbFence.q3 : -1);
   }
 
   /** Count audio segments with at least one retry (retryCount &gt; 0). */
