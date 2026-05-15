@@ -136,6 +136,10 @@ public final class QoSDiagnoserV8 {
     int nVBodyUnhealthy = 0;
     int nVMtpCollapsed = 0;
     // B4: drain peak — max excessRatio across V drained segs + its 0-based index in vSegs.
+    // drainPeakSegIdxV is a 0-based index into vSegs (the scored+completed V segments list
+    // passed into this method). The counter vSegIdx increments for every seg — drained or not —
+    // so index 2 means the 3rd element of vSegs regardless of drain status. Tie-break: strict >
+    // keeps the first occurrence (first drained seg wins if excessRatio is equal).
     double drainPeakRatioV = 0.0;
     int drainPeakSegIdxV = -1;
     int vSegIdx = -1;
@@ -189,7 +193,7 @@ public final class QoSDiagnoserV8 {
     // B3: per-condition counters for A (no nAMtpCollapsed — audio has no mtp).
     int nATtfbExtreme = 0;
     int nABodyUnhealthy = 0;
-    // B4: drain peak for A.
+    // B4: drain peak for A — same semantic as V: 0-based index into aSegs, advances for all segs.
     double drainPeakRatioA = 0.0;
     int drainPeakSegIdxA = -1;
     SessionStatistics.TukeyFence audioTtfbFence =
