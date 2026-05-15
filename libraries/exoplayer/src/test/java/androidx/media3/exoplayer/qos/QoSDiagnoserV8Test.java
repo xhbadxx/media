@@ -673,26 +673,6 @@ public class QoSDiagnoserV8Test {
         .build();
   }
 
-  /** V seg with custom bytesLoaded — controls post-TTFB body throughput. */
-  static QoSInfo vSegWithBytes(
-      long ts, long cdurMs, long loadDurMs, int ttfbMs, int blMs, long bytesLoaded) {
-    return new QoSInfo.Builder()
-        .setTimestampMs(ts)
-        .setTrackType(C.TRACK_TYPE_VIDEO)
-        .setStatus(QoSInfo.LoadStatus.COMPLETED)
-        .setChunkDurationMs(cdurMs)
-        .setLoadDurationMs(loadDurMs)
-        .setTtfbMs(ttfbMs)
-        .setBufferedDurationMs(blMs)
-        .setBytesLoaded(bytesLoaded)
-        .setBitrateKbps(1_000)
-        .setMeasuredThroughputKbps(1_500)
-        .setNetworkType(C.NETWORK_TYPE_WIFI)
-        .setCacheStatus("MISS")
-        .setCdnProvider("fpt")
-        .build();
-  }
-
   /** V seg with custom bytesLoaded + measuredThroughputKbps — controls both body and mtp. */
   static QoSInfo vSegWithBytesAndMtp(
       long ts,
