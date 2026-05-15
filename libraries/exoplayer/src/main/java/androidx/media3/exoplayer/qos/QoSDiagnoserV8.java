@@ -135,7 +135,12 @@ public final class QoSDiagnoserV8 {
     int nVTtfbExtreme = 0;
     int nVBodyUnhealthy = 0;
     int nVMtpCollapsed = 0;
+    // B4: drain peak — max excessRatio across V drained segs + its 0-based index in vSegs.
+    double drainPeakRatioV = 0.0;
+    int drainPeakSegIdxV = -1;
+    int vSegIdx = -1;
     for (QoSInfo s : vSegs) {
+      vSegIdx++;
       if (s.retryCount > 0) nRetries++;
       // abr-lag = segment requested at a bitrate exceeding 80% of measured throughput.
       // Applies to ALL V scored segs regardless of drain status.
@@ -147,6 +152,10 @@ public final class QoSDiagnoserV8 {
       boolean isDrained = excessRatio > SLOW_RATIO;
       if (!isDrained) continue;
       nVDrained++;
+      if (excessRatio > drainPeakRatioV) {
+        drainPeakRatioV = excessRatio;
+        drainPeakSegIdxV = vSegIdx;
+      }
       if (isAbrLag) nVAbrLagInDrain++;
       boolean isTtfbExtreme = s.ttfbMs > strictTtfbUpperV;
       boolean isMtpCollapsed =
@@ -180,17 +189,26 @@ public final class QoSDiagnoserV8 {
     // B3: per-condition counters for A (no nAMtpCollapsed — audio has no mtp).
     int nATtfbExtreme = 0;
     int nABodyUnhealthy = 0;
+    // B4: drain peak for A.
+    double drainPeakRatioA = 0.0;
+    int drainPeakSegIdxA = -1;
     SessionStatistics.TukeyFence audioTtfbFence =
         aSegs.isEmpty() ? null : sessionStats.getAudioTtfbFence(vKey);
     if (audioTtfbFence != null) {
       strictTtfbUpperA =
           audioTtfbFence.q3 + (int) Math.round(TTFB_STRICT_TUKEY_K * audioTtfbFence.iqr);
+      int aSegIdx = -1;
       for (QoSInfo s : aSegs) {
+        aSegIdx++;
         double excessRatio =
             (double) Math.max(0L, s.loadDurationMs - s.chunkDurationMs) / s.chunkDurationMs;
         boolean isDrained = excessRatio > SLOW_RATIO;
         if (!isDrained) continue;
         nADrained++;
+        if (excessRatio > drainPeakRatioA) {
+          drainPeakRatioA = excessRatio;
+          drainPeakSegIdxA = aSegIdx;
+        }
         boolean isTtfbExtreme = s.ttfbMs > strictTtfbUpperA;
         boolean isBodyHealthy = false;
         if (s.bitrateKbps > 0
@@ -249,10 +267,10 @@ public final class QoSDiagnoserV8 {
         /* nVBodyUnhealthy= */ nVBodyUnhealthy,
         /* nABodyUnhealthy= */ nABodyUnhealthy,
         /* nVMtpCollapsed= */ nVMtpCollapsed,
-        /* drainPeakRatioV= */ 0.0,
-        /* drainPeakSegIdxV= */ -1,
-        /* drainPeakRatioA= */ 0.0,
-        /* drainPeakSegIdxA= */ -1,
+        /* drainPeakRatioV= */ drainPeakRatioV,
+        /* drainPeakSegIdxV= */ drainPeakSegIdxV,
+        /* drainPeakRatioA= */ drainPeakRatioA,
+        /* drainPeakSegIdxA= */ drainPeakSegIdxA,
         /* nARetries= */ 0,
         /* ttfbQ1V= */ -1,
         /* ttfbMedianV= */ -1,

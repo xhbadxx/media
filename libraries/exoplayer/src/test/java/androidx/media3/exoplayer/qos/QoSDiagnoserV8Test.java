@@ -178,9 +178,11 @@ public class QoSDiagnoserV8Test {
     assertThat(d.ttfbFenceUpperVMs).isEqualTo(100);
     assertThat(d.cohortNetworkType).isEqualTo("WIFI");
     assertThat(d.cohortCdnProvider).isEqualTo("fpt");
-    // V8 new fields default in B1
+    // V8 new fields — nVAbrLag and ttfbQ1V still default (B2/B6 tasks)
     assertThat(d.nVAbrLag).isEqualTo(0);
-    assertThat(d.drainPeakSegIdxV).isEqualTo(-1);
+    // B4: all 3 segs identical excess=0.2 → peak at index 0 (first drained)
+    assertThat(d.drainPeakSegIdxV).isEqualTo(0);
+    assertThat(d.drainPeakRatioV).isWithin(0.001).of(0.2);
     assertThat(d.ttfbQ1V).isEqualTo(-1);
   }
 
@@ -539,7 +541,78 @@ public class QoSDiagnoserV8Test {
     assertThat(d.nVMtpCollapsed).isEqualTo(0);
   }
 
+  // ===== V8 B4: drain peak tracking =====
+
+  @Test
+  public void diagnose_tracksMaxDrainPeakForV() {
+    // 4 V scored segs with controlled excessRatio (chunkDurationMs=4000 for clean arithmetic):
+    //   Index 0: loadMs=4040 → excess=(4040-4000)/4000=0.010 (NOT drained, < SLOW_RATIO=0.10)
+    //   Index 1: loadMs=4600 → excess=600/4000=0.150 (drained, low peak)
+    //   Index 2: loadMs=7400 → excess=3400/4000=0.850 (drained, MAX peak)
+    //   Index 3: loadMs=5600 → excess=1600/4000=0.400 (drained, below max)
+    // ttfb=50 for all → NOT extreme (fence=100), so no CDN evidence → NETWORK verdict.
+    // Expected: drainPeakRatioV ≈ 0.850, drainPeakSegIdxV = 2 (0-based in vSegs list).
+    // Index advances for ALL segs (incl. non-drained seg at index 0).
+    SessionStatistics stats = sessionStatsWarmFull(KEY_WIFI_MISS_FPT);
+    // chunkDur=4000, ttfb=50, bl=1500. Sanity: supply=4×4000=16000, wall=17000-1000=16000→ratio=1.0 ✓
+    QoSInfo s0 = vSegCdur4k(1_000L,  4_040L, 50);  // not drained
+    QoSInfo s1 = vSegCdur4k(5_000L,  4_600L, 50);  // drained, excess=0.15
+    QoSInfo s2 = vSegCdur4k(9_000L,  7_400L, 50);  // drained, excess=0.85 — MAX
+    QoSInfo s3 = vSegCdur4k(13_000L, 5_600L, 50);  // drained, excess=0.40
+    QoSInfo trigger = triggerSeg(17_000L, 0);
+    RebufferGroup g =
+        new RebufferGroup(1, 17_000L, trigger, Arrays.asList(s0, s1, s2, s3, trigger), null);
+    DiagnosisV8 d = QoSDiagnoserV8.diagnose(g, stats);
+    assertThat(d.nVDrained).isEqualTo(3);
+    assertThat(d.drainPeakRatioV).isWithin(0.001).of(0.85);
+    assertThat(d.drainPeakSegIdxV).isEqualTo(2);
+    // A side: no audio segs → peak stays at defaults
+    assertThat(d.drainPeakRatioA).isEqualTo(0.0);
+    assertThat(d.drainPeakSegIdxA).isEqualTo(-1);
+  }
+
+  @Test
+  public void diagnose_noDrainedV_drainPeakStaysZeroAndMinusOne() {
+    // All V segs not drained → hits NO_DRAIN inconclusive path.
+    // inconclusive() factory sets drainPeakRatioV=0.0, drainPeakSegIdxV=-1.
+    // Also verifies the A side stays at defaults when never drained.
+    SessionStatistics stats = sessionStatsWarmFull(KEY_WIFI_MISS_FPT);
+    QoSInfo s1 = vSeg(1_000L, 2_000L, 1_900L, 80, 1_500);
+    QoSInfo s2 = vSeg(3_000L, 2_000L, 1_950L, 90, 1_500);
+    QoSInfo s3 = vSeg(5_000L, 2_000L, 2_050L, 95, 1_500); // excess=0.025 < 0.10
+    QoSInfo trigger = triggerSeg(7_000L, 0);
+    RebufferGroup g =
+        new RebufferGroup(1, 7_000L, trigger, Arrays.asList(s1, s2, s3, trigger), null);
+    DiagnosisV8 d = QoSDiagnoserV8.diagnose(g, stats);
+    assertThat(d.cause).isEqualTo(DiagnosisV8.Cause.INCONCLUSIVE);
+    assertThat(d.reason).isEqualTo(DiagnosisV8.Reason.NO_DRAIN);
+    assertThat(d.drainPeakRatioV).isEqualTo(0.0);
+    assertThat(d.drainPeakSegIdxV).isEqualTo(-1);
+    assertThat(d.drainPeakRatioA).isEqualTo(0.0);
+    assertThat(d.drainPeakSegIdxA).isEqualTo(-1);
+  }
+
   // ===== Helpers (mirrors QoSDiagnoserV7Test helpers) =====
+
+  /** V seg with chunkDurationMs=4000 for drain-peak arithmetic tests. */
+  static QoSInfo vSegCdur4k(long ts, long loadDurMs, int ttfbMs) {
+    return new QoSInfo.Builder()
+        .setTimestampMs(ts)
+        .setTrackType(C.TRACK_TYPE_VIDEO)
+        .setStatus(QoSInfo.LoadStatus.COMPLETED)
+        .setChunkDurationMs(4_000L)
+        .setLoadDurationMs(loadDurMs)
+        .setTtfbMs(ttfbMs)
+        .setBufferedDurationMs(1_500)
+        .setBytesLoaded(240_000L)
+        .setBitrateKbps(1_000)
+        .setMeasuredThroughputKbps(1_500)
+        .setNetworkType(C.NETWORK_TYPE_WIFI)
+        .setCacheStatus("MISS")
+        .setCdnProvider("fpt")
+        .build();
+  }
+
 
   static QoSInfo vSeg(long ts, long cdurMs, long loadDurMs, int ttfbMs, int blMs) {
     return vSegWithMtp(ts, cdurMs, loadDurMs, ttfbMs, blMs, /* mtpKbps= */ 1_500);
