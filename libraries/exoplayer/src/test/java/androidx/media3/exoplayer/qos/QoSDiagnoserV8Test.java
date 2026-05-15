@@ -592,6 +592,29 @@ public class QoSDiagnoserV8Test {
     assertThat(d.drainPeakSegIdxA).isEqualTo(-1);
   }
 
+  // ===== V8 B5: audio retries (nARetries) =====
+
+  @Test
+  public void diagnose_countsAudioRetriesSeparately() {
+    // 3 V scored segs: 2 with retryCount=1 (nRetries should = 2).
+    // 2 A scored segs: 1 with retryCount=2 (nARetries should = 1).
+    // All V segs drained + CDN evidence (ttfb=500>100, body-healthy).
+    // Verdict CDN. Assertions: nRetries=2, nARetries=1 (independent counts).
+    SessionStatistics stats = sessionStatsWarmFull(KEY_WIFI_MISS_FPT);
+    QoSInfo s1 = vSegWithRetries(1_000L, 2_000L, 2_400L, 500, 1_500, /* retries= */ 1);
+    QoSInfo s2 = vSegWithRetries(3_000L, 2_000L, 2_400L, 500, 1_500, /* retries= */ 1);
+    QoSInfo s3 = vSeg(5_000L, 2_000L, 2_400L, 500, 1_500);
+    QoSInfo a1 = aSegWithRetries(2_000L, 1_800L, 1_900L, 40, /* retries= */ 2); // not drained
+    QoSInfo a2 = aSeg(4_000L, 1_800L, 1_900L, 40); // no retry
+    QoSInfo trigger = triggerSeg(7_000L, 0);
+    RebufferGroup g =
+        new RebufferGroup(1, 7_000L, trigger, Arrays.asList(s1, s2, s3, a1, a2, trigger), null);
+    DiagnosisV8 d = QoSDiagnoserV8.diagnose(g, stats);
+    assertThat(d.cause).isEqualTo(DiagnosisV8.Cause.CDN);
+    assertThat(d.nRetries).isEqualTo(2);   // V retries only
+    assertThat(d.nARetries).isEqualTo(1);  // A retries only
+  }
+
   // ===== Helpers (mirrors QoSDiagnoserV7Test helpers) =====
 
   /** V seg with chunkDurationMs=4000 for drain-peak arithmetic tests. */
@@ -785,6 +808,25 @@ public class QoSDiagnoserV8Test {
         .setBytesLoaded(bytesLoaded)
         .setBitrateKbps(128)
         .setMeasuredThroughputKbps(1_500)
+        .setNetworkType(C.NETWORK_TYPE_WIFI)
+        .setCacheStatus("MISS")
+        .setCdnProvider("fpt")
+        .build();
+  }
+
+  /** Audio seg with retryCount set — for nARetries assertions. */
+  static QoSInfo aSegWithRetries(long ts, long cdurMs, long loadDurMs, int ttfbMs, int retries) {
+    return new QoSInfo.Builder()
+        .setTimestampMs(ts)
+        .setTrackType(C.TRACK_TYPE_AUDIO)
+        .setStatus(QoSInfo.LoadStatus.COMPLETED)
+        .setChunkDurationMs(cdurMs)
+        .setLoadDurationMs(loadDurMs)
+        .setTtfbMs(ttfbMs)
+        .setBytesLoaded(28_800L)
+        .setBitrateKbps(128)
+        .setMeasuredThroughputKbps(1_500)
+        .setRetryCount(retries)
         .setNetworkType(C.NETWORK_TYPE_WIFI)
         .setCacheStatus("MISS")
         .setCdnProvider("fpt")

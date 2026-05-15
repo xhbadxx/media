@@ -257,15 +257,20 @@ public final class DiagnosisV8 {
   }
 
   public static DiagnosisV8 inconclusive(Reason reason, int[] httpErrorCodes) {
-    return inconclusive(reason, /* detail= */ null, httpErrorCodes, /* nRetries= */ 0);
+    return inconclusive(reason, /* detail= */ null, httpErrorCodes, /* nRetries= */ 0, /* nARetries= */ 0);
   }
 
   public static DiagnosisV8 inconclusive(Reason reason, int[] httpErrorCodes, int nRetries) {
-    return inconclusive(reason, /* detail= */ null, httpErrorCodes, nRetries);
+    return inconclusive(reason, /* detail= */ null, httpErrorCodes, nRetries, /* nARetries= */ 0);
   }
 
   public static DiagnosisV8 inconclusive(
       Reason reason, @Nullable String detail, int[] httpErrorCodes, int nRetries) {
+    return inconclusive(reason, detail, httpErrorCodes, nRetries, /* nARetries= */ 0);
+  }
+
+  public static DiagnosisV8 inconclusive(
+      Reason reason, @Nullable String detail, int[] httpErrorCodes, int nRetries, int nARetries) {
     return new DiagnosisV8(
         Cause.INCONCLUSIVE,
         httpErrorCodes,
@@ -281,7 +286,7 @@ public final class DiagnosisV8 {
         /* nVMtpCollapsed= */ 0,
         /* drainPeakRatioV= */ 0.0, /* drainPeakSegIdxV= */ -1,
         /* drainPeakRatioA= */ 0.0, /* drainPeakSegIdxA= */ -1,
-        /* nARetries= */ 0,
+        nARetries,
         /* ttfbQ1V= */ -1, /* ttfbMedianV= */ -1, /* ttfbQ3V= */ -1,
         /* ttfbQ1A= */ -1, /* ttfbMedianA= */ -1, /* ttfbQ3A= */ -1,
         reason, detail);

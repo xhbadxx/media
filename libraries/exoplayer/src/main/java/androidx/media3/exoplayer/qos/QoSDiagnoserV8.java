@@ -92,14 +92,18 @@ public final class QoSDiagnoserV8 {
       }
     }
     if (vSegs.isEmpty()) {
-      return DiagnosisV8.inconclusive(DiagnosisV8.Reason.NO_COMPLETED_V_SEG, httpErrorCodes);
+      return DiagnosisV8.inconclusive(
+          DiagnosisV8.Reason.NO_COMPLETED_V_SEG, /* detail= */ null, httpErrorCodes,
+          /* nRetries= */ 0, countAudioRetries(aSegs));
     }
 
     // Step 1.4: track-switch / manifest-refresh guard (V-side trigger only).
     if (group.trigger != null
         && group.trigger.chunkDurationMs <= 0L
         && group.trigger.bytesLoaded > 0L) {
-      return DiagnosisV8.inconclusive(DiagnosisV8.Reason.TRACK_SWITCH, httpErrorCodes);
+      return DiagnosisV8.inconclusive(
+          DiagnosisV8.Reason.TRACK_SWITCH, /* detail= */ null, httpErrorCodes,
+          /* nRetries= */ 0, countAudioRetries(aSegs));
     }
 
     // Step 1.5: sanity gate (V-only ΔSupply, V1 reuse).
@@ -107,7 +111,8 @@ public final class QoSDiagnoserV8 {
     String sanityFail = QoSDiagnoser.applySanityG1ate(metrics);
     if (sanityFail != null) {
       return DiagnosisV8.inconclusive(
-          DiagnosisV8.Reason.SANITY_FAIL, sanityFail, httpErrorCodes, /* nRetries= */ 0);
+          DiagnosisV8.Reason.SANITY_FAIL, sanityFail, httpErrorCodes,
+          /* nRetries= */ 0, countAudioRetries(aSegs));
     }
 
     // Step 2: cold-start check via Tukey fence on V key.
@@ -116,7 +121,9 @@ public final class QoSDiagnoserV8 {
     SessionStatistics.TukeyFence ttfbFence =
         sessionStats == null ? null : sessionStats.getTtfbFence(vKey);
     if (ttfbFence == null) {
-      return DiagnosisV8.inconclusive(DiagnosisV8.Reason.COLD_START, httpErrorCodes);
+      return DiagnosisV8.inconclusive(
+          DiagnosisV8.Reason.COLD_START, /* detail= */ null, httpErrorCodes,
+          /* nRetries= */ 0, countAudioRetries(aSegs));
     }
     SessionStatistics.TukeyFence mtpFence = sessionStats.getMtpFence(vKey);
 
@@ -237,7 +244,8 @@ public final class QoSDiagnoserV8 {
     int nCdnEvTotal = nVCdnEvidence + nACdnEvidence;
     if (nDrainedTotal == 0) {
       return DiagnosisV8.inconclusive(
-          DiagnosisV8.Reason.NO_DRAIN, httpErrorCodes, nRetries);
+          DiagnosisV8.Reason.NO_DRAIN, /* detail= */ null, httpErrorCodes,
+          nRetries, countAudioRetries(aSegs));
     }
     DiagnosisV8.Cause cause =
         (nCdnEvTotal * CDN_MAJORITY_DENOM >= nDrainedTotal * CDN_MAJORITY_NUM)
@@ -249,6 +257,7 @@ public final class QoSDiagnoserV8 {
         (lastV.cdnProvider != null && !lastV.cdnProvider.isEmpty()) ? lastV.cdnProvider : "UNKNOWN";
 
     // Step 5: attach metadata. V8 new fields — DEFAULTS for B1, populated in B2..B6.
+    int nARetries = countAudioRetries(aSegs);
     return DiagnosisV8.classified(
         cause,
         httpErrorCodes,
@@ -275,13 +284,22 @@ public final class QoSDiagnoserV8 {
         /* drainPeakSegIdxV= */ drainPeakSegIdxV,
         /* drainPeakRatioA= */ drainPeakRatioA,
         /* drainPeakSegIdxA= */ drainPeakSegIdxA,
-        /* nARetries= */ 0,
+        /* nARetries= */ nARetries,
         /* ttfbQ1V= */ -1,
         /* ttfbMedianV= */ -1,
         /* ttfbQ3V= */ -1,
         /* ttfbQ1A= */ -1,
         /* ttfbMedianA= */ -1,
         /* ttfbQ3A= */ -1);
+  }
+
+  /** Count audio segments with at least one retry (retryCount &gt; 0). */
+  private static int countAudioRetries(List<QoSInfo> aSegs) {
+    int n = 0;
+    for (QoSInfo a : aSegs) {
+      if (a.retryCount > 0) n++;
+    }
+    return n;
   }
 
   /** Collect 4xx + 5xx HTTP status codes from any errored entry — metadata only. */
