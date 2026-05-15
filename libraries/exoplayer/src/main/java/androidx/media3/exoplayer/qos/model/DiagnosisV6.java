@@ -34,20 +34,20 @@ public final class DiagnosisV6 {
    * Three mutually exclusive verdicts.
    *
    * <p>Names deliberately broad: V6 attributes only at top-level (server-side vs client-side
-   * vs couldn't decide). Sub-causes (e.g. CDN cache-miss vs origin overload, or CLIENT
+   * vs couldn't decide). Sub-causes (e.g. CDN cache-miss vs origin overload, or NETWORK
    * network vs ABR) are NOT distinguished — evidence fields on the diagnosis convey detail.
    */
   public enum Cause {
     /** Server-side responsible (TTFB outlier + body healthy + mtp not collapsed). */
     CDN,
     /** Not-CDN drained the buffer (network/ABR/throttle — V6 does not differentiate). */
-    CLIENT,
-    /** Couldn't reach a CDN/CLIENT verdict. See {@link Reason} for why. */
+    NETWORK,
+    /** Couldn't reach a CDN/NETWORK verdict. See {@link Reason} for why. */
     INCONCLUSIVE
   }
 
   /**
-   * Why an INCONCLUSIVE verdict was emitted. {@code null} when {@link #cause} is CDN/CLIENT.
+   * Why an INCONCLUSIVE verdict was emitted. {@code null} when {@link #cause} is CDN/NETWORK.
    * The {@code code} suffix is the stable string used in logs and on-screen displays.
    */
   public enum Reason {
@@ -62,7 +62,7 @@ public final class DiagnosisV6 {
     /**
      * Trigger was a non-media segment (init.mp4 / index.mpd / manifest refresh) — bs=true
      * fired during a track switch or manifest refresh, not a real playback stall. Classifies
-     * as INCONCLUSIVE so the verdict doesn't pin the cause on CDN or CLIENT when the
+     * as INCONCLUSIVE so the verdict doesn't pin the cause on CDN or NETWORK when the
      * "rebuffer" is a transient transition artifact.
      */
     TRACK_SWITCH("track_switch"),
@@ -120,7 +120,7 @@ public final class DiagnosisV6 {
    */
   public final int nRetries;
 
-  /** Why an INCONCLUSIVE verdict was emitted. {@code null} for classified (CDN/CLIENT) verdicts. */
+  /** Why an INCONCLUSIVE verdict was emitted. {@code null} for classified (CDN/NETWORK) verdicts. */
   @Nullable public final Reason reason;
 
   /**
@@ -184,7 +184,7 @@ public final class DiagnosisV6 {
         detail);
   }
 
-  /** CDN or CLIENT verdict with full evidence fields. */
+  /** CDN or NETWORK verdict with full evidence fields. */
   public static DiagnosisV6 classified(
       Cause cause,
       int[] httpErrorCodes,
@@ -250,12 +250,12 @@ public final class DiagnosisV6 {
    * <p>Field meanings: {@code slow} = number of V segs whose load drained the buffer
    * ({@code excessRatio > 0.10}); {@code server-lag} = of those, how many also had TTFB
    * outlier ({@code ttfb > tukey_upper_fence}). Cause = CDN when ≥50% slow segs are
-   * server-lag; else CLIENT.
+   * server-lag; else NETWORK.
    *
    * <p>Examples:
    * <pre>
    * 🔴 V6 · CDN · slow=2 server-lag=2 · fence=93ms
-   * 🟠 V6 · CLIENT · slow=1 server-lag=0 · fence=150ms
+   * 🟠 V6 · NETWORK · slow=1 server-lag=0 · fence=150ms
    * ⚪ V6 · INCONCLUSIVE · cold_start
    * ⚪ V6 · INCONCLUSIVE · sanity_fail:demand_low
    * </pre>
@@ -322,7 +322,7 @@ public final class DiagnosisV6 {
     switch (cause) {
       case CDN:
         return "🔴";
-      case CLIENT:
+      case NETWORK:
         return "🟠";
       case INCONCLUSIVE:
       default:

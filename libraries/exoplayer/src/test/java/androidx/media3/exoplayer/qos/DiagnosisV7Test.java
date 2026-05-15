@@ -40,9 +40,6 @@ public class DiagnosisV7Test {
     assertThat(d.nACdnEvidence).isEqualTo(0);
     assertThat(d.ttfbFenceUpperVMs).isEqualTo(-1);
     assertThat(d.ttfbFenceUpperAMs).isEqualTo(-1);
-    assertThat(d.lastTtfbMs).isEqualTo(-1);
-    assertThat(d.lastBufferMs).isEqualTo(-1);
-    assertThat(d.mtpCollapseDetected).isFalse();
     assertThat(d.nRetries).isEqualTo(0);
   }
 
@@ -79,10 +76,9 @@ public class DiagnosisV7Test {
             /* nACdnEvidence= */ 2,
             /* ttfbFenceUpperVMs= */ 500,
             /* ttfbFenceUpperAMs= */ 200,
-            /* lastTtfbMs= */ 800,
-            /* lastBufferMs= */ 1500,
-            /* mtpCollapseDetected= */ false,
-            /* nRetries= */ 1);
+            /* nRetries= */ 1,
+            /* cohortNetworkType= */ "WIFI",
+            /* cohortCdnProvider= */ "fpt");
     assertThat(d.cause).isEqualTo(DiagnosisV7.Cause.CDN);
     assertThat(d.nVDrained).isEqualTo(3);
     assertThat(d.nADrained).isEqualTo(2);
@@ -90,15 +86,17 @@ public class DiagnosisV7Test {
     assertThat(d.nACdnEvidence).isEqualTo(2);
     assertThat(d.nDrainedTotal()).isEqualTo(5);
     assertThat(d.nCdnEvidenceTotal()).isEqualTo(5);
+    assertThat(d.cohortNetworkType).isEqualTo("WIFI");
+    assertThat(d.cohortCdnProvider).isEqualTo("fpt");
     assertThat(d.httpErrorCodes).asList().containsExactly(503);
   }
 
   @Test
   public void classified_client_belowGate() {
-    // nDrained=5 (4V+1A), nCdnEv=2 (V only) → 2×2=4 < 5 → CLIENT.
+    // nDrained=5 (4V+1A), nCdnEv=2 (V only) → 2×2=4 < 5 → NETWORK.
     DiagnosisV7 d =
         DiagnosisV7.classified(
-            DiagnosisV7.Cause.CLIENT,
+            DiagnosisV7.Cause.NETWORK,
             new int[0],
             /* nV= */ 4,
             /* nA= */ 2,
@@ -108,14 +106,12 @@ public class DiagnosisV7Test {
             /* nACdnEvidence= */ 0,
             /* ttfbFenceUpperVMs= */ 600,
             /* ttfbFenceUpperAMs= */ 250,
-            /* lastTtfbMs= */ 400,
-            /* lastBufferMs= */ 3000,
-            /* mtpCollapseDetected= */ true,
-            /* nRetries= */ 0);
-    assertThat(d.cause).isEqualTo(DiagnosisV7.Cause.CLIENT);
+            /* nRetries= */ 0,
+            /* cohortNetworkType= */ "4G",
+            /* cohortCdnProvider= */ "akamai");
+    assertThat(d.cause).isEqualTo(DiagnosisV7.Cause.NETWORK);
     assertThat(d.nDrainedTotal()).isEqualTo(5);
     assertThat(d.nCdnEvidenceTotal()).isEqualTo(2);
-    assertThat(d.mtpCollapseDetected).isTrue();
   }
 
   @Test
@@ -135,7 +131,8 @@ public class DiagnosisV7Test {
     DiagnosisV7 d =
         DiagnosisV7.classified(
             DiagnosisV7.Cause.CDN, new int[] {503},
-            4, 3, 3, 2, 3, 2, 500, 200, 800, 1500, false, 1);
+            4, 3, 3, 2, 3, 2, 500, 200, 1,
+            "WIFI", "fpt");
     String s = d.toDisplaySummary();
     assertThat(s).contains("V7");
     assertThat(s).contains("CDN");
@@ -162,32 +159,38 @@ public class DiagnosisV7Test {
   }
 
   @Test
-  public void toFullDetail_cdn_includesVABreakdown() {
+  public void toFullDetail_cdn_compactVABreakdown() {
     DiagnosisV7 d =
         DiagnosisV7.classified(
-            DiagnosisV7.Cause.CLIENT, new int[0],
-            4, 3, 3, 2, 0, 0, 500, 200, 400, 2000, true, 0);
+            DiagnosisV7.Cause.NETWORK, new int[0],
+            4, 3, 3, 2, 0, 0, 500, 200, 0,
+            "WIFI", "fpt");
     String s = d.toFullDetail();
-    assertThat(s).contains("Cause: CLIENT");
-    assertThat(s).contains("V segments: 4");
-    assertThat(s).contains("A segments: 3");
-    assertThat(s).contains("V drained: 3");
-    assertThat(s).contains("A drained: 2");
-    assertThat(s).contains("V server-lag (CDN): 0");
-    assertThat(s).contains("A server-lag (CDN): 0");
-    assertThat(s).contains("TTFB fence V: 500ms");
-    assertThat(s).contains("TTFB fence A: 200ms");
-    assertThat(s).contains("Network drop: yes");
+    assertThat(s).contains("Cause: NETWORK");
+    assertThat(s).contains("Segment (V/A): 4/3");
+    assertThat(s).contains("Drained (V/A): 3/2");
+    assertThat(s).contains("CDN Lag (V/A): 0/0");
+    assertThat(s).contains("TTFB Fence (V/A): 500/200 ms");
+    assertThat(s).contains("Net: WIFI · CDN: fpt");
+    assertThat(s).doesNotContain("Network drop");
+    assertThat(s).doesNotContain("ABR lag");
   }
 
   @Test
-  public void toFullDetail_audioColdStartFenceAMinusOne_omitsFenceALine() {
+  public void toFullDetail_audioColdStartFenceAMinusOne_showsDashForA() {
     DiagnosisV7 d =
         DiagnosisV7.classified(
             DiagnosisV7.Cause.CDN, new int[0],
-            4, 0, 3, 0, 3, 0, 500, /* ttfbFenceUpperAMs= */ -1, 800, 1500, false, 0);
+            4, 0, 3, 0, 3, 0, 500, /* ttfbFenceUpperAMs= */ -1, 0,
+            "WIFI", "fpt");
     String s = d.toFullDetail();
-    assertThat(s).contains("TTFB fence V: 500ms");
-    assertThat(s).doesNotContain("TTFB fence A");
+    assertThat(s).contains("TTFB Fence (V/A): 500/- ms");
+  }
+
+  @Test
+  public void inconclusive_cohort_defaultsUnknown() {
+    DiagnosisV7 d = DiagnosisV7.inconclusive(DiagnosisV7.Reason.COLD_START, new int[0]);
+    assertThat(d.cohortNetworkType).isEqualTo("UNKNOWN");
+    assertThat(d.cohortCdnProvider).isEqualTo("UNKNOWN");
   }
 }

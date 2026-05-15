@@ -88,7 +88,7 @@ public class DiagnosisV6Test {
   public void classified_factory_emptyHttpCodesAllowed() {
     DiagnosisV6 r =
         DiagnosisV6.classified(
-            DiagnosisV6.Cause.CLIENT,
+            DiagnosisV6.Cause.NETWORK,
             new int[0],
             5,
             5,
@@ -96,7 +96,7 @@ public class DiagnosisV6Test {
             150,
             80,
             1500);
-    assertThat(r.cause).isEqualTo(DiagnosisV6.Cause.CLIENT);
+    assertThat(r.cause).isEqualTo(DiagnosisV6.Cause.NETWORK);
     assertThat(r.httpErrorCodes).isEmpty();
     assertThat(r.reason).isNull();
   }
@@ -109,7 +109,7 @@ public class DiagnosisV6Test {
         .asList()
         .containsExactly(
             DiagnosisV6.Cause.CDN,
-            DiagnosisV6.Cause.CLIENT,
+            DiagnosisV6.Cause.NETWORK,
             DiagnosisV6.Cause.INCONCLUSIVE);
   }
 
@@ -132,7 +132,7 @@ public class DiagnosisV6Test {
   public void toDisplaySummary_client_includesSlowAndZeroServerLag() {
     DiagnosisV6 r =
         DiagnosisV6.classified(
-            DiagnosisV6.Cause.CLIENT,
+            DiagnosisV6.Cause.NETWORK,
             new int[0],
             5,
             5,
@@ -141,7 +141,7 @@ public class DiagnosisV6Test {
             80,
             1_500);
     String s = r.toDisplaySummary();
-    assertThat(s).contains("CLIENT");
+    assertThat(s).contains("NETWORK");
     assertThat(s).contains("slow=5");
     assertThat(s).contains("server-lag=0");
     assertThat(s).contains("fence=150ms");
@@ -169,7 +169,7 @@ public class DiagnosisV6Test {
   public void toDisplaySummary_withHttpErrorCodes_appendsCodesAfterCore() {
     DiagnosisV6 r =
         DiagnosisV6.classified(
-            DiagnosisV6.Cause.CLIENT,
+            DiagnosisV6.Cause.NETWORK,
             new int[] {503, 404},
             5,
             5,

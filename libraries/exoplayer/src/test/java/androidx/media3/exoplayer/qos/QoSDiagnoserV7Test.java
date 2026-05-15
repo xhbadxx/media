@@ -163,8 +163,8 @@ public class QoSDiagnoserV7Test {
     assertThat(d.nADrained).isEqualTo(0);
     assertThat(d.nACdnEvidence).isEqualTo(0);
     assertThat(d.ttfbFenceUpperVMs).isEqualTo(100);
-    assertThat(d.lastTtfbMs).isEqualTo(500);
-    assertThat(d.lastBufferMs).isEqualTo(1_500);
+    assertThat(d.cohortNetworkType).isEqualTo("WIFI");
+    assertThat(d.cohortCdnProvider).isEqualTo("fpt");
   }
 
   @Test
@@ -177,7 +177,7 @@ public class QoSDiagnoserV7Test {
     RebufferGroup g =
         new RebufferGroup(1, 7_000L, trigger, Arrays.asList(s1, s2, s3, trigger), null);
     DiagnosisV7 d = QoSDiagnoserV7.diagnose(g, stats);
-    assertThat(d.cause).isEqualTo(DiagnosisV7.Cause.CLIENT);
+    assertThat(d.cause).isEqualTo(DiagnosisV7.Cause.NETWORK);
     assertThat(d.nVDrained).isEqualTo(3);
     assertThat(d.nVCdnEvidence).isEqualTo(0);
   }
@@ -197,9 +197,9 @@ public class QoSDiagnoserV7Test {
     RebufferGroup g =
         new RebufferGroup(1, 7_000L, trigger, Arrays.asList(s1, s2, s3, trigger), null);
     DiagnosisV7 d = QoSDiagnoserV7.diagnose(g, stats);
-    assertThat(d.cause).isEqualTo(DiagnosisV7.Cause.CLIENT);
-    assertThat(d.mtpCollapseDetected).isTrue();
+    assertThat(d.cause).isEqualTo(DiagnosisV7.Cause.NETWORK);
     assertThat(d.nVDrained).isEqualTo(3);
+    // mtp-collapse guard logic still vetoes CDN evidence (nVCdnEvidence stays 0).
     assertThat(d.nVCdnEvidence).isEqualTo(0);
   }
 
@@ -213,7 +213,7 @@ public class QoSDiagnoserV7Test {
     RebufferGroup g =
         new RebufferGroup(1, 7_000L, trigger, Arrays.asList(s1, s2, s3, trigger), null);
     DiagnosisV7 d = QoSDiagnoserV7.diagnose(g, stats);
-    assertThat(d.cause).isEqualTo(DiagnosisV7.Cause.CLIENT);
+    assertThat(d.cause).isEqualTo(DiagnosisV7.Cause.NETWORK);
     assertThat(d.nRetries).isEqualTo(2);
   }
 
@@ -284,7 +284,7 @@ public class QoSDiagnoserV7Test {
   @Test
   public void diagnose_vCdnAudioBodySlow_dropsBelowGate_returnsClient() {
     // V 4 CDN + A 5 drained but body slow (postKbps ≈ 49 < 115.2 → not healthy).
-    // nDrained=9, nCdnEv=4 (V only), 4×2=8 < 9 → CLIENT.
+    // nDrained=9, nCdnEv=4 (V only), 4×2=8 < 9 → NETWORK.
     SessionStatistics stats = sessionStatsWarmFull(KEY_WIFI_MISS_FPT);
     QoSInfo s1 = vSeg(1_000L, 2_000L, 2_400L, 500, 1_500);
     QoSInfo s2 = vSeg(3_000L, 2_000L, 2_400L, 500, 1_500);
@@ -305,7 +305,7 @@ public class QoSDiagnoserV7Test {
             Arrays.asList(s1, s2, s3, s4, a1, a2, a3, a4, a5, trigger),
             null);
     DiagnosisV7 d = QoSDiagnoserV7.diagnose(g, stats);
-    assertThat(d.cause).isEqualTo(DiagnosisV7.Cause.CLIENT);
+    assertThat(d.cause).isEqualTo(DiagnosisV7.Cause.NETWORK);
     assertThat(d.nDrainedTotal()).isEqualTo(9);
     assertThat(d.nCdnEvidenceTotal()).isEqualTo(4);
     assertThat(d.nVDrained).isEqualTo(4);
@@ -315,7 +315,7 @@ public class QoSDiagnoserV7Test {
 
   @Test
   public void diagnose_audioOnlyDrained_vHealthy_returnsClient() {
-    // V healthy (no drain) + A 3 drained body-slow → nDrained=3, nCdnEv=0 → CLIENT.
+    // V healthy (no drain) + A 3 drained body-slow → nDrained=3, nCdnEv=0 → NETWORK.
     SessionStatistics stats = sessionStatsWarmFull(KEY_WIFI_MISS_FPT);
     QoSInfo s1 = vSeg(1_000L, 2_000L, 1_900L, 80, 1_500);
     QoSInfo s2 = vSeg(3_000L, 2_000L, 1_950L, 90, 1_500);
@@ -328,7 +328,7 @@ public class QoSDiagnoserV7Test {
         new RebufferGroup(
             1, 7_000L, trigger, Arrays.asList(s1, s2, s3, a1, a2, a3, trigger), null);
     DiagnosisV7 d = QoSDiagnoserV7.diagnose(g, stats);
-    assertThat(d.cause).isEqualTo(DiagnosisV7.Cause.CLIENT);
+    assertThat(d.cause).isEqualTo(DiagnosisV7.Cause.NETWORK);
     assertThat(d.nVDrained).isEqualTo(0);
     assertThat(d.nADrained).isEqualTo(3);
     assertThat(d.nACdnEvidence).isEqualTo(0);

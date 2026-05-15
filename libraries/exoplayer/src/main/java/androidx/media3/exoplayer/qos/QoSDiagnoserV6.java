@@ -35,7 +35,7 @@ import java.util.List;
  *   <li>Per-V evidence: {@code isDrained = excessRatio > 0.10},
  *       {@code isTtfbOutlier = ttfb > tukey_upper_fence}.
  *   <li>Classify drained segs. Zero drained → UNKNOWN(no_drain). Else CDN if
- *       {@code nCdnEvidence × 2 ≥ nDrained}; else CLIENT.
+ *       {@code nCdnEvidence × 2 ≥ nDrained}; else NETWORK.
  *   <li>Attach metadata (HTTP error codes, debug fields). HTTP codes never drive cause.
  * </ol>
  */
@@ -102,7 +102,7 @@ public final class QoSDiagnoserV6 {
 
     // Step 1.5: sanity gate (reuse V1). Drain proxy excessRatio and Tukey TTFB
     // checks both assume 1× playback. Filter non-1× windows (paused / sped /
-    // seeked / degenerate) so they don't yield bogus CDN vs CLIENT verdicts.
+    // seeked / degenerate) so they don't yield bogus CDN vs NETWORK verdicts.
     QoSDiagnoser.WindowMetrics metrics = QoSDiagnoser.computeWindowMetrics(group);
     String sanityFail = QoSDiagnoser.applySanityG1ate(metrics);
     if (sanityFail != null) {
@@ -146,7 +146,7 @@ public final class QoSDiagnoserV6 {
       nDrained++;
       boolean isTtfbExtreme = s.ttfbMs > strictTtfbUpper;
       // mtp-collapse guard: if ABR's measured throughput dropped below per-key Tukey
-      // lower fence, the bottleneck is network/Wi-Fi (CLIENT) — even if TTFB is high,
+      // lower fence, the bottleneck is network/Wi-Fi (NETWORK) — even if TTFB is high,
       // it's a network-path symptom not server-side.
       boolean isMtpCollapsed =
           mtpFence != null
@@ -177,7 +177,7 @@ public final class QoSDiagnoserV6 {
     DiagnosisV6.Cause cause =
         (nCdnEvidence * CDN_MAJORITY_DENOM >= nDrained * CDN_MAJORITY_NUM)
             ? DiagnosisV6.Cause.CDN
-            : DiagnosisV6.Cause.CLIENT;
+            : DiagnosisV6.Cause.NETWORK;
 
     // Step 5: attach metadata.
     return DiagnosisV6.classified(

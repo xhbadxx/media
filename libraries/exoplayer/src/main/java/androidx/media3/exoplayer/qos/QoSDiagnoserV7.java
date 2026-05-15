@@ -41,7 +41,7 @@ import java.util.List;
  *   <li>Per-A evidence (NEW, only if audioFence non-null): drained + ttfbExtreme(K=3 on
  *       audioFence) + bodyHealthy(≥0.90 × audioBitrate). No mtp guard.
  *   <li>Merge: nDrained = nVD + nAD; nCdnEv = nVCE + nACE; gate {@code nCdnEv × 2 ≥
- *       nDrained} → CDN/CLIENT. nDrained = 0 → INCONCLUSIVE(NO_DRAIN).
+ *       nDrained} → CDN/NETWORK. nDrained = 0 → INCONCLUSIVE(NO_DRAIN).
  * </ol>
  *
  * <p>Audio fence cold-start fallback: audio evidence silently skipped, V drives verdict.
@@ -121,20 +121,21 @@ public final class QoSDiagnoserV7 {
     int nVDrained = 0;
     int nVCdnEvidence = 0;
     int nRetries = 0;
-    boolean mtpCollapseDetected = false;
     for (QoSInfo s : vSegs) {
       if (s.retryCount > 0) nRetries++;
+      // isTtfbExtreme
       double excessRatio =
           (double) Math.max(0L, s.loadDurationMs - s.chunkDurationMs) / s.chunkDurationMs;
       boolean isDrained = excessRatio > SLOW_RATIO;
       if (!isDrained) continue;
-      nVDrained++;
+      nVDrained++; // -> Get buffer
       boolean isTtfbExtreme = s.ttfbMs > strictTtfbUpperV;
+      // MtpCollapsed
       boolean isMtpCollapsed =
           mtpFence != null
               && s.measuredThroughputKbps > 0
               && s.measuredThroughputKbps < mtpFence.lowerFence;
-      if (isMtpCollapsed) mtpCollapseDetected = true;
+      // BodyHealthy
       boolean isBodyHealthy = false;
       if (s.bitrateKbps > 0
           && s.ttfbMs >= 0
@@ -144,6 +145,7 @@ public final class QoSDiagnoserV7 {
         double postTtfbKbps = (s.bytesLoaded * 8.0) / transferMs;
         isBodyHealthy = postTtfbKbps >= s.bitrateKbps * BODY_HEALTHY_RATIO;
       }
+      // Final
       if (isTtfbExtreme && !isMtpCollapsed && isBodyHealthy) {
         nVCdnEvidence++;
       }
@@ -192,7 +194,12 @@ public final class QoSDiagnoserV7 {
     DiagnosisV7.Cause cause =
         (nCdnEvTotal * CDN_MAJORITY_DENOM >= nDrainedTotal * CDN_MAJORITY_NUM)
             ? DiagnosisV7.Cause.CDN
-            : DiagnosisV7.Cause.CLIENT;
+            : DiagnosisV7.Cause.NETWORK;
+
+    // Cohort labels for cross-team debug + support ticket attachment.
+    String cohortNet = QoSDiagnoserV5.networkTypeStr(lastV.networkType);
+    String cohortCdn =
+        (lastV.cdnProvider != null && !lastV.cdnProvider.isEmpty()) ? lastV.cdnProvider : "UNKNOWN";
 
     // Step 5: attach metadata.
     return DiagnosisV7.classified(
@@ -206,10 +213,9 @@ public final class QoSDiagnoserV7 {
         nACdnEvidence,
         strictTtfbUpperV,
         strictTtfbUpperA,
-        lastV.ttfbMs,
-        lastV.bufferedDurationMs,
-        mtpCollapseDetected,
-        nRetries);
+        nRetries,
+        cohortNet,
+        cohortCdn);
   }
 
   /** Collect 4xx + 5xx HTTP status codes from any errored entry — metadata only. */

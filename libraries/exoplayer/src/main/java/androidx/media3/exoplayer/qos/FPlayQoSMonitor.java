@@ -316,9 +316,6 @@ public final class FPlayQoSMonitor {
       log.append(" v7.nAD=").append(v7.nADrained);
       log.append(" v7.nVCE=").append(v7.nVCdnEvidence);
       log.append(" v7.nACE=").append(v7.nACdnEvidence);
-      if (v7.mtpCollapseDetected) {
-        log.append(" v7.mtpCollapse=1");
-      }
       log.append(" v7.fenceV=").append(v7.ttfbFenceUpperVMs).append("ms");
       log.append(" v7.fenceA=").append(v7.ttfbFenceUpperAMs).append("ms");
     }

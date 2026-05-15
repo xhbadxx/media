@@ -121,7 +121,7 @@ public class QoSDiagnoserV6Test {
   public void diagnose_initSegmentTrigger_returnsInconclusiveTrackSwitch() {
     // Simulates a track-switch artifact: bs=true fires on an init.mp4 (chunkDurationMs=0,
     // bytesLoaded>0) during a bitrate change, while several V segs in the window drained
-    // due to transition turbulence. Without this guard, V6 would classify CLIENT based on
+    // due to transition turbulence. Without this guard, V6 would classify NETWORK based on
     // residual drained segs even though the real cause is the track switch itself.
     SessionStatistics stats = sessionStatsWarm(KEY_WIFI_MISS_FPT);
     QoSInfo s1 = vSeg(1_000L, 2_000L, 2_400L, 80, 1_500); // drained but transition noise
@@ -186,7 +186,7 @@ public class QoSDiagnoserV6Test {
     RebufferGroup g =
         new RebufferGroup(1, 7_000L, trigger, Arrays.asList(s1, s2, s3, trigger), null);
     DiagnosisV6 r = QoSDiagnoserV6.diagnose(g, stats);
-    assertThat(r.cause).isEqualTo(DiagnosisV6.Cause.CLIENT);
+    assertThat(r.cause).isEqualTo(DiagnosisV6.Cause.NETWORK);
     assertThat(r.nDrained).isEqualTo(3);
     assertThat(r.nCdnEvidence).isEqualTo(0);
   }
@@ -195,7 +195,7 @@ public class QoSDiagnoserV6Test {
   public void diagnose_warmFence_drainedTtfbOutlierButBodySlow_returnsClient() {
     // Real-world r9 pattern: ttfb high (server response slightly delayed) + body slow
     // (post-TTFB rate << bitrate) = network bandwidth shortage, not CDN. Body-healthy
-    // veto kicks in → CLIENT.
+    // veto kicks in → NETWORK.
     SessionStatistics stats = sessionStatsWarm(KEY_WIFI_MISS_FPT);
     // ttfb=200 (outlier > strict 100) + loadDur=4000 → transferMs=3800 → rate=505kbps
     // → body ratio 0.505 < 0.90 unhealthy → NOT counted as CDN evidence
@@ -206,7 +206,7 @@ public class QoSDiagnoserV6Test {
     RebufferGroup g =
         new RebufferGroup(1, 7_000L, trigger, Arrays.asList(s1, s2, s3, trigger), null);
     DiagnosisV6 r = QoSDiagnoserV6.diagnose(g, stats);
-    assertThat(r.cause).isEqualTo(DiagnosisV6.Cause.CLIENT);
+    assertThat(r.cause).isEqualTo(DiagnosisV6.Cause.NETWORK);
     assertThat(r.nDrained).isEqualTo(3);
     assertThat(r.nCdnEvidence).isEqualTo(0); // all vetoed by body-slow check
   }
@@ -231,7 +231,7 @@ public class QoSDiagnoserV6Test {
 
   @Test
   public void diagnose_warmFence_minorityCdnEvidence25pct_returnsClient() {
-    // 4 drained, 1 with TTFB outlier + body healthy (25%). 1*2=2 < 4 → CLIENT
+    // 4 drained, 1 with TTFB outlier + body healthy (25%). 1*2=2 < 4 → NETWORK
     SessionStatistics stats = sessionStatsWarm(KEY_WIFI_MISS_FPT);
     QoSInfo s1 = vSeg(1_000L, 2_000L, 2_400L, 500, 1_500); // drained + outlier + healthy body
     QoSInfo s2 = vSeg(3_000L, 2_000L, 3_000L, 50, 1_500); // drained, no outlier
@@ -242,14 +242,14 @@ public class QoSDiagnoserV6Test {
         new RebufferGroup(
             1, 9_000L, trigger, Arrays.asList(s1, s2, s3, s4, trigger), null);
     DiagnosisV6 r = QoSDiagnoserV6.diagnose(g, stats);
-    assertThat(r.cause).isEqualTo(DiagnosisV6.Cause.CLIENT);
+    assertThat(r.cause).isEqualTo(DiagnosisV6.Cause.NETWORK);
     assertThat(r.nDrained).isEqualTo(4);
     assertThat(r.nCdnEvidence).isEqualTo(1);
   }
 
   @Test
   public void diagnose_httpErrorCodesAttached_butDoNotDriveClassification() {
-    // 503 error + 3 drained no outlier → CLIENT (not CDN_HTTP like V5).
+    // 503 error + 3 drained no outlier → NETWORK (not CDN_HTTP like V5).
     SessionStatistics stats = sessionStatsWarm(KEY_WIFI_MISS_FPT);
     QoSInfo s1 = vSeg(1_000L, 2_000L, 3_000L, 50, 1_500);
     QoSInfo err = errorSeg(2_000L, 503);
@@ -260,7 +260,7 @@ public class QoSDiagnoserV6Test {
         new RebufferGroup(
             1, 7_000L, trigger, Arrays.asList(s1, err, s2, s3, trigger), null);
     DiagnosisV6 r = QoSDiagnoserV6.diagnose(g, stats);
-    assertThat(r.cause).isEqualTo(DiagnosisV6.Cause.CLIENT);
+    assertThat(r.cause).isEqualTo(DiagnosisV6.Cause.NETWORK);
     assertThat(r.httpErrorCodes).asList().containsExactly(503);
   }
 
@@ -298,7 +298,7 @@ public class QoSDiagnoserV6Test {
         new RebufferGroup(1, 7_000L, trigger, Arrays.asList(s1, s2, s3, trigger), null);
     DiagnosisV6 r = QoSDiagnoserV6.diagnose(g, stats);
 
-    assertThat(r.cause).isEqualTo(DiagnosisV6.Cause.CLIENT);
+    assertThat(r.cause).isEqualTo(DiagnosisV6.Cause.NETWORK);
     assertThat(r.nDrained).isEqualTo(3);
     assertThat(r.nCdnEvidence).isEqualTo(0); // marginal outliers not counted
     assertThat(r.ttfbFenceUpperMs).isEqualTo(270); // strict K=3 fence exposed
@@ -343,7 +343,7 @@ public class QoSDiagnoserV6Test {
         new RebufferGroup(1, 7_000L, trigger, Arrays.asList(s1, s2, s3, trigger), null);
     DiagnosisV6 r = QoSDiagnoserV6.diagnose(g, stats);
 
-    assertThat(r.cause).isEqualTo(DiagnosisV6.Cause.CLIENT);
+    assertThat(r.cause).isEqualTo(DiagnosisV6.Cause.NETWORK);
     assertThat(r.mtpCollapseDetected).isTrue();
     assertThat(r.nDrained).isEqualTo(3);
     assertThat(r.nCdnEvidence).isEqualTo(0); // all vetoed by mtp collapse
@@ -353,8 +353,8 @@ public class QoSDiagnoserV6Test {
 
   @Test
   public void diagnose_segmentsWithRetries_nRetriesCounted_doesNotDriveCause() {
-    // 3 V segs drained + body slow (CLIENT verdict). 2 of them had retries (transient
-    // load failure → reload). nRetries counted but cause stays CLIENT (retry doesn't
+    // 3 V segs drained + body slow (NETWORK verdict). 2 of them had retries (transient
+    // load failure → reload). nRetries counted but cause stays NETWORK (retry doesn't
     // override the body-slow verdict).
     SessionStatistics stats = sessionStatsWarm(KEY_WIFI_MISS_FPT);
     QoSInfo s1 = vSegWithRetries(1_000L, 2_000L, 4_000L, 200, 1_500, /* retries= */ 1);
@@ -364,7 +364,7 @@ public class QoSDiagnoserV6Test {
     RebufferGroup g =
         new RebufferGroup(1, 7_000L, trigger, Arrays.asList(s1, s2, s3, trigger), null);
     DiagnosisV6 r = QoSDiagnoserV6.diagnose(g, stats);
-    assertThat(r.cause).isEqualTo(DiagnosisV6.Cause.CLIENT);
+    assertThat(r.cause).isEqualTo(DiagnosisV6.Cause.NETWORK);
     assertThat(r.nRetries).isEqualTo(2);
   }
 

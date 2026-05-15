@@ -369,6 +369,9 @@ public final class QoSDiagnoserV5 {
     String net = networkTypeStr(s.networkType);
     String cache = s.cacheStatus != null ? s.cacheStatus : "UNKNOWN";
     String cdn = s.cdnProvider != null ? s.cdnProvider : "UNKNOWN";
+    if (net.isEmpty()) net = "UNKNOWN";
+    if (cache.isEmpty()) cache = "UNKNOWN";
+    if (cdn.isEmpty()) cdn = "UNKNOWN";
     return net + "_" + cache + "_" + cdn;
   }
 

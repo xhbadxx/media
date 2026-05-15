@@ -35,7 +35,7 @@ public final class DiagnosisV7 {
   /** Same 3-cause set as V6. */
   public enum Cause {
     CDN,
-    CLIENT,
+    NETWORK,
     INCONCLUSIVE
   }
 
@@ -98,19 +98,16 @@ public final class DiagnosisV7 {
    */
   public final int ttfbFenceUpperAMs;
 
-  /** Last V seg TTFB (ms). {@code -1} for INCONCLUSIVE. */
-  public final int lastTtfbMs;
-
-  /** Last V seg buffered duration (ms). {@code -1} for INCONCLUSIVE. */
-  public final int lastBufferMs;
-
-  /** True if at least one drained V seg had {@code mtp < tukey_lower_fence(mtp)}. */
-  public final boolean mtpCollapseDetected;
-
   /** Number of V segs with {@code retryCount > 0}. Metadata only. */
   public final int nRetries;
 
-  /** Why an INCONCLUSIVE verdict was emitted. {@code null} for CDN/CLIENT. */
+  /** Cohort label: network type của lastV (WIFI/4G/5G_SA/...). "UNKNOWN" if not detected. */
+  public final String cohortNetworkType;
+
+  /** Cohort label: CDN provider của lastV (fpt/akamai/byteplus). "UNKNOWN" if missing. */
+  public final String cohortCdnProvider;
+
+  /** Why an INCONCLUSIVE verdict was emitted. {@code null} for CDN/NETWORK. */
   @Nullable public final Reason reason;
 
   /** Sub-reason detail (e.g. sanity-gate sub-fail). {@code null} otherwise. */
@@ -127,10 +124,9 @@ public final class DiagnosisV7 {
       int nACdnEvidence,
       int ttfbFenceUpperVMs,
       int ttfbFenceUpperAMs,
-      int lastTtfbMs,
-      int lastBufferMs,
-      boolean mtpCollapseDetected,
       int nRetries,
+      String cohortNetworkType,
+      String cohortCdnProvider,
       @Nullable Reason reason,
       @Nullable String reasonDetail) {
     this.cause = cause;
@@ -143,10 +139,9 @@ public final class DiagnosisV7 {
     this.nACdnEvidence = nACdnEvidence;
     this.ttfbFenceUpperVMs = ttfbFenceUpperVMs;
     this.ttfbFenceUpperAMs = ttfbFenceUpperAMs;
-    this.lastTtfbMs = lastTtfbMs;
-    this.lastBufferMs = lastBufferMs;
-    this.mtpCollapseDetected = mtpCollapseDetected;
     this.nRetries = nRetries;
+    this.cohortNetworkType = cohortNetworkType;
+    this.cohortCdnProvider = cohortCdnProvider;
     this.reason = reason;
     this.reasonDetail = reasonDetail;
   }
@@ -185,10 +180,9 @@ public final class DiagnosisV7 {
         /* nACdnEvidence= */ 0,
         /* ttfbFenceUpperVMs= */ -1,
         /* ttfbFenceUpperAMs= */ -1,
-        /* lastTtfbMs= */ -1,
-        /* lastBufferMs= */ -1,
-        /* mtpCollapseDetected= */ false,
         nRetries,
+        /* cohortNetworkType= */ "UNKNOWN",
+        /* cohortCdnProvider= */ "UNKNOWN",
         reason,
         detail);
   }
@@ -204,7 +198,7 @@ public final class DiagnosisV7 {
    * <p>Examples:
    * <pre>
    * 🔴 V7 · CDN · vSlow=3 aSlow=2 vSvrLag=3 aSvrLag=2 · fenceV=500ms fenceA=200ms
-   * 🟠 V7 · CLIENT · vSlow=4 aSlow=0 vSvrLag=0 aSvrLag=0 · fenceV=100ms fenceA=-1ms
+   * 🟠 V7 · NETWORK · vSlow=4 aSlow=0 vSvrLag=0 aSvrLag=0 · fenceV=100ms fenceA=-1ms
    * ⚪ V7 · INCONCLUSIVE · cold_start
    * </pre>
    */
@@ -223,9 +217,6 @@ public final class DiagnosisV7 {
           .append(" aSlow=").append(nADrained)
           .append(" vSvrLag=").append(nVCdnEvidence)
           .append(" aSvrLag=").append(nACdnEvidence);
-      if (mtpCollapseDetected) {
-        sb.append(" (mtp-collapsed)");
-      }
       sb.append(" · fenceV=").append(ttfbFenceUpperVMs).append("ms");
       sb.append(" fenceA=").append(ttfbFenceUpperAMs).append("ms");
     }
@@ -239,12 +230,13 @@ public final class DiagnosisV7 {
   }
 
   /**
-   * Multi-line full breakdown for expanded UI / debug HUD / support tickets. Each
-   * evidence section on its own line. Audio-side rows omitted when fence A is cold
-   * (i.e., {@code ttfbFenceUpperAMs == -1}).
+   * Multi-line full breakdown for expanded UI / debug HUD / support tickets. Compact
+   * format: combined V/A counts per row. Single-segment "last" fields (TTFB, buffer,
+   * bitrate, mtp, post-rate) omitted vì noise — verdict dùng cascade across nhiều
+   * segments, không phải single point-in-time values.
    */
   public String toFullDetail() {
-    StringBuilder sb = new StringBuilder(320);
+    StringBuilder sb = new StringBuilder(256);
     sb.append("Cause: ").append(cause.name());
     if (cause == Cause.INCONCLUSIVE && reason != null) {
       sb.append(" · ").append(reason.code);
@@ -253,19 +245,18 @@ public final class DiagnosisV7 {
       }
     }
     if (cause != Cause.INCONCLUSIVE) {
-      sb.append('\n').append("V segments: ").append(nV);
-      sb.append('\n').append("A segments: ").append(nA);
-      sb.append('\n').append("V drained: ").append(nVDrained);
-      sb.append('\n').append("A drained: ").append(nADrained);
-      sb.append('\n').append("V server-lag (CDN): ").append(nVCdnEvidence);
-      sb.append('\n').append("A server-lag (CDN): ").append(nACdnEvidence);
-      sb.append('\n').append("TTFB fence V: ").append(ttfbFenceUpperVMs).append("ms");
+      sb.append('\n').append("Segment (V/A): ").append(nV).append('/').append(nA);
+      sb.append('\n').append("Drained (V/A): ").append(nVDrained).append('/').append(nADrained);
+      sb.append('\n').append("CDN Lag (V/A): ").append(nVCdnEvidence).append('/').append(nACdnEvidence);
+      sb.append('\n').append("TTFB Fence (V/A): ").append(ttfbFenceUpperVMs).append('/');
       if (ttfbFenceUpperAMs >= 0) {
-        sb.append('\n').append("TTFB fence A: ").append(ttfbFenceUpperAMs).append("ms");
+        sb.append(ttfbFenceUpperAMs);
+      } else {
+        sb.append('-');
       }
-      sb.append('\n').append("Last V TTFB: ").append(lastTtfbMs).append("ms");
-      sb.append('\n').append("Last V buffer: ").append(lastBufferMs).append("ms");
-      sb.append('\n').append("Network drop: ").append(mtpCollapseDetected ? "yes" : "no");
+      sb.append(" ms");
+      sb.append('\n').append("Net: ").append(cohortNetworkType)
+          .append(" · CDN: ").append(cohortCdnProvider);
     }
     if (nRetries > 0) {
       sb.append('\n').append("Retries: ").append(nRetries);
@@ -280,7 +271,7 @@ public final class DiagnosisV7 {
     switch (cause) {
       case CDN:
         return "🔴";
-      case CLIENT:
+      case NETWORK:
         return "🟠";
       case INCONCLUSIVE:
       default:
@@ -288,7 +279,7 @@ public final class DiagnosisV7 {
     }
   }
 
-  /** CDN or CLIENT verdict with full V+A evidence fields. */
+  /** CDN or NETWORK verdict with full V+A evidence fields. */
   public static DiagnosisV7 classified(
       Cause cause,
       int[] httpErrorCodes,
@@ -300,10 +291,9 @@ public final class DiagnosisV7 {
       int nACdnEvidence,
       int ttfbFenceUpperVMs,
       int ttfbFenceUpperAMs,
-      int lastTtfbMs,
-      int lastBufferMs,
-      boolean mtpCollapseDetected,
-      int nRetries) {
+      int nRetries,
+      String cohortNetworkType,
+      String cohortCdnProvider) {
     return new DiagnosisV7(
         cause,
         httpErrorCodes,
@@ -315,10 +305,9 @@ public final class DiagnosisV7 {
         nACdnEvidence,
         ttfbFenceUpperVMs,
         ttfbFenceUpperAMs,
-        lastTtfbMs,
-        lastBufferMs,
-        mtpCollapseDetected,
         nRetries,
+        cohortNetworkType,
+        cohortCdnProvider,
         /* reason= */ null,
         /* reasonDetail= */ null);
   }
