@@ -106,6 +106,12 @@ public final class RebufferGroup {
    */
   @Nullable public final DiagnosisV7 diagnosisV7;
 
+  /**
+   * V8 diagnoser verdict (parallel to {@link #diagnosisV7} during V8 dual-write phase).
+   * Null for groups created before V8 wire-up.
+   */
+  @Nullable public final DiagnosisV8 diagnosisV8;
+
   /** Legacy constructor — preserves binary compatibility for callers / tests pre-FullDiagnosis. */
   public RebufferGroup(
       int id,
@@ -181,7 +187,7 @@ public final class RebufferGroup {
     this(id, triggerTimeMs, trigger, entries, diagnosis, fullDiagnosis, diagnosisV2, diagnosisV4, diagnosisV5, diagnosisV6, null);
   }
 
-  /** Full constructor — V1, V2, V4, V5, V6, and V7 verdicts all attached. */
+  /** Pre-V8 constructor — V1..V7 attached, V8 missing. */
   public RebufferGroup(
       int id,
       long triggerTimeMs,
@@ -194,6 +200,24 @@ public final class RebufferGroup {
       @Nullable DiagnosisV5 diagnosisV5,
       @Nullable DiagnosisV6 diagnosisV6,
       @Nullable DiagnosisV7 diagnosisV7) {
+    this(id, triggerTimeMs, trigger, entries, diagnosis, fullDiagnosis,
+        diagnosisV2, diagnosisV4, diagnosisV5, diagnosisV6, diagnosisV7, /* diagnosisV8= */ null);
+  }
+
+  /** Full constructor — V1, V2, V4, V5, V6, V7, V8 verdicts all attached. */
+  public RebufferGroup(
+      int id,
+      long triggerTimeMs,
+      QoSInfo trigger,
+      List<QoSInfo> entries,
+      Diagnosis diagnosis,
+      @Nullable QoSDiagnoser.FullDiagnosis fullDiagnosis,
+      @Nullable DiagnosisV2 diagnosisV2,
+      @Nullable DiagnosisV4 diagnosisV4,
+      @Nullable DiagnosisV5 diagnosisV5,
+      @Nullable DiagnosisV6 diagnosisV6,
+      @Nullable DiagnosisV7 diagnosisV7,
+      @Nullable DiagnosisV8 diagnosisV8) {
     this.id = id;
     this.triggerTimeMs = triggerTimeMs;
     this.trigger = trigger;
@@ -205,6 +229,7 @@ public final class RebufferGroup {
     this.diagnosisV5 = diagnosisV5;
     this.diagnosisV6 = diagnosisV6;
     this.diagnosisV7 = diagnosisV7;
+    this.diagnosisV8 = diagnosisV8;
   }
 
   public int size() {
