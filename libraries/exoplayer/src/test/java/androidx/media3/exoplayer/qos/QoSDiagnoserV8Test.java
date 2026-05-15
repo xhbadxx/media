@@ -440,6 +440,105 @@ public class QoSDiagnoserV8Test {
     assertThat(d.nVAbrLagInDrain).isEqualTo(0);
   }
 
+  // ===== V8 B3: per-condition counts (ttfb-ext / body-unh / mtp-coll) =====
+
+  @Test
+  public void diagnose_drainedSegsPopulatePerConditionCountsV() {
+    // V fence upper = 100ms (10 samples all 100 → Q1=Q3=100, IQR=0 → strict K=3 upper=100).
+    // V drained threshold: loadDur > cdur × 1.10 = 2000 × 1.10 = 2200ms.
+    // BODY_HEALTHY_RATIO=0.90: postKbps = bytesLoaded×8 / (loadDur - ttfb).
+    //
+    // mtpFence samples: 10 samples all = 5_000 → Q1=Q3=5000, IQR=0,
+    //   lowerFence = max(0, 5000 - 1.5×0) = 5000.
+    //   → mtp=10_000 (healthy, > lowerFence), mtp=1_000 (collapsed, < lowerFence).
+    //
+    // s1: ttfb=500 > 100 ✓ (extreme), loadDur=2500 (drained), mtp=10_000 > 5000 (not collapsed).
+    //     postKbps = 240_000×8/(2500-500) = 1_920_000/2000 = 960 ≥ 1000×0.90=900 ✓ (body-healthy).
+    //     → nVTtfbExtreme++ · CDN-evidence ✓ (ttfb-extreme AND body-healthy AND !mtp-collapsed)
+    // s2: identical to s1 → nVTtfbExtreme++ · CDN-evidence ✓
+    // s3: ttfb=500 > 100 ✓ (extreme), loadDur=2500 (drained), bytesLoaded=180_000B, mtp=10_000.
+    //     postKbps = 180_000×8/(2500-500) = 1_440_000/2000 = 720 < 1000×0.90=900 ✗ (body-unhealthy).
+    //     → nVTtfbExtreme++ · nVBodyUnhealthy++ · NOT CDN-evidence (body-unhealthy)
+    // s4: ttfb=500 > 100 ✓ (extreme), loadDur=2500 (drained), mtp=1_000 < 5_000 ✓ (collapsed).
+    //     postKbps = 240_000×8/(2500-500) = 960 ≥ 900 ✓ (body-healthy).
+    //     → nVTtfbExtreme++ · nVMtpCollapsed++ · NOT CDN-evidence (mtp-collapsed vetoes)
+    //
+    // CDN gate: nCdnEv=2, nDrained=4 → 2×2=4 ≥ 4×1=4 ✓ → CDN verdict.
+    //
+    // Expected: nVDrained=4, nVCdnEvidence=2, nVTtfbExtreme=4, nVBodyUnhealthy=1, nVMtpCollapsed=1
+    SessionStatistics stats = new SessionStatistics();
+    for (int i = 0; i < 10; i++) stats.addTtfbSample(KEY_WIFI_MISS_FPT, 100);
+    for (int i = 0; i < 10; i++) stats.addAudioTtfbSample(KEY_WIFI_MISS_FPT, 50);
+    // 10 mtp samples all = 5_000 → lowerFence=5_000.
+    for (int i = 0; i < 10; i++) stats.addMtpSample(KEY_WIFI_MISS_FPT, 5_000);
+
+    // s1, s2: ttfb-extreme + body-healthy + mtp=10_000 > lowerFence=5_000 → CDN-evidence
+    QoSInfo s1 = vSegWithMtp(1_000L, 2_000L, 2_500L, 500, 1_500, /* mtpKbps= */ 10_000);
+    QoSInfo s2 = vSegWithMtp(3_000L, 2_000L, 2_500L, 500, 1_500, /* mtpKbps= */ 10_000);
+    // s3: ttfb-extreme + body-UNhealthy (low bytes) + mtp=10_000 → nVBodyUnhealthy, NOT CDN-evidence
+    QoSInfo s3 = vSegWithBytesAndMtp(5_000L, 2_000L, 2_500L, 500, 1_500, 180_000L, 10_000);
+    // s4: ttfb-extreme + body-healthy + mtp=1_000 < lowerFence=5_000 → nVMtpCollapsed, NOT CDN-evidence
+    QoSInfo s4 = vSegWithMtp(7_000L, 2_000L, 2_500L, 500, 1_500, /* mtpKbps= */ 1_000);
+    QoSInfo trigger = triggerSeg(9_000L, 0);
+    RebufferGroup g =
+        new RebufferGroup(1, 9_000L, trigger, Arrays.asList(s1, s2, s3, s4, trigger), null);
+
+    DiagnosisV8 d = QoSDiagnoserV8.diagnose(g, stats);
+
+    assertThat(d.cause).isEqualTo(DiagnosisV8.Cause.CDN); // 2 CDN-evidence of 4 drained → 2×2=4 ≥ 4×1 ✓
+    assertThat(d.nVDrained).isEqualTo(4);
+    assertThat(d.nVCdnEvidence).isEqualTo(2);
+    assertThat(d.nVTtfbExtreme).isEqualTo(4);
+    assertThat(d.nVBodyUnhealthy).isEqualTo(1);
+    assertThat(d.nVMtpCollapsed).isEqualTo(1);
+    // Audio side untouched
+    assertThat(d.nATtfbExtreme).isEqualTo(0);
+    assertThat(d.nABodyUnhealthy).isEqualTo(0);
+  }
+
+  @Test
+  public void diagnose_audioDrainedSegsPopulatePerConditionCountsA() {
+    // Audio fence upper = 50ms (10 samples all 50 → Q1=Q3=50, IQR=0 → strict K=3 upper=50).
+    // Audio drained threshold: loadDur > cdur × 1.10 = 1800 × 1.10 = 1980ms.
+    // BODY_HEALTHY_RATIO=0.90: postKbps = bytesLoaded×8 / (loadDur - ttfb).
+    // Audio default bitrate=128kbps, healthy threshold = 128×0.90 = 115.2kbps.
+    //
+    // a1: ttfb=300 > 50 ✓ (extreme), loadDur=2200 (drained), bytesLoaded=28_800B.
+    //     postKbps = 28_800×8/(2200-300) = 230_400/1900 ≈ 121.3 ≥ 115.2 ✓ (body-healthy).
+    //     → nATtfbExtreme++ · CDN-evidence ✓
+    // a2: ttfb=300 > 50 ✓ (extreme), loadDur=2200 (drained), bytesLoaded=20_000B.
+    //     postKbps = 20_000×8/(2200-300) = 160_000/1900 ≈ 84.2 < 115.2 ✗ (body-unhealthy).
+    //     → nATtfbExtreme++ · nABodyUnhealthy++ · NOT CDN-evidence
+    //
+    // 1 V seg needed (warm, drained, CDN-evidence) to avoid INCONCLUSIVE(NO_COMPLETED_V_SEG).
+    // V contribution: 1 CDN-evidence. Combined: nDrained=3, nCdnEv=2 → 2×2=4 ≥ 3×1 ✓ → CDN.
+    //
+    // Expected: nADrained=2, nACdnEvidence=1, nATtfbExtreme=2, nABodyUnhealthy=1
+    SessionStatistics stats = sessionStatsWarmFull(KEY_WIFI_MISS_FPT);
+
+    // 1 V seg: drained + CDN-evidence (ttfb=500>100 ✓, body-healthy ✓, !mtp-collapsed ✓)
+    QoSInfo vSeg = vSeg(1_000L, 2_000L, 2_500L, 500, 1_500);
+    // a1: ttfb-extreme + body-healthy → CDN-evidence
+    QoSInfo a1 = aSegWithBytes(2_000L, 1_800L, 2_200L, 300, 28_800L);
+    // a2: ttfb-extreme + body-UNhealthy → NOT CDN-evidence
+    QoSInfo a2 = aSegWithBytes(4_000L, 1_800L, 2_200L, 300, 20_000L);
+    QoSInfo trigger = triggerSeg(6_000L, 0);
+    RebufferGroup g =
+        new RebufferGroup(1, 6_000L, trigger, Arrays.asList(vSeg, a1, a2, trigger), null);
+
+    DiagnosisV8 d = QoSDiagnoserV8.diagnose(g, stats);
+
+    assertThat(d.cause).isEqualTo(DiagnosisV8.Cause.CDN); // 2×2=4 ≥ 3×1 ✓
+    assertThat(d.nADrained).isEqualTo(2);
+    assertThat(d.nACdnEvidence).isEqualTo(1);
+    assertThat(d.nATtfbExtreme).isEqualTo(2);
+    assertThat(d.nABodyUnhealthy).isEqualTo(1);
+    // V side — no V per-condition counts (V only 1 drained CDN-evidence, extreme + healthy)
+    assertThat(d.nVTtfbExtreme).isEqualTo(1);
+    assertThat(d.nVBodyUnhealthy).isEqualTo(0);
+    assertThat(d.nVMtpCollapsed).isEqualTo(0);
+  }
+
   // ===== Helpers (mirrors QoSDiagnoserV7Test helpers) =====
 
   static QoSInfo vSeg(long ts, long cdurMs, long loadDurMs, int ttfbMs, int blMs) {
@@ -568,6 +667,71 @@ public class QoSDiagnoserV8Test {
         .setBytesLoaded(240_000L)
         .setBitrateKbps(bitrateKbps)
         .setMeasuredThroughputKbps(mtpKbps)
+        .setNetworkType(C.NETWORK_TYPE_WIFI)
+        .setCacheStatus("MISS")
+        .setCdnProvider("fpt")
+        .build();
+  }
+
+  /** V seg with custom bytesLoaded — controls post-TTFB body throughput. */
+  static QoSInfo vSegWithBytes(
+      long ts, long cdurMs, long loadDurMs, int ttfbMs, int blMs, long bytesLoaded) {
+    return new QoSInfo.Builder()
+        .setTimestampMs(ts)
+        .setTrackType(C.TRACK_TYPE_VIDEO)
+        .setStatus(QoSInfo.LoadStatus.COMPLETED)
+        .setChunkDurationMs(cdurMs)
+        .setLoadDurationMs(loadDurMs)
+        .setTtfbMs(ttfbMs)
+        .setBufferedDurationMs(blMs)
+        .setBytesLoaded(bytesLoaded)
+        .setBitrateKbps(1_000)
+        .setMeasuredThroughputKbps(1_500)
+        .setNetworkType(C.NETWORK_TYPE_WIFI)
+        .setCacheStatus("MISS")
+        .setCdnProvider("fpt")
+        .build();
+  }
+
+  /** V seg with custom bytesLoaded + measuredThroughputKbps — controls both body and mtp. */
+  static QoSInfo vSegWithBytesAndMtp(
+      long ts,
+      long cdurMs,
+      long loadDurMs,
+      int ttfbMs,
+      int blMs,
+      long bytesLoaded,
+      int mtpKbps) {
+    return new QoSInfo.Builder()
+        .setTimestampMs(ts)
+        .setTrackType(C.TRACK_TYPE_VIDEO)
+        .setStatus(QoSInfo.LoadStatus.COMPLETED)
+        .setChunkDurationMs(cdurMs)
+        .setLoadDurationMs(loadDurMs)
+        .setTtfbMs(ttfbMs)
+        .setBufferedDurationMs(blMs)
+        .setBytesLoaded(bytesLoaded)
+        .setBitrateKbps(1_000)
+        .setMeasuredThroughputKbps(mtpKbps)
+        .setNetworkType(C.NETWORK_TYPE_WIFI)
+        .setCacheStatus("MISS")
+        .setCdnProvider("fpt")
+        .build();
+  }
+
+  /** Audio seg with custom bytesLoaded — controls post-TTFB body throughput. */
+  static QoSInfo aSegWithBytes(
+      long ts, long cdurMs, long loadDurMs, int ttfbMs, long bytesLoaded) {
+    return new QoSInfo.Builder()
+        .setTimestampMs(ts)
+        .setTrackType(C.TRACK_TYPE_AUDIO)
+        .setStatus(QoSInfo.LoadStatus.COMPLETED)
+        .setChunkDurationMs(cdurMs)
+        .setLoadDurationMs(loadDurMs)
+        .setTtfbMs(ttfbMs)
+        .setBytesLoaded(bytesLoaded)
+        .setBitrateKbps(128)
+        .setMeasuredThroughputKbps(1_500)
         .setNetworkType(C.NETWORK_TYPE_WIFI)
         .setCacheStatus("MISS")
         .setCdnProvider("fpt")

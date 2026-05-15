@@ -131,6 +131,10 @@ public final class QoSDiagnoserV8 {
     int nVAbrLag = 0;
     int nVAbrLagInDrain = 0;
     int nVAbrLagInCdn = 0;
+    // B3: per-condition counters — observational only, do not affect verdict.
+    int nVTtfbExtreme = 0;
+    int nVBodyUnhealthy = 0;
+    int nVMtpCollapsed = 0;
     for (QoSInfo s : vSegs) {
       if (s.retryCount > 0) nRetries++;
       // abr-lag = segment requested at a bitrate exceeding 80% of measured throughput.
@@ -158,6 +162,10 @@ public final class QoSDiagnoserV8 {
         double postTtfbKbps = (s.bytesLoaded * 8.0) / transferMs;
         isBodyHealthy = postTtfbKbps >= s.bitrateKbps * BODY_HEALTHY_RATIO;
       }
+      // B3: increment independent per-condition counters (overlapping by design).
+      if (isTtfbExtreme) nVTtfbExtreme++;
+      if (!isBodyHealthy) nVBodyUnhealthy++;
+      if (isMtpCollapsed) nVMtpCollapsed++;
       if (isTtfbExtreme && !isMtpCollapsed && isBodyHealthy) {
         nVCdnEvidence++;
         if (isAbrLag) nVAbrLagInCdn++;
@@ -169,6 +177,9 @@ public final class QoSDiagnoserV8 {
     int nADrained = 0;
     int nACdnEvidence = 0;
     int strictTtfbUpperA = -1;
+    // B3: per-condition counters for A (no nAMtpCollapsed — audio has no mtp).
+    int nATtfbExtreme = 0;
+    int nABodyUnhealthy = 0;
     SessionStatistics.TukeyFence audioTtfbFence =
         aSegs.isEmpty() ? null : sessionStats.getAudioTtfbFence(vKey);
     if (audioTtfbFence != null) {
@@ -190,6 +201,9 @@ public final class QoSDiagnoserV8 {
           double postTtfbKbps = (s.bytesLoaded * 8.0) / transferMs;
           isBodyHealthy = postTtfbKbps >= s.bitrateKbps * BODY_HEALTHY_RATIO;
         }
+        // B3: increment independent per-condition counters for A.
+        if (isTtfbExtreme) nATtfbExtreme++;
+        if (!isBodyHealthy) nABodyUnhealthy++;
         if (isTtfbExtreme && isBodyHealthy) {
           nACdnEvidence++;
         }
@@ -230,11 +244,11 @@ public final class QoSDiagnoserV8 {
         /* nVAbrLag= */ nVAbrLag,
         /* nVAbrLagInCdn= */ nVAbrLagInCdn,
         /* nVAbrLagInDrain= */ nVAbrLagInDrain,
-        /* nVTtfbExtreme= */ 0,
-        /* nATtfbExtreme= */ 0,
-        /* nVBodyUnhealthy= */ 0,
-        /* nABodyUnhealthy= */ 0,
-        /* nVMtpCollapsed= */ 0,
+        /* nVTtfbExtreme= */ nVTtfbExtreme,
+        /* nATtfbExtreme= */ nATtfbExtreme,
+        /* nVBodyUnhealthy= */ nVBodyUnhealthy,
+        /* nABodyUnhealthy= */ nABodyUnhealthy,
+        /* nVMtpCollapsed= */ nVMtpCollapsed,
         /* drainPeakRatioV= */ 0.0,
         /* drainPeakSegIdxV= */ -1,
         /* drainPeakRatioA= */ 0.0,
