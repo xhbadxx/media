@@ -197,6 +197,62 @@ public final class DiagnosisV8 {
   /** Total CDN-evidence segments across V and A tracks. */
   public int nCdnEvidenceTotal() { return nVCdnEvidence + nACdnEvidence; }
 
+  /**
+   * Single-line summary for HUD / overlay / support tickets. Format extends V7 with drain
+   * peak (V/A) and audio retries.
+   *
+   * <p>Examples:
+   * <pre>
+   * 🔴 V8 · CDN · vSlow=34 aSlow=12 vSvrLag=18 aSvrLag=3 peakV=1.85 peakA=1.42 · fenceV=1140ms fenceA=1080ms
+   * 🟠 V8 · NETWORK · vSlow=4 aSlow=0 vSvrLag=0 aSvrLag=0 · fenceV=100ms fenceA=-1ms
+   * ⚪ V8 · INCONCLUSIVE · cold_start
+   * </pre>
+   */
+  public String toDisplaySummary() {
+    StringBuilder sb = new StringBuilder(192);
+    sb.append(severityIcon()).append(" V8 · ").append(cause.name());
+    if (cause == Cause.INCONCLUSIVE) {
+      if (reason != null) {
+        sb.append(" · ").append(reason.code);
+        if (reasonDetail != null) {
+          sb.append(":").append(reasonDetail);
+        }
+      }
+    } else {
+      sb.append(" · vSlow=").append(nVDrained)
+          .append(" aSlow=").append(nADrained)
+          .append(" vSvrLag=").append(nVCdnEvidence)
+          .append(" aSvrLag=").append(nACdnEvidence);
+      if (drainPeakRatioV > 0) {
+        sb.append(" peakV=").append(String.format(java.util.Locale.US, "%.2f", drainPeakRatioV));
+      }
+      if (drainPeakRatioA > 0) {
+        sb.append(" peakA=").append(String.format(java.util.Locale.US, "%.2f", drainPeakRatioA));
+      }
+      sb.append(" · fenceV=").append(ttfbFenceUpperVMs).append("ms");
+      sb.append(" fenceA=").append(ttfbFenceUpperAMs).append("ms");
+    }
+    if (nRetries > 0 || nARetries > 0) {
+      sb.append(" · retry=").append(nRetries);
+      if (nARetries > 0) {
+        sb.append("(A").append(nARetries).append(")");
+      }
+    }
+    if (httpErrorCodes.length > 0) {
+      sb.append(" · codes=").append(java.util.Arrays.toString(httpErrorCodes));
+    }
+    return sb.toString();
+  }
+
+  private String severityIcon() {
+    switch (cause) {
+      case CDN: return "🔴";
+      case NETWORK: return "🟠";
+      case INCONCLUSIVE:
+      default: return "⚪";
+    }
+  }
+
   public static DiagnosisV8 inconclusive(Reason reason, int[] httpErrorCodes) {
     return inconclusive(reason, /* detail= */ null, httpErrorCodes, /* nRetries= */ 0);
   }

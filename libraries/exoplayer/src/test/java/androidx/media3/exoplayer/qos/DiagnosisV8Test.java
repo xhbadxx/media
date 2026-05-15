@@ -18,6 +18,7 @@ package androidx.media3.exoplayer.qos;
 import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertTrue;
 
 import androidx.media3.exoplayer.qos.model.DiagnosisV8;
 import org.junit.Test;
@@ -109,5 +110,35 @@ public class DiagnosisV8Test {
     assertEquals("demand>1.3", d.reasonDetail);
     assertArrayEquals(new int[]{503}, d.httpErrorCodes);
     assertEquals(1, d.nRetries);
+  }
+
+  @Test
+  public void toDisplaySummary_cdnVerdict_includesDrainPeak() {
+    DiagnosisV8 d = DiagnosisV8.classified(
+        DiagnosisV8.Cause.CDN, new int[0],
+        52, 45, 34, 12, 18, 3, 1140, 1080, 0,
+        "ETH", "fpt",
+        8, 3, 8, 18, 3, 5, 1, 2,
+        1.85, 7, 1.42, 3,
+        0, 120, 180, 280, 200, 250, 320);
+
+    String s = d.toDisplaySummary();
+    assertTrue(s.contains("V8 · CDN"));
+    assertTrue(s.contains("vSlow=34"));
+    assertTrue(s.contains("aSlow=12"));
+    assertTrue(s.contains("vSvrLag=18"));
+    assertTrue(s.contains("peakV=1.85"));
+  }
+
+  @Test
+  public void toDisplaySummary_inconclusive_showsReason() {
+    DiagnosisV8 d = DiagnosisV8.inconclusive(
+        DiagnosisV8.Reason.SANITY_FAIL, "demand>1.3", new int[]{503}, 1);
+
+    String s = d.toDisplaySummary();
+    assertTrue(s.contains("INCONCLUSIVE"));
+    assertTrue(s.contains("sanity_fail:demand>1.3"));
+    assertTrue(s.contains("retry=1"));
+    assertTrue(s.contains("[503]"));
   }
 }
