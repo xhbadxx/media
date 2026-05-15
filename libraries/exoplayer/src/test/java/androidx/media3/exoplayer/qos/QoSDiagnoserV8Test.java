@@ -307,6 +307,28 @@ public class QoSDiagnoserV8Test {
   }
 
   @Test
+  public void diagnose_audioOnlyDrained_vHealthy_returnsNetwork() {
+    // V healthy (no drain) + A 3 drained body-slow → nDrained=3, nCdnEv=0 → NETWORK.
+    SessionStatistics stats = sessionStatsWarmFull(KEY_WIFI_MISS_FPT);
+    QoSInfo s1 = vSeg(1_000L, 2_000L, 1_900L, 80, 1_500);
+    QoSInfo s2 = vSeg(3_000L, 2_000L, 1_950L, 90, 1_500);
+    QoSInfo s3 = vSeg(5_000L, 2_000L, 2_050L, 95, 1_500); // excess=0.025 not drained
+    QoSInfo a1 = aSeg(2_000L, 1_800L, 5_000L, 300);
+    QoSInfo a2 = aSeg(4_000L, 1_800L, 5_000L, 300);
+    QoSInfo a3 = aSeg(6_000L, 1_800L, 5_000L, 300);
+    QoSInfo trigger = triggerSeg(7_000L, 0);
+    RebufferGroup g =
+        new RebufferGroup(
+            1, 7_000L, trigger, Arrays.asList(s1, s2, s3, a1, a2, a3, trigger), null);
+    DiagnosisV8 d = QoSDiagnoserV8.diagnose(g, stats);
+    assertThat(d.cause).isEqualTo(DiagnosisV8.Cause.NETWORK);
+    assertThat(d.nVDrained).isEqualTo(0);
+    assertThat(d.nADrained).isEqualTo(3);
+    assertThat(d.nACdnEvidence).isEqualTo(0);
+    assertThat(d.nVAbrLag).isEqualTo(0);
+  }
+
+  @Test
   public void diagnose_audioFenceExposed_strictTtfbUpperA_setOnClassified() {
     SessionStatistics stats = sessionStatsWarmFull(KEY_WIFI_MISS_FPT);
     QoSInfo s1 = vSeg(1_000L, 2_000L, 2_400L, 500, 1_500);
