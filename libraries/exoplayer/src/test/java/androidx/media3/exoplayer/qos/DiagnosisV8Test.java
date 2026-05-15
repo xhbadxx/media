@@ -141,4 +141,24 @@ public class DiagnosisV8Test {
     assertTrue(s.contains("retry=1"));
     assertTrue(s.contains("[503]"));
   }
+
+  @Test
+  public void toDisplaySummary_audioOnlyRetries_usesSplitFormat() {
+    // NETWORK classified with nRetries=0, nARetries=1 — previously produced misleading "retry=0(A1)"
+    DiagnosisV8 classified = DiagnosisV8.classified(
+        DiagnosisV8.Cause.NETWORK, new int[0],
+        4, 3, 2, 1, 0, 0, 800, 600, 0,
+        "WIFI", "fpt",
+        0, 0, 0, 0, 0, 1, 0, 0,
+        1.20, 1, 0.0, -1,
+        /* nARetries= */ 1,
+        120, 180, 240, 200, 250, 300);
+
+    String s = classified.toDisplaySummary();
+    // V-only retry=0 alone would be ambiguous; expect split format
+    org.junit.Assert.assertTrue("Expected V/A split format when A-retries present, got: " + s,
+        s.contains("retry=V0/A1"));
+    org.junit.Assert.assertFalse("Should not produce ambiguous 'retry=0(A1)': " + s,
+        s.contains("retry=0(A1)"));
+  }
 }

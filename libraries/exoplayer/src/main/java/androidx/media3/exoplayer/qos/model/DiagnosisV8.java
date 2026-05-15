@@ -233,9 +233,12 @@ public final class DiagnosisV8 {
       sb.append(" fenceA=").append(ttfbFenceUpperAMs).append("ms");
     }
     if (nRetries > 0 || nARetries > 0) {
-      sb.append(" · retry=").append(nRetries);
       if (nARetries > 0) {
-        sb.append("(A").append(nARetries).append(")");
+        // Audio retries present — show both explicitly to avoid ambiguous "retry=0(A1)"
+        sb.append(" · retry=V").append(nRetries).append("/A").append(nARetries);
+      } else {
+        // V-only — preserve V7-compatible "retry=N" format
+        sb.append(" · retry=").append(nRetries);
       }
     }
     if (httpErrorCodes.length > 0) {
