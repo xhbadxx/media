@@ -417,6 +417,29 @@ public class QoSDiagnoserV8Test {
     assertThat(d.reason).isEqualTo(DiagnosisV8.Reason.NO_DRAIN);
   }
 
+  @Test
+  public void diagnose_mtpZero_doesNotCountAbrLag() {
+    // V segs with measuredThroughputKbps=0 must NOT count as abr-lag regardless of bitrate,
+    // because CMCD (Common Media Client Data) throughput is unavailable → cannot infer
+    // ABR (Adaptive Bitrate) over-estimate.
+    // Setup: 4 drained V segs (loadDur=3000 > cdur=2000×1.10=2200):
+    //   - 2 with mtp=0, bitrateKbps=1000 (mtp unavailable → guard blocks abr-lag=false)
+    //   - 2 with mtp=1500, bitrateKbps=1000 (1000 ≤ 1500×0.8=1200 → abr-lag=false)
+    // Expected: nVAbrLag=0, nVDrained=4.
+    SessionStatistics stats = sessionStatsWarmFull(KEY_WIFI_MISS_FPT);
+    QoSInfo s1 = vSegWithMtp(1_000L, 2_000L, 3_000L, 50, 1_500, /* mtpKbps= */ 0);
+    QoSInfo s2 = vSegWithMtp(3_000L, 2_000L, 3_000L, 50, 1_500, /* mtpKbps= */ 0);
+    QoSInfo s3 = vSeg(5_000L, 2_000L, 3_000L, 50, 1_500); // mtp=1500, bitrate=1000 → no abr-lag
+    QoSInfo s4 = vSeg(7_000L, 2_000L, 3_000L, 50, 1_500); // mtp=1500, bitrate=1000 → no abr-lag
+    QoSInfo trigger = triggerSeg(9_000L, 0);
+    RebufferGroup g =
+        new RebufferGroup(1, 9_000L, trigger, Arrays.asList(s1, s2, s3, s4, trigger), null);
+    DiagnosisV8 d = QoSDiagnoserV8.diagnose(g, stats);
+    assertThat(d.nVDrained).isEqualTo(4);
+    assertThat(d.nVAbrLag).isEqualTo(0);
+    assertThat(d.nVAbrLagInDrain).isEqualTo(0);
+  }
+
   // ===== Helpers (mirrors QoSDiagnoserV7Test helpers) =====
 
   static QoSInfo vSeg(long ts, long cdurMs, long loadDurMs, int ttfbMs, int blMs) {

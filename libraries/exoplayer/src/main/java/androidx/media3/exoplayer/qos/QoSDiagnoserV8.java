@@ -70,6 +70,9 @@ public final class QoSDiagnoserV8 {
   /** Body-delivery healthy threshold (90% of bitrate). Same for V and A. */
   static final double BODY_HEALTHY_RATIO = 0.90;
 
+  /** Bitrate-to-mtp ratio threshold for ABR (Adaptive Bitrate) over-estimate detection (CMCD-informed). */
+  static final double ABR_LAG_RATIO = 0.8;
+
   public static DiagnosisV8 diagnose(
       @Nullable RebufferGroup group, @Nullable SessionStatistics sessionStats) {
     if (group == null || group.entries == null || group.entries.isEmpty()) {
@@ -133,7 +136,7 @@ public final class QoSDiagnoserV8 {
       // abr-lag = segment requested at a bitrate exceeding 80% of measured throughput.
       // Applies to ALL V scored segs regardless of drain status.
       boolean isAbrLag =
-          s.measuredThroughputKbps > 0 && s.bitrateKbps > s.measuredThroughputKbps * 0.8;
+          s.measuredThroughputKbps > 0 && s.bitrateKbps > s.measuredThroughputKbps * ABR_LAG_RATIO;
       if (isAbrLag) nVAbrLag++;
       double excessRatio =
           (double) Math.max(0L, s.loadDurationMs - s.chunkDurationMs) / s.chunkDurationMs;
