@@ -343,6 +343,64 @@ public class QoSDiagnoserV8Test {
     assertThat(d.ttfbFenceUpperVMs).isEqualTo(100);
   }
 
+  // ===== V8 B2: abr-lag counters =====
+
+  @Test
+  public void diagnose_segsWithBitrateAboveMtp_incrementAbrLag() {
+    // 4 V segs: 2 abr-lag + 2 no abr-lag. All 4 drained + CDN-evidence.
+    // abr-lag seg: bitrateKbps=1100, mtp=1200 → 1100 > 960 (=1200×0.8) ✓
+    //   bytesLoaded=240_000B, loadDur=2400, ttfb=500 → postTtfbKbps=(240000×8)/1900≈1010
+    //   bodyHealthy: 1010 >= 1100×0.9=990 ✓; ttfb=500>fence=100 ✓ → CDN-evidence ✓
+    // no-abr-lag seg (default): bitrateKbps=1000, mtp=1500 → 1000 > 1200 ✗
+    // Expected: nVAbrLag=2, nVAbrLagInDrain=2, nVAbrLagInCdn=2.
+    SessionStatistics stats = sessionStatsWarmFull(KEY_WIFI_MISS_FPT);
+    QoSInfo s1 = vSegWithBitrateAndMtp(1_000L, 2_000L, 2_400L, 500, 1_500, 1_100, 1_200);
+    QoSInfo s2 = vSegWithBitrateAndMtp(3_000L, 2_000L, 2_400L, 500, 1_500, 1_100, 1_200);
+    QoSInfo s3 = vSeg(5_000L, 2_000L, 2_400L, 500, 1_500); // bitrate=1000, mtp=1500 → no abr-lag
+    QoSInfo s4 = vSeg(7_000L, 2_000L, 2_400L, 500, 1_500); // bitrate=1000, mtp=1500 → no abr-lag
+    QoSInfo trigger = triggerSeg(9_000L, 0);
+    RebufferGroup g =
+        new RebufferGroup(1, 9_000L, trigger, Arrays.asList(s1, s2, s3, s4, trigger), null);
+    DiagnosisV8 d = QoSDiagnoserV8.diagnose(g, stats);
+    assertThat(d.cause).isEqualTo(DiagnosisV8.Cause.CDN);
+    assertThat(d.nV).isEqualTo(4);
+    assertThat(d.nVDrained).isEqualTo(4);
+    assertThat(d.nVCdnEvidence).isEqualTo(4);
+    assertThat(d.nVAbrLag).isEqualTo(2);
+    assertThat(d.nVAbrLagInDrain).isEqualTo(2);
+    assertThat(d.nVAbrLagInCdn).isEqualTo(2);
+  }
+
+  @Test
+  public void diagnose_nonDrainedAbrLag_countsTotalNotDrain() {
+    // 2 abr-lag segs but NOT drained (loadDur ≤ cdur × 1.10 → excessRatio ≤ 0.10).
+    // cdur=2000, loadDur=2100 → excessRatio=0.05 < SLOW_RATIO=0.10 → NOT drained.
+    // bitrateKbps=5000, mtp=4000 → 5000 > 3200 ✓ abr-lag but no drain.
+    // Expected: nVAbrLag=2, nVAbrLagInDrain=0, nVAbrLagInCdn=0.
+    // But nVDrained=0 → INCONCLUSIVE(NO_DRAIN), still nVAbrLag should be 2.
+    // However DiagnosisV8.inconclusive path doesn't go through classified().
+    // So test a mixed scenario: 2 non-drained abr-lag + 2 drained non-abr-lag (for a verdict).
+    // 2 drained non-abr-lag: ttfb=50 (NOT extreme, fence=100) → NETWORK verdict.
+    // nVAbrLag=2 (all abr-lag segs regardless of drain), nVAbrLagInDrain=0, nVAbrLagInCdn=0.
+    SessionStatistics stats = sessionStatsWarmFull(KEY_WIFI_MISS_FPT);
+    // 2 abr-lag segs: not drained (loadDur=2100, cdur=2000 → excess=0.05 < 0.10)
+    // bitrateKbps=1100, mtp=1200 → 1100 > 960 ✓ abr-lag
+    QoSInfo s1 = vSegWithBitrateAndMtp(1_000L, 2_000L, 2_100L, 80, 1_500, 1_100, 1_200);
+    QoSInfo s2 = vSegWithBitrateAndMtp(3_000L, 2_000L, 2_100L, 80, 1_500, 1_100, 1_200);
+    // 2 non-abr-lag segs: drained (loadDur=3_000, cdur=2000 → excess=0.5 > 0.10), ttfb=50 not extreme
+    QoSInfo s3 = vSeg(5_000L, 2_000L, 3_000L, 50, 1_500);
+    QoSInfo s4 = vSeg(7_000L, 2_000L, 3_000L, 50, 1_500);
+    QoSInfo trigger = triggerSeg(9_000L, 0);
+    RebufferGroup g =
+        new RebufferGroup(1, 9_000L, trigger, Arrays.asList(s1, s2, s3, s4, trigger), null);
+    DiagnosisV8 d = QoSDiagnoserV8.diagnose(g, stats);
+    assertThat(d.cause).isEqualTo(DiagnosisV8.Cause.NETWORK);
+    assertThat(d.nVDrained).isEqualTo(2);
+    assertThat(d.nVAbrLag).isEqualTo(2);
+    assertThat(d.nVAbrLagInDrain).isEqualTo(0);
+    assertThat(d.nVAbrLagInCdn).isEqualTo(0);
+  }
+
   @Test
   public void diagnose_audioNoDrain_vNoDrain_returnsNoDrain() {
     SessionStatistics stats = sessionStatsWarmFull(KEY_WIFI_MISS_FPT);
@@ -466,5 +524,30 @@ public class QoSDiagnoserV8Test {
       stats.addAudioTtfbSample(key, 50);
     }
     return stats;
+  }
+
+  static QoSInfo vSegWithBitrateAndMtp(
+      long ts,
+      long cdurMs,
+      long loadDurMs,
+      int ttfbMs,
+      int blMs,
+      int bitrateKbps,
+      int mtpKbps) {
+    return new QoSInfo.Builder()
+        .setTimestampMs(ts)
+        .setTrackType(C.TRACK_TYPE_VIDEO)
+        .setStatus(QoSInfo.LoadStatus.COMPLETED)
+        .setChunkDurationMs(cdurMs)
+        .setLoadDurationMs(loadDurMs)
+        .setTtfbMs(ttfbMs)
+        .setBufferedDurationMs(blMs)
+        .setBytesLoaded(240_000L)
+        .setBitrateKbps(bitrateKbps)
+        .setMeasuredThroughputKbps(mtpKbps)
+        .setNetworkType(C.NETWORK_TYPE_WIFI)
+        .setCacheStatus("MISS")
+        .setCdnProvider("fpt")
+        .build();
   }
 }

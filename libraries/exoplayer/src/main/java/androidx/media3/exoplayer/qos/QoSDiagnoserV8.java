@@ -125,13 +125,22 @@ public final class QoSDiagnoserV8 {
     int nVDrained = 0;
     int nVCdnEvidence = 0;
     int nRetries = 0;
+    int nVAbrLag = 0;
+    int nVAbrLagInDrain = 0;
+    int nVAbrLagInCdn = 0;
     for (QoSInfo s : vSegs) {
       if (s.retryCount > 0) nRetries++;
+      // abr-lag = segment requested at a bitrate exceeding 80% of measured throughput.
+      // Applies to ALL V scored segs regardless of drain status.
+      boolean isAbrLag =
+          s.measuredThroughputKbps > 0 && s.bitrateKbps > s.measuredThroughputKbps * 0.8;
+      if (isAbrLag) nVAbrLag++;
       double excessRatio =
           (double) Math.max(0L, s.loadDurationMs - s.chunkDurationMs) / s.chunkDurationMs;
       boolean isDrained = excessRatio > SLOW_RATIO;
       if (!isDrained) continue;
       nVDrained++;
+      if (isAbrLag) nVAbrLagInDrain++;
       boolean isTtfbExtreme = s.ttfbMs > strictTtfbUpperV;
       boolean isMtpCollapsed =
           mtpFence != null
@@ -148,6 +157,7 @@ public final class QoSDiagnoserV8 {
       }
       if (isTtfbExtreme && !isMtpCollapsed && isBodyHealthy) {
         nVCdnEvidence++;
+        if (isAbrLag) nVAbrLagInCdn++;
       }
     }
 
@@ -214,9 +224,9 @@ public final class QoSDiagnoserV8 {
         nRetries,
         cohortNet,
         cohortCdn,
-        /* nVAbrLag= */ 0,
-        /* nVAbrLagInCdn= */ 0,
-        /* nVAbrLagInDrain= */ 0,
+        /* nVAbrLag= */ nVAbrLag,
+        /* nVAbrLagInCdn= */ nVAbrLagInCdn,
+        /* nVAbrLagInDrain= */ nVAbrLagInDrain,
         /* nVTtfbExtreme= */ 0,
         /* nATtfbExtreme= */ 0,
         /* nVBodyUnhealthy= */ 0,
