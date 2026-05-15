@@ -146,4 +146,36 @@ public class SessionStatisticsTest {
     assertThat(s.getAudioTtfbFence("WIFI_MISS_fpt").q1)
         .isGreaterThan(s.getTtfbFence("WIFI_MISS_fpt").q3);
   }
+
+  // ===== V8 TukeyFence.median tests =====
+
+  @Test
+  public void tukeyFence_populatesMedianForOddSampleCount() {
+    SessionStatistics stats = new SessionStatistics();
+    String key = "eth/MISS/fpt";
+    // Need ≥10 samples for fence — use 11 (odd)
+    int[] samples = {100, 200, 250, 280, 300, 350, 400, 420, 450, 500, 600};
+    for (int s : samples) {
+      stats.addTtfbSample(key, s);
+    }
+    TukeyFence fence = stats.getTtfbFence(key);
+    assertThat(fence).isNotNull();
+    // Sorted: 100,200,250,280,300,350,400,420,450,500,600 → median index 5 → 350
+    assertThat(fence.median).isEqualTo(350);
+  }
+
+  @Test
+  public void tukeyFence_populatesMedianForEvenSampleCount() {
+    SessionStatistics stats = new SessionStatistics();
+    String key = "eth/MISS/fpt";
+    // Use 12 samples (even) → median = avg(samples[5], samples[6])
+    int[] samples = {100, 200, 250, 280, 300, 350, 400, 420, 450, 500, 600, 700};
+    for (int s : samples) {
+      stats.addTtfbSample(key, s);
+    }
+    TukeyFence fence = stats.getTtfbFence(key);
+    assertThat(fence).isNotNull();
+    // Sorted: median = (350+400)/2 = 375
+    assertThat(fence.median).isEqualTo(375);
+  }
 }

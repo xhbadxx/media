@@ -133,10 +133,11 @@ public final class SessionStatistics {
     Arrays.sort(sorted);
     int q1 = tukeyHingesQ1(sorted);
     int q3 = tukeyHingesQ3(sorted);
+    int median = medianOf(sorted, 0, sorted.length);
     int iqr = q3 - q1;
     int upper = q3 + (int) Math.round(TUKEY_K * iqr);
     int lower = Math.max(0, q1 - (int) Math.round(TUKEY_K * iqr));
-    return new TukeyFence(q1, q3, iqr, upper, lower);
+    return new TukeyFence(q1, q3, median, iqr, upper, lower);
   }
 
   /** Q1 = median of lower half (Tukey hinges; for odd n, exclude middle). */
@@ -166,13 +167,15 @@ public final class SessionStatistics {
   public static final class TukeyFence {
     public final int q1;
     public final int q3;
+    public final int median;
     public final int iqr;
     public final int upperFence;
     public final int lowerFence;
 
-    public TukeyFence(int q1, int q3, int iqr, int upperFence, int lowerFence) {
+    public TukeyFence(int q1, int q3, int median, int iqr, int upperFence, int lowerFence) {
       this.q1 = q1;
       this.q3 = q3;
+      this.median = median;
       this.iqr = iqr;
       this.upperFence = upperFence;
       this.lowerFence = lowerFence;
