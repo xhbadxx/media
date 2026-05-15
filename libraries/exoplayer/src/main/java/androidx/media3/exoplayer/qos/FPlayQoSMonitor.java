@@ -30,6 +30,7 @@ import androidx.media3.exoplayer.qos.model.DiagnosisV4;
 import androidx.media3.exoplayer.qos.model.DiagnosisV5;
 import androidx.media3.exoplayer.qos.model.DiagnosisV6;
 import androidx.media3.exoplayer.qos.model.DiagnosisV7;
+import androidx.media3.exoplayer.qos.model.DiagnosisV8;
 import androidx.media3.exoplayer.qos.model.QoSInfo;
 import androidx.media3.exoplayer.qos.model.RebufferGroup;
 import androidx.media3.exoplayer.qos.model.SessionStatistics;
@@ -122,6 +123,8 @@ public final class FPlayQoSMonitor {
   private SessionStatistics sessionStats = new SessionStatistics();
   private long lastCaptureMs = 0L;
   private int nextGroupId = 0;
+  /** Wall-clock timestamp ms when last attach() called. 0L when detached. */
+  private long sessionStartMs = 0L;
 
   @Nullable private ExoPlayer activePlayer;
   @Nullable private QoSAnalyticsHook activeAnalyticsHook;
@@ -212,6 +215,7 @@ public final class FPlayQoSMonitor {
     DiagnosisV5 v5 = QoSDiagnoserV5.diagnose(pipelineInput, sessionStats);
     DiagnosisV6 v6 = QoSDiagnoserV6.diagnose(pipelineInput, sessionStats);
     DiagnosisV7 v7 = QoSDiagnoserV7.diagnose(pipelineInput, sessionStats);
+    DiagnosisV8 v8 = QoSDiagnoserV8.diagnose(pipelineInput, sessionStats);
     StringBuilder log = new StringBuilder(512)
         .append("Rebuffer #").append(groupId).append(": ").append(diagnosis.summary())
         .append(" | v1.cause=").append(fullDiagnosis.cause)
@@ -319,6 +323,36 @@ public final class FPlayQoSMonitor {
       log.append(" v7.fenceV=").append(v7.ttfbFenceUpperVMs).append("ms");
       log.append(" v7.fenceA=").append(v7.ttfbFenceUpperAMs).append("ms");
     }
+    log.append(" | v8.cause=").append(v8.cause);
+    if (v8.cause == DiagnosisV8.Cause.INCONCLUSIVE) {
+      log.append(" v8.reason=\"");
+      if (v8.reason != null) {
+        log.append(v8.reason.code);
+        if (v8.reasonDetail != null) log.append(':').append(v8.reasonDetail);
+      }
+      log.append('"');
+    } else {
+      log.append(" v8.nV=").append(v8.nV);
+      log.append(" v8.slow=").append(v8.nVDrained);
+      log.append(" v8.svrLag=").append(v8.nVCdnEvidence);
+      if (v8.drainPeakRatioV > 0) {
+        log.append(String.format(java.util.Locale.US, " v8.peakV=%.2f#%d",
+            v8.drainPeakRatioV, v8.drainPeakSegIdxV));
+      }
+      if (v8.nVAbrLag > 0) {
+        log.append(" v8.abrLag=").append(v8.nVAbrLag);
+      }
+      if (v8.nADrained > 0) {
+        log.append(" v8.aSlow=").append(v8.nADrained);
+        log.append(" v8.aSvrLag=").append(v8.nACdnEvidence);
+      }
+      log.append(" v8.fenceV=").append(v8.ttfbFenceUpperVMs).append("ms");
+      log.append(" v8.q123V=").append(v8.ttfbQ1V).append('/')
+          .append(v8.ttfbMedianV).append('/').append(v8.ttfbQ3V);
+    }
+    if (v8.nRetries > 0 || v8.nARetries > 0) {
+      log.append(" v8.retry=").append(v8.nRetries).append('+').append(v8.nARetries);
+    }
     Log.i(TAG, log.toString());
     RebufferGroup group =
         new RebufferGroup(
@@ -332,7 +366,8 @@ public final class FPlayQoSMonitor {
             v4,
             v5,
             v6,
-            v7);
+            v7,
+            v8);
     rebufferGroups.add(group);
     while (rebufferGroups.size() > MAX_REBUFFER_GROUPS) {
       rebufferGroups.remove(0);
@@ -393,6 +428,7 @@ public final class FPlayQoSMonitor {
       @Nullable BandwidthMeter bandwidthMeter,
       @Nullable Context context) {
     if (activePlayer != null) detach();
+    sessionStartMs = System.currentTimeMillis();
     QoSAnalyticsHook analyticsHook =
         new QoSAnalyticsHook(player, bandwidthMeter, transferListener, context);
     QoSPlayerHook playerHook = new QoSPlayerHook();
@@ -419,6 +455,7 @@ public final class FPlayQoSMonitor {
     groupObservers.clear();
     lastCaptureMs = 0L;
     nextGroupId = 0;
+    sessionStartMs = 0L;
     // Reset V5 session-rolling baselines so re-attach starts cold-start fresh.
     sessionStats = new SessionStatistics();
     ExoPlayer player = activePlayer;
@@ -465,5 +502,10 @@ public final class FPlayQoSMonitor {
   /** Removes a previously-registered {@link RebufferGroupObserver}. */
   public void removeRebufferGroupObserver(RebufferGroupObserver observer) {
     groupObservers.remove(observer);
+  }
+
+  /** @return wall-clock timestamp of last attach(), or 0L when detached. */
+  public long getSessionStartMs() {
+    return sessionStartMs;
   }
 }
