@@ -573,7 +573,7 @@ public final class MediaControllerCompat {
    */
   public abstract static class Callback implements IBinder.DeathRecipient {
     @Nullable final MediaController.Callback callbackFwk;
-    @Nullable MessageHandler handler;
+    @Nullable private MessageHandler handler;
     @Nullable IMediaControllerCallback iControllerCallback;
 
     // Sharing this in constructor
@@ -1301,14 +1301,16 @@ public final class MediaControllerCompat {
       synchronized (lock) {
         IMediaSession extraBinder = sessionToken.getExtraBinder();
         if (extraBinder != null) {
-          try {
-            Callback.CallbackStub callbackStub = callbackMap.remove(callback);
-            if (callbackStub != null) {
-              callback.iControllerCallback = null;
-              extraBinder.unregisterCallbackListener(callbackStub);
+          Callback.CallbackStub callbackStub = callbackMap.remove(callback);
+          if (callbackStub != null) {
+            callback.iControllerCallback = null;
+            if (extraBinder.asBinder().isBinderAlive()) {
+              try {
+                extraBinder.unregisterCallbackListener(callbackStub);
+              } catch (RemoteException | SecurityException e) {
+                Log.w(TAG, "Dead object in unregisterCallbackListener.", e);
+              }
             }
-          } catch (RemoteException | SecurityException e) {
-            Log.e(TAG, "Dead object in unregisterCallback.", e);
           }
         } else {
           pendingCallbacks.remove(callback);
@@ -1366,8 +1368,7 @@ public final class MediaControllerCompat {
     public void addQueueItem(MediaDescriptionCompat description) {
       long flags = getFlags();
       if ((flags & MediaSessionCompat.FLAG_HANDLES_QUEUE_COMMANDS) == 0) {
-        throw new UnsupportedOperationException(
-            "This session doesn't support queue management operations");
+        return;
       }
       Bundle params = new Bundle();
       params.putParcelable(
@@ -1381,8 +1382,7 @@ public final class MediaControllerCompat {
     public void addQueueItem(MediaDescriptionCompat description, int index) {
       long flags = getFlags();
       if ((flags & MediaSessionCompat.FLAG_HANDLES_QUEUE_COMMANDS) == 0) {
-        throw new UnsupportedOperationException(
-            "This session doesn't support queue management operations");
+        return;
       }
       Bundle params = new Bundle();
       params.putParcelable(
@@ -1397,8 +1397,7 @@ public final class MediaControllerCompat {
     public void removeQueueItem(MediaDescriptionCompat description) {
       long flags = getFlags();
       if ((flags & MediaSessionCompat.FLAG_HANDLES_QUEUE_COMMANDS) == 0) {
-        throw new UnsupportedOperationException(
-            "This session doesn't support queue management operations");
+        return;
       }
       Bundle params = new Bundle();
       params.putParcelable(

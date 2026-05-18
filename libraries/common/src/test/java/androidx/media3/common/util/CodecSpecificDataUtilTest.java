@@ -25,6 +25,7 @@ import androidx.media3.common.C;
 import androidx.media3.common.ColorInfo;
 import androidx.media3.common.Format;
 import androidx.media3.common.MimeTypes;
+import androidx.media3.test.utils.TestUtil;
 import androidx.test.ext.junit.runners.AndroidJUnit4;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -192,31 +193,31 @@ public class CodecSpecificDataUtilTest {
   @Test
   public void buildApvCodecString_withValidApvSpecificConfig_returnsCorrectCodecString() {
     byte[] apvSpecificConfig =
-        new byte[] {
-          1, // configurationVersion
-          1, // number_of_configuration_entry
-          1, // pbu_type
-          1, // number_of_frame_info
-          0, // reserved_zero_6bits, color_description_present_flag(1 bit),
-          // capture_time_distance_ignored(1 bit)
-          33, // profile_idc
-          60, // level_idc
-          0, // band_idc
-          0, // frame_width (4 bytes)
-          0,
-          2,
-          -128,
-          0, // frame_height (4 bytes)
-          0,
-          1,
-          -32,
-          34, // chroma_format_idc (4 bit) + bit_depth_minus8(4 bit)
-          0 // capture_time_distance
-        };
+        TestUtil.createByteArray(
+            1, // configurationVersion
+            1, // number_of_configuration_entry
+            1, // pbu_type
+            1, // number_of_frame_info
+            0, // reserved_zero_6bits, color_description_present_flag(1 bit),
+            // capture_time_distance_ignored(1 bit)
+            33, // profile_idc
+            150, // level_idc
+            0, // band_idc
+            0, // frame_width (4 bytes)
+            0,
+            2,
+            255,
+            0, // frame_height (4 bytes)
+            0,
+            1,
+            224,
+            34, // chroma_format_idc (4 bit) + bit_depth_minus8(4 bit)
+            0 // capture_time_distance
+            );
 
     String codecString = CodecSpecificDataUtil.buildApvCodecString(apvSpecificConfig);
 
-    assertThat(codecString).isEqualTo("apv1.apvf33.apvl60.apvb0");
+    assertThat(codecString).isEqualTo("apv1.apvf33.apvl150.apvb0");
   }
 
   @Test
@@ -318,6 +319,40 @@ public class CodecSpecificDataUtilTest {
         "iamf.001.000.ipcm",
         MediaCodecInfo.CodecProfileLevel.IAMFProfileBasePcm,
         0);
+  }
+
+  @Test
+  public void
+      getDolbyVisionBaseLayerMimeType_withNonFallbackCompatibleFormat_returnsBaseEncoding() {
+    // Profile 10.0 (Full Range PQ) which does NOT allow fallback.
+    Format formatDav1NoFallbackPossible =
+        new Format.Builder()
+            .setSampleMimeType(MimeTypes.VIDEO_DOLBY_VISION)
+            .setCodecs("dav1.10.01")
+            .setColorInfo(
+                new ColorInfo.Builder()
+                    .setColorSpace(C.COLOR_SPACE_BT2020)
+                    .setColorTransfer(C.COLOR_TRANSFER_ST2084)
+                    .setColorRange(C.COLOR_RANGE_FULL)
+                    .build())
+            .build();
+    // Profile 10.1 (Limited Range PQ) which allows fallback to AV1.
+    Format formatDav1FallbackToAv1 =
+        new Format.Builder()
+            .setSampleMimeType(MimeTypes.VIDEO_DOLBY_VISION)
+            .setCodecs("dav1.10.01")
+            .setColorInfo(
+                new ColorInfo.Builder()
+                    .setColorSpace(C.COLOR_SPACE_BT2020)
+                    .setColorTransfer(C.COLOR_TRANSFER_ST2084)
+                    .setColorRange(C.COLOR_RANGE_LIMITED)
+                    .build())
+            .build();
+
+    assertThat(CodecSpecificDataUtil.getDolbyVisionBaseLayerMimeType(formatDav1NoFallbackPossible))
+        .isEqualTo(MimeTypes.VIDEO_AV1);
+    assertThat(CodecSpecificDataUtil.getDolbyVisionBaseLayerMimeType(formatDav1FallbackToAv1))
+        .isEqualTo(MimeTypes.VIDEO_AV1);
   }
 
   private static void assertCodecProfileAndLevelForCodecsString(

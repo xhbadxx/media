@@ -51,6 +51,7 @@ import androidx.media3.common.MediaItem;
 import androidx.media3.common.MimeTypes;
 import androidx.media3.common.PlaybackException;
 import androidx.media3.common.Player;
+import androidx.media3.common.Tracks;
 import androidx.media3.common.VideoFrameProcessingException;
 import androidx.media3.common.VideoGraph;
 import androidx.media3.common.util.GlProgram;
@@ -283,6 +284,9 @@ import org.checkerframework.checker.nullness.qual.MonotonicNonNull;
                 },
                 playerHandler::post);
           } else {
+            Tracks tracks = checkNotNull(player).getCurrentTracks();
+            assertTracksSupported(tracks);
+
             long timestampToExtractMs =
                 isThumbnailRequest ? getThumbnailPresentationTimeMs() : request.positionMs;
             return processTask(
@@ -307,6 +311,33 @@ import org.checkerframework.checker.nullness.qual.MonotonicNonNull;
                   playerHandler::post);
           return "FrameExtractorInternal.getDecoderCounters";
         });
+  }
+
+  private static void assertTracksSupported(Tracks tracks) {
+    if (!tracks.containsType(C.TRACK_TYPE_VIDEO)) {
+      throw new IllegalArgumentException("Media item does not contain any video tracks.");
+    }
+
+    boolean hasSelectedClearVideoTrack = false;
+    boolean hasDrmVideoTrack = false;
+
+    for (Tracks.Group group : tracks.getGroups()) {
+      if (group.getType() == C.TRACK_TYPE_VIDEO) {
+        for (int i = 0; i < group.length; i++) {
+          Format format = group.getTrackFormat(i);
+          if (format.drmInitData != null || format.cryptoType != C.CRYPTO_TYPE_NONE) {
+            hasDrmVideoTrack = true;
+          } else if (group.isTrackSelected(i)) {
+            hasSelectedClearVideoTrack = true;
+          }
+        }
+      }
+    }
+
+    if (hasDrmVideoTrack && !hasSelectedClearVideoTrack) {
+      throw new UnsupportedOperationException(
+          "Frame extraction from DRM-protected media is not supported.");
+    }
   }
 
   private long getThumbnailPresentationTimeMs() {
@@ -412,8 +443,10 @@ import org.checkerframework.checker.nullness.qual.MonotonicNonNull;
     @Override
     public void onPlayerError(EventTime eventTime, PlaybackException error) {
       CallbackToFutureAdapter.Completer<FrameExtractor.Frame> frameBeingExtractedCompleter =
-          checkNotNull(internal.activeTaskCompleter.getAndSet(null));
-      frameBeingExtractedCompleter.setException(error);
+          internal.activeTaskCompleter.getAndSet(null);
+      if (frameBeingExtractedCompleter != null) {
+        frameBeingExtractedCompleter.setException(error);
+      }
     }
 
     @Override
@@ -427,8 +460,39 @@ import org.checkerframework.checker.nullness.qual.MonotonicNonNull;
           // and extractedFrameNeedsRendering remains false. No frames are rendered. Repeat the
           // previously returned frame.
           CallbackToFutureAdapter.Completer<FrameExtractor.Frame> frameBeingExtractedCompleter =
-              checkNotNull(internal.activeTaskCompleter.getAndSet(null));
-          frameBeingExtractedCompleter.set(checkNotNull(internal.lastSeekDedupeFrame));
+              internal.activeTaskCompleter.getAndSet(null);
+          if (frameBeingExtractedCompleter != null) {
+            if (internal.lastSeekDedupeFrame != null) {
+              frameBeingExtractedCompleter.set(internal.lastSeekDedupeFrame);
+            } else {
+              frameBeingExtractedCompleter.setException(
+                  new IllegalStateException(
+                      "Expected to deduplicate frame, but no previous frame was found."));
+            }
+          }
+        }
+      } else if (state == Player.STATE_ENDED) {
+        CallbackToFutureAdapter.Completer<FrameExtractor.Frame> frameBeingExtractedCompleter =
+            internal.activeTaskCompleter.getAndSet(null);
+        if (frameBeingExtractedCompleter != null) {
+          frameBeingExtractedCompleter.setException(
+              new IllegalStateException("Reached end of stream without extracting a frame."));
+        }
+      }
+    }
+
+    @Override
+    public void onTracksChanged(EventTime eventTime, Tracks tracks) {
+      if (tracks.isEmpty()) {
+        return;
+      }
+      try {
+        assertTracksSupported(tracks);
+      } catch (RuntimeException e) {
+        CallbackToFutureAdapter.Completer<FrameExtractor.Frame> frameBeingExtractedCompleter =
+            internal.activeTaskCompleter.getAndSet(null);
+        if (frameBeingExtractedCompleter != null) {
+          frameBeingExtractedCompleter.setException(e);
         }
       }
     }
@@ -593,10 +657,12 @@ import org.checkerframework.checker.nullness.qual.MonotonicNonNull;
       bitmap.copyPixelsFromBuffer(byteBuffer);
 
       CallbackToFutureAdapter.Completer<FrameExtractor.Frame> frameBeingExtractedCompleter =
-          checkNotNull(internal.activeTaskCompleter.getAndSet(null));
-      FrameExtractor.Frame frame = new FrameExtractor.Frame(usToMs(presentationTimeUs), bitmap);
-      internal.lastSeekDedupeFrame = frame;
-      frameBeingExtractedCompleter.set(frame);
+          internal.activeTaskCompleter.getAndSet(null);
+      if (frameBeingExtractedCompleter != null) {
+        FrameExtractor.Frame frame = new FrameExtractor.Frame(usToMs(presentationTimeUs), bitmap);
+        internal.lastSeekDedupeFrame = frame;
+        frameBeingExtractedCompleter.set(frame);
+      }
       // Drop frame: do not call outputListener.onOutputFrameAvailable().
       // Block effects pipeline: do not call inputListener.onReadyToAcceptInputFrame().
       // The effects pipeline will unblock and receive new frames when flushed after a seek.

@@ -32,6 +32,8 @@ import androidx.annotation.Nullable;
 import androidx.media3.common.C;
 import androidx.media3.common.Format;
 import androidx.media3.common.Timeline;
+import androidx.media3.common.util.Log;
+import androidx.media3.exoplayer.image.ImageMetadataListener;
 import androidx.media3.exoplayer.metadata.MetadataRenderer;
 import androidx.media3.exoplayer.source.MediaPeriod;
 import androidx.media3.exoplayer.source.MediaSource;
@@ -49,6 +51,8 @@ import java.util.Objects;
 
 /** Holds a {@link Renderer renderer}. */
 /* package */ class RendererHolder {
+  private static final String TAG = "RendererHolder";
+
   private final Renderer primaryRenderer;
   // Index of renderer in renderer list held by the {@link Player}.
   private final int index;
@@ -612,9 +616,19 @@ import java.util.Objects;
             || prewarmingState == RENDERER_PREWARMING_STATE_PREWARMING_PRIMARY;
     boolean isSecondaryActiveRenderer =
         prewarmingState == RENDERER_PREWARMING_STATE_TRANSITIONING_TO_PRIMARY;
-    disableRenderer(
-        isPrewarmingPrimary ? primaryRenderer : checkNotNull(secondaryRenderer), mediaClock);
-    maybeResetRenderer(/* resetPrimary= */ isPrewarmingPrimary);
+    try {
+      disableRenderer(
+          isPrewarmingPrimary ? primaryRenderer : checkNotNull(secondaryRenderer), mediaClock);
+    } catch (RuntimeException e) {
+      // There's nothing we can do.
+      Log.e(TAG, "Disable prewarming failed.", e);
+    }
+    try {
+      maybeResetRenderer(/* resetPrimary= */ isPrewarmingPrimary);
+    } catch (RuntimeException e) {
+      // There's nothing we can do.
+      Log.e(TAG, "Reset prewarming failed.", e);
+    }
     prewarmingState =
         isSecondaryActiveRenderer
             ? RENDERER_PREWARMING_STATE_NOT_PREWARMING_USING_SECONDARY
@@ -820,7 +834,7 @@ import java.util.Objects;
 
   public void setVideoFrameMetadataListener(VideoFrameMetadataListener videoFrameMetadataListener)
       throws ExoPlaybackException {
-    if (getTrackType() != TRACK_TYPE_VIDEO && getTrackType() != TRACK_TYPE_IMAGE) {
+    if (getTrackType() != TRACK_TYPE_VIDEO) {
       return;
     }
     primaryRenderer.handleMessage(
@@ -828,6 +842,18 @@ import java.util.Objects;
     if (secondaryRenderer != null) {
       secondaryRenderer.handleMessage(
           Renderer.MSG_SET_VIDEO_FRAME_METADATA_LISTENER, videoFrameMetadataListener);
+    }
+  }
+
+  public void setImageMetadataListener(ImageMetadataListener imageMetadataListener)
+      throws ExoPlaybackException {
+    if (getTrackType() != TRACK_TYPE_IMAGE) {
+      return;
+    }
+    primaryRenderer.handleMessage(Renderer.MSG_SET_IMAGE_METADATA_LISTENER, imageMetadataListener);
+    if (secondaryRenderer != null) {
+      secondaryRenderer.handleMessage(
+          Renderer.MSG_SET_IMAGE_METADATA_LISTENER, imageMetadataListener);
     }
   }
 

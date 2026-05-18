@@ -19,6 +19,7 @@ import static com.google.common.base.Preconditions.checkArgument;
 
 import android.annotation.SuppressLint;
 import android.media.MediaCodecInfo;
+import android.media.MediaCodecInfo.CodecProfileLevel;
 import android.util.Pair;
 import androidx.annotation.Nullable;
 import androidx.media3.common.C;
@@ -26,11 +27,13 @@ import androidx.media3.common.ColorInfo;
 import androidx.media3.common.Format;
 import androidx.media3.common.MimeTypes;
 import com.google.common.collect.ImmutableList;
+import com.google.common.primitives.UnsignedBytes;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
+import java.util.Objects;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -562,9 +565,9 @@ public final class CodecSpecificDataUtil {
         "Invalid APV CSD version: %s",
         initializationData[0]); // configurationVersion == 1
 
-    int profile = initializationData[5];
-    int level = initializationData[6];
-    int band = initializationData[7];
+    int profile = UnsignedBytes.toInt(initializationData[5]);
+    int level = UnsignedBytes.toInt(initializationData[6]);
+    int band = UnsignedBytes.toInt(initializationData[7]);
     return Util.formatInvariant("apv1.apvf%d.apvl%d.apvb%d", profile, level, band);
   }
 
@@ -999,6 +1002,36 @@ public final class CodecSpecificDataUtil {
       return null;
     }
     return new Pair<>(profile, level);
+  }
+
+  /**
+   * Returns a Dolby Vision base layer codec MIME type of the provided {@link Format}.
+   *
+   * @param format The media format.
+   * @return A Dolby Vision base layer MIME type, or {@code null} if a Dolby Vision profile is not
+   *     identified.
+   */
+  @Nullable
+  public static String getDolbyVisionBaseLayerMimeType(Format format) {
+    if (!Objects.equals(format.sampleMimeType, MimeTypes.VIDEO_DOLBY_VISION)) {
+      return null;
+    }
+    @Nullable Pair<Integer, Integer> codecProfileAndLevel = getCodecProfileAndLevel(format);
+    if (codecProfileAndLevel == null) {
+      return null;
+    }
+    switch (codecProfileAndLevel.first) {
+      case CodecProfileLevel.DolbyVisionProfileDvheDtr: // profile 4
+      case CodecProfileLevel.DolbyVisionProfileDvheStn: // profile 5
+      case CodecProfileLevel.DolbyVisionProfileDvheSt: // profile 8
+        return MimeTypes.VIDEO_H265;
+      case CodecProfileLevel.DolbyVisionProfileDvavSe: // profile 9
+        return MimeTypes.VIDEO_H264;
+      case CodecProfileLevel.DolbyVisionProfileDvav110: // profile 10
+        return MimeTypes.VIDEO_AV1;
+      default:
+        return null;
+    }
   }
 
   /** Returns H263 profile and level from codec string. */

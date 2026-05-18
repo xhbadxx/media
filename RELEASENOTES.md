@@ -2,6 +2,71 @@
 
 ## 1.10
 
+### 1.10.1 (2026-05-12)
+
+This release includes the following changes since [1.10.0](#1100-2026-03-25):
+
+*   Common library:
+    *   Fix handling of `onAudioSessionIdChanged` in `SimpleBasePlayer` and
+        `ForwardingSimpleBasePlayer`.
+*   ExoPlayer:
+    *   Fix race condition related to audio session id generation that could
+        lead to an `IllegalStateException` with tunneling mode.
+        ([#3099](https://github.com/androidx/media/issues/3099)).
+    *   Fix possible app crashes when recovering from decoder errors with
+        renderer prewarming.
+    *   Fix issue where video artifacts were caused by supplying initialization
+        data when using an AV1-based Dolby Vision codec
+        ([#3153](https://github.com/androidx/media/pull/3153)).
+*   Track selection:
+    *   Adjust track selection logic in `VideoTrackInfo` to resolve fallback
+        MIME types and move HDR and codec score preferences to quality
+        preferences ([#3135](https://github.com/androidx/media/issues/3135)).
+*   Extractors:
+    *   MP3: Ignore Xing data length if it is longer than the known stream
+        length ([#3117](https://github.com/androidx/media/issues/3117)).
+    *   Fix `ArrayIndexOutOfBoundsException` in `Mp4Extractor` when
+        `FLAG_OMIT_TRACK_SAMPLE_TABLE` is set and the track lacks a sync sample
+        (`stss`) box.
+*   Audio:
+    *   Fix bug where audio events may be misrouted if multiple audio renderers
+        are added to the player.
+*   Video:
+    *   Adjust logic for codec reuse at frame rate changes on API below 30 to
+        avoid codec resets where they are not beneficial
+        ([#3120](https://github.com/androidx/media/issues/3120)).
+    *   Disable forced synchronization workaround in `queueSecureInputBuffer`
+        for API 31+. The workaround was an artificial bottleneck that forced
+        decryption to run serially which prevented garbled video due to a
+        framework issue existing prior to API 31.
+*   Image:
+    *   Fix issue in scrubbing mode where image updates would only take effect
+        when the user "stops scrubbing"
+        ([#2815](https://github.com/androidx/media/issues/2815)).
+*   Session:
+    *   Fix bug where `ForegroundServiceStartNotAllowedException` wasn't
+        propagated across thread boundaries in case the application thread is
+        not the main thread
+        ([#2499](https://github.com/androidx/media/issues/2499)).
+    *   Fix bug where `COMMAND_SEEK_TO_MEDIA_ITEM` is not available in a
+        `MediaController` when connecting to a platform-only session that
+        supports seeking to other items but no playlist modifications.
+    *   Fix issue where `MediaController` can't set media items on platform
+        media sessions that don't allow `PREPARE_FROM` actions.
+    *   Fix bug where own process wasn't marked with `Controller.isTrusted()` on
+        API 27 or before when connecting via platform controllers.
+*   HLS extension:
+    *   Fix a bug where an `ArrayIndexOutOfBoundsException` is thrown during
+        stream fallback if the track selection is a subset of the available
+        tracks ([#3161](https://github.com/androidx/media/issues/3161)).
+    *   Fix an issue where the initialization segment was not carried over
+        across media playlist updates if the `#EXT-X-MAP` tag was not repeated
+        in subsequent updates
+        ([#3105](https://github.com/androidx/media/issues/3105)).
+*   DASH extension:
+    *   Fix crash in `SampleQueue` when seeking into a chunk that is currently
+        being canceled.
+
 ### 1.10.0 (2026-03-25)
 
 This release includes the following changes since
@@ -81,9 +146,6 @@ This release includes the following changes since
     *   Improve the retry logic of `AudioOutput` initialization in
         `DefaultAudioSink`
         ([#2905](https://github.com/androidx/media/issues/2905)).
-    *   Improve the retry logic of `AudioOutput` initialization in
-        `DefaultAudioSink`
-        ([#2905](https://github.com/androidx/media/issues/2905)).
     *   Attempt to match the output layout of the speakers (or Spatializer if
         applicable) when decoding IAMF, both with the IAMF extension and media
         codec decoders, supported by new fields and logic in AudioCapabilities
@@ -154,6 +216,8 @@ This release includes the following changes since
     *   Workaround SysUI bug on API 29 where media session artwork in a
         particular size can crash SysUI and force the device to reboot
         ([#3118](https://github.com/androidx/media/issues/3118)).
+    *   Fix notification artwork icon scaling on Android Q
+        ([#3084](https://github.com/androidx/media/issues/3084)).
 *   UI:
     *   Add `PlaybackSpeedControl` Composable to `media3-ui-compose` for
         displaying and modifying playback speed.
@@ -1483,7 +1547,7 @@ This release includes the following changes since the
         line endings ([#2167](https://github.com/androidx/media/issues/2167)).
 *   DRM:
     *   Fix `MediaCodec$CryptoException: Operation not supported in this
-        configuration` error when playing ClearKey content on API < 27 devices
+        configuration` error when playing ClearKey content on API below 27
         ([#1732](https://github.com/androidx/media/issues/1732)).
 *   Effect:
     *   Moved the functionality of `OverlaySettings` into
@@ -3997,7 +4061,7 @@ This release corresponds to the
     *   Use LG AC3 audio decoder advertising non-standard MIME type.
     *   Change the return type of `AudioAttributes.getAudioAttributesV21()` from
         `android.media.AudioAttributes` to a new `AudioAttributesV21` wrapper
-        class, to prevent slow ART verification on API < 21.
+        class, to prevent slow ART verification on API below 21.
     *   Query the platform (API 29+) or assume the audio encoding channel count
         for audio passthrough when the format audio channel count is unset,
         which occurs with HLS chunkless preparation
