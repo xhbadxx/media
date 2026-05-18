@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<MPD xmlns="urn:mpeg:dash:schema:mpd:2011"
+     profiles="urn:mpeg:dash:profile:isoff-live:2011"
+     type="static"
+     mediaPresentationDuration="PT10S"
+     minBufferTime="PT2S">
+  <Period id="0" start="PT0S">
+    <AdaptationSet id="1" mimeType="video/mp4" contentType="video"
+    <!-- BUG: thiếu dấu '>' đóng tag AdaptationSet => XmlPullParserException -->
+    <Representation id="v0" bandwidth="500000" codecs="avc1.42c01e"/>
+  </Period>
+</MPD>

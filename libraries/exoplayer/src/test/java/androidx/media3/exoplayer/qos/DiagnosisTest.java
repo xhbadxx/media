@@ -20,18 +20,18 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
-import androidx.media3.exoplayer.qos.model.DiagnosisV8;
+import androidx.media3.exoplayer.qos.model.Diagnosis;
 import org.junit.Test;
 
-public class DiagnosisV8Test {
+public class DiagnosisTest {
 
   @Test
   public void inconclusive_setsAllEvidenceFieldsToZeroOrSentinel() {
-    DiagnosisV8 d = DiagnosisV8.inconclusive(
-        DiagnosisV8.Reason.COLD_START, /* httpErrorCodes= */ new int[0]);
+    Diagnosis d = Diagnosis.inconclusive(
+        Diagnosis.Reason.COLD_START, /* httpErrorCodes= */ new int[0]);
 
-    assertEquals(DiagnosisV8.Cause.INCONCLUSIVE, d.cause);
-    assertEquals(DiagnosisV8.Reason.COLD_START, d.reason);
+    assertEquals(Diagnosis.Cause.INCONCLUSIVE, d.cause);
+    assertEquals(Diagnosis.Reason.COLD_START, d.reason);
     assertNull(d.reasonDetail);
     assertEquals(0, d.nV);
     assertEquals(0, d.nA);
@@ -69,8 +69,8 @@ public class DiagnosisV8Test {
   @Test
   public void classified_acceptsAllFields() {
     int[] codes = {503};
-    DiagnosisV8 d = DiagnosisV8.classified(
-        DiagnosisV8.Cause.CDN,
+    Diagnosis d = Diagnosis.classified(
+        Diagnosis.Cause.CDN,
         codes,
         /* nV= */ 52, /* nA= */ 45,
         /* nVDrained= */ 34, /* nADrained= */ 12,
@@ -88,7 +88,7 @@ public class DiagnosisV8Test {
         /* ttfbQ1V= */ 120, /* ttfbMedianV= */ 180, /* ttfbQ3V= */ 280,
         /* ttfbQ1A= */ 200, /* ttfbMedianA= */ 250, /* ttfbQ3A= */ 320);
 
-    assertEquals(DiagnosisV8.Cause.CDN, d.cause);
+    assertEquals(Diagnosis.Cause.CDN, d.cause);
     assertArrayEquals(codes, d.httpErrorCodes);
     assertEquals(34, d.nVDrained);
     assertEquals(8, d.nVAbrLag);
@@ -101,8 +101,8 @@ public class DiagnosisV8Test {
 
   @Test
   public void inconclusive_withDetail_storesSubReason() {
-    DiagnosisV8 d = DiagnosisV8.inconclusive(
-        DiagnosisV8.Reason.SANITY_FAIL,
+    Diagnosis d = Diagnosis.inconclusive(
+        Diagnosis.Reason.SANITY_FAIL,
         /* detail= */ "demand>1.3",
         /* httpErrorCodes= */ new int[]{503},
         /* nRetries= */ 1);
@@ -114,8 +114,8 @@ public class DiagnosisV8Test {
 
   @Test
   public void toDisplaySummary_cdnVerdict_includesDrainPeak() {
-    DiagnosisV8 d = DiagnosisV8.classified(
-        DiagnosisV8.Cause.CDN, new int[0],
+    Diagnosis d = Diagnosis.classified(
+        Diagnosis.Cause.CDN, new int[0],
         52, 45, 34, 12, 18, 3, 1140, 1080, 0,
         "ETH", "fpt",
         8, 3, 8, 18, 3, 5, 1, 2,
@@ -132,8 +132,8 @@ public class DiagnosisV8Test {
 
   @Test
   public void toDisplaySummary_inconclusive_showsReason() {
-    DiagnosisV8 d = DiagnosisV8.inconclusive(
-        DiagnosisV8.Reason.SANITY_FAIL, "demand>1.3", new int[]{503}, 1);
+    Diagnosis d = Diagnosis.inconclusive(
+        Diagnosis.Reason.SANITY_FAIL, "demand>1.3", new int[]{503}, 1);
 
     String s = d.toDisplaySummary();
     assertTrue(s.contains("INCONCLUSIVE"));
@@ -145,8 +145,8 @@ public class DiagnosisV8Test {
   @Test
   public void toDisplaySummary_audioOnlyRetries_usesSplitFormat() {
     // NETWORK classified with nRetries=0, nARetries=1 — previously produced misleading "retry=0(A1)"
-    DiagnosisV8 classified = DiagnosisV8.classified(
-        DiagnosisV8.Cause.NETWORK, new int[0],
+    Diagnosis classified = Diagnosis.classified(
+        Diagnosis.Cause.NETWORK, new int[0],
         4, 3, 2, 1, 0, 0, 800, 600, 0,
         "WIFI", "fpt",
         0, 0, 0, 0, 0, 1, 0, 0,
@@ -160,5 +160,43 @@ public class DiagnosisV8Test {
         s.contains("retry=V0/A1"));
     org.junit.Assert.assertFalse("Should not produce ambiguous 'retry=0(A1)': " + s,
         s.contains("retry=0(A1)"));
+  }
+
+  @Test
+  public void formatSessionVerdictLine_aggregatesNetworkAndCdnCounts() {
+    Diagnosis cdn = Diagnosis.classified(
+        Diagnosis.Cause.CDN, new int[0],
+        4, 3, 2, 1, 1, 0, 800, 600, 0,
+        "ETH", "fpt",
+        0, 0, 0, 0, 0, 0, 0, 0,
+        1.20, 1, 0.0, -1,
+        0,
+        120, 180, 240, 200, 250, 300);
+    Diagnosis network = Diagnosis.classified(
+        Diagnosis.Cause.NETWORK, new int[0],
+        4, 3, 2, 1, 0, 0, 800, 600, 0,
+        "WIFI", "akamai",
+        0, 0, 0, 0, 0, 1, 0, 0,
+        1.20, 1, 0.0, -1,
+        0,
+        120, 180, 240, 200, 250, 300);
+    Diagnosis inc = Diagnosis.inconclusive(
+        Diagnosis.Reason.SANITY_FAIL, new int[0]);
+
+    String line = Diagnosis.formatSessionVerdictLine(
+        java.util.Arrays.asList(network, cdn, network, inc, null));
+
+    assertEquals("network: 2 · cdn: 1", line);
+  }
+
+  @Test
+  public void formatSessionVerdictLine_returnsEmptyWhenNoNetworkOrCdn() {
+    Diagnosis inc1 = Diagnosis.inconclusive(Diagnosis.Reason.SANITY_FAIL, new int[0]);
+    Diagnosis inc2 = Diagnosis.inconclusive(Diagnosis.Reason.COLD_START, new int[0]);
+
+    assertEquals("", Diagnosis.formatSessionVerdictLine(
+        java.util.Arrays.asList(inc1, inc2)));
+    assertEquals("", Diagnosis.formatSessionVerdictLine(java.util.Collections.<Diagnosis>emptyList()));
+    assertEquals("", Diagnosis.formatSessionVerdictLine(null));
   }
 }

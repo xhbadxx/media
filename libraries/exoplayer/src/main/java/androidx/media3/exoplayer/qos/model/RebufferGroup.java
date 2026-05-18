@@ -17,20 +17,17 @@ package androidx.media3.exoplayer.qos.model;
 
 import androidx.annotation.Nullable;
 import androidx.media3.common.util.UnstableApi;
-import androidx.media3.exoplayer.qos.QoSDiagnoser;
 import java.util.List;
 
 /**
- * Frozen snapshot of QoS entries captured at the moment a rebuffer event was first
- * recorded (an entry with {@code bufferStarvationFlag=true}), bundled with the
- * diagnoser's verdict. Snapshot is immutable — does not update as new entries flow
- * into {@link androidx.media3.exoplayer.qos.QoSMonitor}.
+ * Frozen snapshot of QoS entries captured at the moment a rebuffer event was first recorded (an
+ * entry with {@code bufferStarvationFlag=true}), bundled with the diagnoser's verdict. Snapshot is
+ * immutable — does not update as new entries flow into
+ * {@link androidx.media3.exoplayer.qos.QoSMonitor}.
  *
- * <p>Created by {@link androidx.media3.exoplayer.qos.FPlayQoSMonitor} on every
- * captured rebuffer (cooldown-debounced to suppress duplicate audio/video bs flags
- * from the same event). The {@link #diagnosis} is computed on the same thread as
- * the capture (player application thread) — see
- * {@code androidx.media3.exoplayer.qos.QoSDiagnoser}.
+ * <p>Created by {@link androidx.media3.exoplayer.qos.FPlayQoSMonitor} on every captured rebuffer
+ * (cooldown-debounced to suppress duplicate audio/video bs flags from the same event). The
+ * {@link #diagnosis} is computed on the same thread as the capture (player application thread).
  */
 @UnstableApi
 public final class RebufferGroup {
@@ -45,191 +42,25 @@ public final class RebufferGroup {
   public final QoSInfo trigger;
 
   /**
-   * Frozen snapshot — last N entries (default 50) ending at and including
-   * {@link #trigger}. Newest is {@code entries.get(entries.size()-1)}.
+   * Frozen snapshot — last N entries (default 50) ending at and including {@link #trigger}.
+   * Newest is {@code entries.get(entries.size()-1)}.
    */
   public final List<QoSInfo> entries;
 
-  /**
-   * Diagnoser verdict computed from {@link #entries} and {@link #trigger}. Per-entry
-   * findings + inferred {@link Pattern} + cross-cut ABR flag + natural-language
-   * conclusion. UI layers should render this card per rebuffer rather than dumping
-   * raw {@link #entries}.
-   */
-  public final Diagnosis diagnosis;
+  /** Diagnoser verdict computed from {@link #entries} and {@link #trigger}. */
+  @Nullable public final Diagnosis diagnosis;
 
-  /**
-   * Buffer-conservation pipeline verdict — richer than {@link #diagnosis}. Includes
-   * {@link QoSDiagnoser.Cause}, {@link QoSDiagnoser.Mechanism}, smoking-gun list,
-   * per-entry attribution, window metrics, and the ABR-lag cross-cut. {@code null}
-   * for groups created before the buffer-conservation pipeline existed (legacy
-   * 5-arg constructor); always non-null when constructed with the 6-arg ctor.
-   */
-  @Nullable public final QoSDiagnoser.FullDiagnosis fullDiagnosis;
-
-  /**
-   * V2 diagnoser verdict (parallel to {@link #fullDiagnosis} during the dual-write
-   * phase). UI layers may render V1 and V2 side-by-side so disagreements surface for
-   * cross-validation. {@code null} for groups created before V2 wiring (legacy 5/6-arg
-   * constructors); always non-null when constructed with the 7-arg ctor.
-   */
-  @Nullable public final DiagnosisV2 diagnosisV2;
-
-  /**
-   * V4 diagnoser verdict (parallel to {@link #diagnosisV2} during V4 dual-write phase).
-   * Multi-evidence cascade replaces V2's TTFB-decomposition once validated. {@code null}
-   * for groups created before V4 wiring (5/6/7-arg constructors); always non-null when
-   * constructed with the 8-arg ctor.
-   */
-  @Nullable public final DiagnosisV4 diagnosisV4;
-
-  /**
-   * V5 diagnoser verdict (parallel to {@link #diagnosisV4} during V5 dual-write phase).
-   * Client-only paper-anchored cascade with cohort dims for backend reattribution.
-   * {@code null} for groups created before V5 wiring (5/6/7/8-arg constructors); always
-   * non-null when constructed with the 9- or 10-arg ctor.
-   */
-  @Nullable public final DiagnosisV5 diagnosisV5;
-
-  /**
-   * V6 diagnoser verdict (parallel to {@link #diagnosisV5} during V6 dual-write phase).
-   * Simplified 3-cause classifier — drain proxy + Tukey TTFB outlier majority gate. HTTP
-   * codes attached as metadata only. {@code null} for groups created before V6 wiring;
-   * always non-null when constructed with the 10-arg ctor.
-   */
-  @Nullable public final DiagnosisV6 diagnosisV6;
-
-  /**
-   * V7 diagnoser verdict (parallel to {@link #diagnosisV6} during V7 dual-write phase).
-   * V6 + audio-track evidence (additive V+A merge). {@code null} for groups created before
-   * V7 wiring; always non-null when constructed with the 11-arg ctor.
-   */
-  @Nullable public final DiagnosisV7 diagnosisV7;
-
-  /**
-   * V8 diagnoser verdict (parallel to {@link #diagnosisV7} during V8 dual-write phase).
-   * Null for groups created before V8 wire-up.
-   */
-  @Nullable public final DiagnosisV8 diagnosisV8;
-
-  /** Legacy constructor — preserves binary compatibility for callers / tests pre-FullDiagnosis. */
   public RebufferGroup(
       int id,
       long triggerTimeMs,
       QoSInfo trigger,
       List<QoSInfo> entries,
-      Diagnosis diagnosis) {
-    this(id, triggerTimeMs, trigger, entries, diagnosis, null, null, null, null, null, null);
-  }
-
-  /** Pre-V2 constructor — both legacy {@code Diagnosis} and the new {@code FullDiagnosis} attached. */
-  public RebufferGroup(
-      int id,
-      long triggerTimeMs,
-      QoSInfo trigger,
-      List<QoSInfo> entries,
-      Diagnosis diagnosis,
-      @Nullable QoSDiagnoser.FullDiagnosis fullDiagnosis) {
-    this(id, triggerTimeMs, trigger, entries, diagnosis, fullDiagnosis, null, null, null, null, null);
-  }
-
-  /** Pre-V4 constructor — V1 + V2 attached, V4+V5+V6+V7 missing. */
-  public RebufferGroup(
-      int id,
-      long triggerTimeMs,
-      QoSInfo trigger,
-      List<QoSInfo> entries,
-      Diagnosis diagnosis,
-      @Nullable QoSDiagnoser.FullDiagnosis fullDiagnosis,
-      @Nullable DiagnosisV2 diagnosisV2) {
-    this(id, triggerTimeMs, trigger, entries, diagnosis, fullDiagnosis, diagnosisV2, null, null, null, null);
-  }
-
-  /** Pre-V5 constructor — V1, V2, V4 verdicts attached, V5+V6+V7 missing. */
-  public RebufferGroup(
-      int id,
-      long triggerTimeMs,
-      QoSInfo trigger,
-      List<QoSInfo> entries,
-      Diagnosis diagnosis,
-      @Nullable QoSDiagnoser.FullDiagnosis fullDiagnosis,
-      @Nullable DiagnosisV2 diagnosisV2,
-      @Nullable DiagnosisV4 diagnosisV4) {
-    this(id, triggerTimeMs, trigger, entries, diagnosis, fullDiagnosis, diagnosisV2, diagnosisV4, null, null, null);
-  }
-
-  /** Pre-V6 constructor — V1, V2, V4, V5 verdicts attached, V6+V7 missing. */
-  public RebufferGroup(
-      int id,
-      long triggerTimeMs,
-      QoSInfo trigger,
-      List<QoSInfo> entries,
-      Diagnosis diagnosis,
-      @Nullable QoSDiagnoser.FullDiagnosis fullDiagnosis,
-      @Nullable DiagnosisV2 diagnosisV2,
-      @Nullable DiagnosisV4 diagnosisV4,
-      @Nullable DiagnosisV5 diagnosisV5) {
-    this(id, triggerTimeMs, trigger, entries, diagnosis, fullDiagnosis, diagnosisV2, diagnosisV4, diagnosisV5, null, null);
-  }
-
-  /** Pre-V7 constructor — V1, V2, V4, V5, V6 verdicts attached, V7 missing. */
-  public RebufferGroup(
-      int id,
-      long triggerTimeMs,
-      QoSInfo trigger,
-      List<QoSInfo> entries,
-      Diagnosis diagnosis,
-      @Nullable QoSDiagnoser.FullDiagnosis fullDiagnosis,
-      @Nullable DiagnosisV2 diagnosisV2,
-      @Nullable DiagnosisV4 diagnosisV4,
-      @Nullable DiagnosisV5 diagnosisV5,
-      @Nullable DiagnosisV6 diagnosisV6) {
-    this(id, triggerTimeMs, trigger, entries, diagnosis, fullDiagnosis, diagnosisV2, diagnosisV4, diagnosisV5, diagnosisV6, null);
-  }
-
-  /** Pre-V8 constructor — V1..V7 attached, V8 missing. */
-  public RebufferGroup(
-      int id,
-      long triggerTimeMs,
-      QoSInfo trigger,
-      List<QoSInfo> entries,
-      Diagnosis diagnosis,
-      @Nullable QoSDiagnoser.FullDiagnosis fullDiagnosis,
-      @Nullable DiagnosisV2 diagnosisV2,
-      @Nullable DiagnosisV4 diagnosisV4,
-      @Nullable DiagnosisV5 diagnosisV5,
-      @Nullable DiagnosisV6 diagnosisV6,
-      @Nullable DiagnosisV7 diagnosisV7) {
-    this(id, triggerTimeMs, trigger, entries, diagnosis, fullDiagnosis,
-        diagnosisV2, diagnosisV4, diagnosisV5, diagnosisV6, diagnosisV7, /* diagnosisV8= */ null);
-  }
-
-  /** Full constructor — V1, V2, V4, V5, V6, V7, V8 verdicts all attached. */
-  public RebufferGroup(
-      int id,
-      long triggerTimeMs,
-      QoSInfo trigger,
-      List<QoSInfo> entries,
-      Diagnosis diagnosis,
-      @Nullable QoSDiagnoser.FullDiagnosis fullDiagnosis,
-      @Nullable DiagnosisV2 diagnosisV2,
-      @Nullable DiagnosisV4 diagnosisV4,
-      @Nullable DiagnosisV5 diagnosisV5,
-      @Nullable DiagnosisV6 diagnosisV6,
-      @Nullable DiagnosisV7 diagnosisV7,
-      @Nullable DiagnosisV8 diagnosisV8) {
+      @Nullable Diagnosis diagnosis) {
     this.id = id;
     this.triggerTimeMs = triggerTimeMs;
     this.trigger = trigger;
     this.entries = entries;
     this.diagnosis = diagnosis;
-    this.fullDiagnosis = fullDiagnosis;
-    this.diagnosisV2 = diagnosisV2;
-    this.diagnosisV4 = diagnosisV4;
-    this.diagnosisV5 = diagnosisV5;
-    this.diagnosisV6 = diagnosisV6;
-    this.diagnosisV7 = diagnosisV7;
-    this.diagnosisV8 = diagnosisV8;
   }
 
   public int size() {

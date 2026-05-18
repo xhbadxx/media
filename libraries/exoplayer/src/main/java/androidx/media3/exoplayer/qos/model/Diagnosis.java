@@ -15,189 +15,352 @@
  */
 package androidx.media3.exoplayer.qos.model;
 
+import androidx.annotation.Nullable;
 import androidx.media3.common.util.UnstableApi;
-import java.util.Collections;
-import java.util.List;
 
 /**
- * Verdict produced by the QoS diagnoser for one rebuffer event. Composed onto every
- * captured {@link RebufferGroup} alongside the entry snapshot — UI layers should
- * render a {@code Diagnosis} card per rebuffer rather than dumping the raw entries.
+ * Output verdict của {@link androidx.media3.exoplayer.qos.QoSDiagnoser} — 3-cause classifier
+ * (CDN / NETWORK / INCONCLUSIVE) với 33 evidence fields cho UI/analyst render: abr-lag counts,
+ * drain peak, per-condition counts, baseline quartiles, audio retries.
  *
- * <p>Approach (Spec §IV — per-entry walk):
- * <ol>
- *   <li>Diagnoser walks {@code RebufferGroup.entries} chronologically.
- *   <li>Each entry is classified into a {@link Finding} with {@link Severity} +
- *       human-readable {@code issues} citing specific metric values.
- *   <li>{@link #pattern} is inferred from the observed problem types across findings,
- *       not from aggregate statistics.
- *   <li>{@link #abrLag} is an independent cross-cut flag computed on the trigger entry.
- *   <li>{@link #conclusion} is a 2–3 sentence narrative synthesizing the observation.
- * </ol>
- *
- * <p>Each finding's {@code issues} list quotes specific values (e.g.,
- * {@code "throughput 2750kbps < br 4800 × 0.7 (3360kbps)"}) so reports are
- * audit-friendly — every claim verifiable directly against the corresponding entry.
+ * <p>Algorithm cascade: SLOW_RATIO=0.10, BODY_HEALTHY_RATIO=0.90, TUKEY_K=3, majority gate ≥50%.
+ * Evidence fields là observational — không tham gia classification logic.
  */
 @UnstableApi
 public final class Diagnosis {
 
-  /** Per-entry severity tag assigned during the diagnostic walk. */
-  public enum Severity {
-    /** Entry is healthy — no rule fired. */
-    OK,
-    /** Entry shows borderline issue (e.g., load slightly over chunk duration). */
-    WARN,
-    /** Entry shows critical issue (transfer way over duration, server very slow, etc.). */
-    CRITICAL,
-    /** The entry that fired the {@code bs} flag — last item in the walk by definition. */
-    TRIGGER
+  /** Same 3-cause set as V7. */
+  public enum Cause {
+    CDN,
+    NETWORK,
+    INCONCLUSIVE
   }
 
-  /**
-   * One {@link QoSInfo} entry analysed by the diagnoser, tagged with severity and
-   * the list of issues observed (each issue citing the specific metric value that
-   * triggered it).
-   */
-  public static final class Finding {
-    public final QoSInfo entry;
-    public final Severity severity;
-    public final List<String> issues;
+  /** Same 6 inconclusive reasons as V7. */
+  public enum Reason {
+    EMPTY_GROUP("empty_group"),
+    NO_COMPLETED_V_SEG("no_completed_v_seg"),
+    SANITY_FAIL("sanity_fail"),
+    COLD_START("cold_start"),
+    TRACK_SWITCH("track_switch"),
+    NO_DRAIN("no_drain");
 
-    public Finding(QoSInfo entry, Severity severity, List<String> issues) {
-      this.entry = entry;
-      this.severity = severity;
-      this.issues = Collections.unmodifiableList(issues);
+    public final String code;
+
+    Reason(String code) {
+      this.code = code;
     }
 
-    /**
-     * Multi-line text for this finding ready to render in a single {@code TextView}.
-     * Format:
-     * <pre>
-     *   {iconForSeverity} {entry.toUiText() — Player line}
-     *      • {issue 1}
-     *      • {issue 2}
-     * </pre>
-     * No issues → only the header line. CDN line dropped to keep finding rows compact.
-     */
-    public String toUiText() {
-      StringBuilder sb = new StringBuilder(120);
-      sb.append(severityIcon(severity)).append(' ').append(entry.toPlayerLogString());
-      for (String issue : issues) {
-        sb.append("\n   • ").append(issue);
-      }
-      return sb.toString();
+    @Override
+    public String toString() {
+      return code;
     }
   }
 
-  public final Pattern pattern;
-  public final boolean abrLag;
-  public final List<Finding> findings;
-  public final String conclusion;
+  // === V7 fields preserved verbatim ===
 
-  public Diagnosis(
-      Pattern pattern,
-      boolean abrLag,
-      List<Finding> findings,
-      String conclusion) {
-    this.pattern = pattern;
-    this.abrLag = abrLag;
-    this.findings = Collections.unmodifiableList(findings);
-    this.conclusion = conclusion;
+  public final Cause cause;
+  /** 4xx + 5xx HTTP status codes seen in window. Metadata only. */
+  public final int[] httpErrorCodes;
+  /** Number of completed V scored segments examined. {@code 0} for INCONCLUSIVE paths. */
+  public final int nV;
+  /** Number of completed audio segments examined. */
+  public final int nA;
+  /** Number of V segs with {@code excessRatio > SLOW_RATIO_V}. */
+  public final int nVDrained;
+  /** Number of A segs with {@code excessRatio > SLOW_RATIO_A}. */
+  public final int nADrained;
+  /** Drained V segs qualifying CDN evidence (ttfb-extreme AND body-healthy AND !mtp-collapsed). */
+  public final int nVCdnEvidence;
+  /** Drained A segs qualifying CDN evidence (ttfb-extreme AND body-healthy). */
+  public final int nACdnEvidence;
+  /** Resolved V Tukey upper fence (ms). {@code -1} for INCONCLUSIVE. */
+  public final int ttfbFenceUpperVMs;
+  /** Resolved audio Tukey upper fence (ms). {@code -1} when audio cold-start. */
+  public final int ttfbFenceUpperAMs;
+  /** Number of V segs with {@code retryCount > 0}. */
+  public final int nRetries;
+  /** Cohort label: network type của lastV (WIFI/4G/...). */
+  public final String cohortNetworkType;
+  /** Cohort label: CDN provider của lastV (fpt/akamai/...). */
+  public final String cohortCdnProvider;
+  /** Why an INCONCLUSIVE verdict was emitted. {@code null} for CDN/NETWORK. */
+  @Nullable public final Reason reason;
+  /** Sub-reason detail (e.g. sanity-gate sub-fail). */
+  @Nullable public final String reasonDetail;
+
+  // === NEW V8 fields ===
+
+  /** V scored segs với {@code bitrate > mtp × 0.8} (ABR over-estimate). */
+  public final int nVAbrLag;
+  /** Subset of {@link #nVCdnEvidence} cũng có abr-lag. */
+  public final int nVAbrLagInCdn;
+  /** Subset of {@link #nVDrained} có abr-lag. */
+  public final int nVAbrLagInDrain;
+
+  /** Drained V segs với {@code ttfb > fence} (no body/mtp guards). */
+  public final int nVTtfbExtreme;
+  /** Drained A segs với {@code ttfb > audioFence}. */
+  public final int nATtfbExtreme;
+
+  /** Drained V segs với {@code postKbps < bitrate × 0.90}. */
+  public final int nVBodyUnhealthy;
+  /** Drained A segs với {@code postKbps < bitrate × 0.90}. */
+  public final int nABodyUnhealthy;
+
+  /** Drained V segs với {@code mtp < mtpFence.lowerFence}. Audio không có mtp → no A equivalent. */
+  public final int nVMtpCollapsed;
+
+  /** Max excessRatio across V drained segs. {@code 0.0} nếu nVDrained=0. */
+  public final double drainPeakRatioV;
+  /** Seg index của V drain peak. {@code -1} nếu nVDrained=0. */
+  public final int drainPeakSegIdxV;
+  /** Max excessRatio across A drained segs. */
+  public final double drainPeakRatioA;
+  /** Seg index của A drain peak. */
+  public final int drainPeakSegIdxA;
+
+  /** Audio segs với {@code retryCount>0} (nRetries chỉ count V). */
+  public final int nARetries;
+
+  /** V TTFB baseline Q1 (Tukey hinge). {@code -1} khi fence null (cold-start). */
+  public final int ttfbQ1V;
+  /** V TTFB baseline median. {@code -1} khi fence null. */
+  public final int ttfbMedianV;
+  /** V TTFB baseline Q3 (Tukey hinge). {@code -1} khi fence null. */
+  public final int ttfbQ3V;
+  /** A baseline Q1. {@code -1} khi audioFence null. */
+  public final int ttfbQ1A;
+  /** A baseline median. */
+  public final int ttfbMedianA;
+  /** A baseline Q3. */
+  public final int ttfbQ3A;
+
+  private Diagnosis(
+      Cause cause,
+      int[] httpErrorCodes,
+      int nV, int nA,
+      int nVDrained, int nADrained,
+      int nVCdnEvidence, int nACdnEvidence,
+      int ttfbFenceUpperVMs, int ttfbFenceUpperAMs,
+      int nRetries,
+      String cohortNetworkType, String cohortCdnProvider,
+      int nVAbrLag, int nVAbrLagInCdn, int nVAbrLagInDrain,
+      int nVTtfbExtreme, int nATtfbExtreme,
+      int nVBodyUnhealthy, int nABodyUnhealthy,
+      int nVMtpCollapsed,
+      double drainPeakRatioV, int drainPeakSegIdxV,
+      double drainPeakRatioA, int drainPeakSegIdxA,
+      int nARetries,
+      int ttfbQ1V, int ttfbMedianV, int ttfbQ3V,
+      int ttfbQ1A, int ttfbMedianA, int ttfbQ3A,
+      @Nullable Reason reason, @Nullable String reasonDetail) {
+    this.cause = cause;
+    this.httpErrorCodes = httpErrorCodes;
+    this.nV = nV;
+    this.nA = nA;
+    this.nVDrained = nVDrained;
+    this.nADrained = nADrained;
+    this.nVCdnEvidence = nVCdnEvidence;
+    this.nACdnEvidence = nACdnEvidence;
+    this.ttfbFenceUpperVMs = ttfbFenceUpperVMs;
+    this.ttfbFenceUpperAMs = ttfbFenceUpperAMs;
+    this.nRetries = nRetries;
+    this.cohortNetworkType = cohortNetworkType;
+    this.cohortCdnProvider = cohortCdnProvider;
+    this.nVAbrLag = nVAbrLag;
+    this.nVAbrLagInCdn = nVAbrLagInCdn;
+    this.nVAbrLagInDrain = nVAbrLagInDrain;
+    this.nVTtfbExtreme = nVTtfbExtreme;
+    this.nATtfbExtreme = nATtfbExtreme;
+    this.nVBodyUnhealthy = nVBodyUnhealthy;
+    this.nABodyUnhealthy = nABodyUnhealthy;
+    this.nVMtpCollapsed = nVMtpCollapsed;
+    this.drainPeakRatioV = drainPeakRatioV;
+    this.drainPeakSegIdxV = drainPeakSegIdxV;
+    this.drainPeakRatioA = drainPeakRatioA;
+    this.drainPeakSegIdxA = drainPeakSegIdxA;
+    this.nARetries = nARetries;
+    this.ttfbQ1V = ttfbQ1V;
+    this.ttfbMedianV = ttfbMedianV;
+    this.ttfbQ3V = ttfbQ3V;
+    this.ttfbQ1A = ttfbQ1A;
+    this.ttfbMedianA = ttfbMedianA;
+    this.ttfbQ3A = ttfbQ3A;
+    this.reason = reason;
+    this.reasonDetail = reasonDetail;
   }
 
-  /**
-   * Placeholder used when the diagnoser has not run yet (e.g., during initial
-   * construction in {@code FPlayQoSMonitor.captureRebufferSnapshot} before the real
-   * diagnoser call). UI layers should treat this the same as {@link Pattern#UNKNOWN}.
-   */
-  public static Diagnosis unknown() {
-    return new Diagnosis(
-        Pattern.UNKNOWN,
-        /* abrLag= */ false,
-        Collections.emptyList(),
-        "Diagnoser has not run on this rebuffer yet.");
-  }
+  /** Total drained segments across V and A tracks. */
+  public int nDrainedTotal() { return nVDrained + nADrained; }
+  /** Total CDN-evidence segments across V and A tracks. */
+  public int nCdnEvidenceTotal() { return nVCdnEvidence + nACdnEvidence; }
 
   /**
-   * One-line headline for HUD / logcat summary.
+   * Single-line summary for HUD / overlay / support tickets. Format extends V7 with drain
+   * peak (V/A) and audio retries.
    *
    * <p>Examples:
    * <pre>
-   *   USER_NETWORK +ABR_LAG
-   *   CDN_ORIGIN_SLOW
-   *   UNKNOWN
+   * 🔴 V8 · CDN · vSlow=34 aSlow=12 vSvrLag=18 aSvrLag=3 peakV=1.85 peakA=1.42 · fenceV=1140ms fenceA=1080ms
+   * 🟠 V8 · NETWORK · vSlow=4 aSlow=0 vSvrLag=0 aSvrLag=0 · fenceV=100ms fenceA=-1ms
+   * ⚪ V8 · INCONCLUSIVE · cold_start
    * </pre>
    */
-  public String summary() {
-    return abrLag ? pattern.name() + " +ABR_LAG" : pattern.name();
-  }
-
-  /**
-   * Returns only the findings tagged {@link Severity#WARN} or {@link Severity#CRITICAL}
-   * (plus the {@link Severity#TRIGGER} entry) — the "interesting" subset to render
-   * prominently on the diagnosis card. Healthy entries are kept in {@link #findings}
-   * for full audit but typically rendered collapsed.
-   */
-  public List<Finding> problemFindings() {
-    java.util.List<Finding> out = new java.util.ArrayList<>();
-    for (Finding f : findings) {
-      if (f.severity != Severity.OK) out.add(f);
-    }
-    return Collections.unmodifiableList(out);
-  }
-
-  /**
-   * Single multi-line string that renders the entire diagnosis card — header,
-   * conclusion paragraph, every problem finding (with severity icon + issues),
-   * and (if applicable) the trigger entry. Designed to drop straight into a single
-   * {@code TextView} (set typeface to monospace for column alignment) or to copy
-   * directly into a support ticket.
-   *
-   * <p>Healthy ({@link Severity#OK}) entries are intentionally omitted — see
-   * {@link #findings} for the full audit list.
-   *
-   * <p>Example output:
-   * <pre>
-   * ═══ USER_NETWORK +ABR_LAG ═══
-   *
-   * CDN healthy throughout. Problem started at 14:32:31.723: throughput
-   * 2400kbps &lt; br 4800kbps × 0.7 (3360kbps). User network insufficient for
-   * selected bitrate. ABR_LAG: br 4800kbps / mtp 2200kbps = 2.18 (Media3
-   * safety bound 0.8).
-   *
-   * 🔴 [V, br=4.8Mbps, res=1920x1080, cdur=1.9s] [bl=1.3s, mtp=2.2Mbps]
-   *    • throughput 2400kbps &lt; br 4800kbps × 0.7 (3360kbps)
-   *    • dur 3492ms &gt; cdur 1900ms × 1.5 (transfer too slow)
-   *
-   * 🔴 [V, br=4.8Mbps, ...] [bl=...]
-   *    • throughput 2110kbps &lt; br 4800kbps × 0.7 (3360kbps)
-   *
-   * 🟣 [V, br=4.8Mbps, ...] [bl=1.3s, mtp=2.2Mbps, *bs*]
-   * </pre>
-   */
-  public String toFullReport() {
-    StringBuilder sb = new StringBuilder(512);
-    sb.append("═══ ").append(summary()).append(" ═══\n\n");
-    sb.append(conclusion);
-    List<Finding> problems = problemFindings();
-    if (!problems.isEmpty()) {
-      sb.append("\n");
-      for (Finding f : problems) {
-        sb.append('\n').append(f.toUiText()).append('\n');
+  public String toDisplaySummary() {
+    StringBuilder sb = new StringBuilder(192);
+    sb.append(severityIcon()).append(" V8 · ").append(cause.name());
+    if (cause == Cause.INCONCLUSIVE) {
+      if (reason != null) {
+        sb.append(" · ").append(reason.code);
+        if (reasonDetail != null) {
+          sb.append(":").append(reasonDetail);
+        }
       }
+    } else {
+      sb.append(" · vSlow=").append(nVDrained)
+          .append(" aSlow=").append(nADrained)
+          .append(" vSvrLag=").append(nVCdnEvidence)
+          .append(" aSvrLag=").append(nACdnEvidence);
+      if (drainPeakRatioV > 0) {
+        sb.append(" peakV=").append(String.format(java.util.Locale.US, "%.2f", drainPeakRatioV));
+      }
+      if (drainPeakRatioA > 0) {
+        sb.append(" peakA=").append(String.format(java.util.Locale.US, "%.2f", drainPeakRatioA));
+      }
+      sb.append(" · fenceV=").append(ttfbFenceUpperVMs).append("ms");
+      sb.append(" fenceA=").append(ttfbFenceUpperAMs).append("ms");
+    }
+    if (nRetries > 0 || nARetries > 0) {
+      if (nARetries > 0) {
+        // Audio retries present — show both explicitly to avoid ambiguous "retry=0(A1)"
+        sb.append(" · retry=V").append(nRetries).append("/A").append(nARetries);
+      } else {
+        // V-only — preserve V7-compatible "retry=N" format
+        sb.append(" · retry=").append(nRetries);
+      }
+    }
+    if (httpErrorCodes.length > 0) {
+      sb.append(" · codes=").append(java.util.Arrays.toString(httpErrorCodes));
     }
     return sb.toString();
   }
 
-  /** Icon used by {@link Finding#toUiText()} and {@link #toFullReport()} per severity. */
-  static String severityIcon(Severity severity) {
-    switch (severity) {
-      case CRITICAL: return "🔴";
-      case WARN:     return "⚠";
-      case TRIGGER:  return "🟣";
-      case OK:
-      default:       return "✓";
+  private String severityIcon() {
+    switch (cause) {
+      case CDN: return "🔴";
+      case NETWORK: return "🟠";
+      case INCONCLUSIVE:
+      default: return "⚪";
     }
+  }
+
+  /**
+   * Aggregates verdict counts across a session's V8 diagnoses and returns a single
+   * compact line for the panel session-zone: {@code "network: N · cdn: C"}.
+   *
+   * <p>Rendered ABOVE the {@code sf/cs/ts} INC sub-row so verdict counts read first.
+   * Labels are lowercase to read as peer sub-counters of {@code Rebuffer:},
+   * matching the lowercase 2-letter INC codes ({@code sf/cs/ts}).
+   *
+   * <p>Inconclusive verdicts are intentionally omitted — they are already surfaced
+   * by the {@code sf/cs/ts} row. Null entries are skipped so callers can pass
+   * {@code groups.stream().map(g -> g.diagnosisV8).toList()} without filtering.
+   *
+   * <p>Returns an empty string when both counts are zero so callers can skip
+   * rendering the line entirely (matches the panel "hide-zero" rule).
+   */
+  public static String formatSessionVerdictLine(@Nullable java.util.List<Diagnosis> diagnoses) {
+    int network = 0;
+    int cdn = 0;
+    if (diagnoses != null) {
+      for (Diagnosis d : diagnoses) {
+        if (d == null) continue;
+        switch (d.cause) {
+          case NETWORK: network++; break;
+          case CDN: cdn++; break;
+          case INCONCLUSIVE:
+          default: break;
+        }
+      }
+    }
+    if (network == 0 && cdn == 0) {
+      return "";
+    }
+    return "network: " + network + " · cdn: " + cdn;
+  }
+
+  public static Diagnosis inconclusive(Reason reason, int[] httpErrorCodes) {
+    return inconclusive(reason, /* detail= */ null, httpErrorCodes, /* nRetries= */ 0, /* nARetries= */ 0);
+  }
+
+  public static Diagnosis inconclusive(Reason reason, int[] httpErrorCodes, int nRetries) {
+    return inconclusive(reason, /* detail= */ null, httpErrorCodes, nRetries, /* nARetries= */ 0);
+  }
+
+  public static Diagnosis inconclusive(
+      Reason reason, @Nullable String detail, int[] httpErrorCodes, int nRetries) {
+    return inconclusive(reason, detail, httpErrorCodes, nRetries, /* nARetries= */ 0);
+  }
+
+public static Diagnosis inconclusive(
+      Reason reason, @Nullable String detail, int[] httpErrorCodes, int nRetries, int nARetries) {
+    return new Diagnosis(
+        Cause.INCONCLUSIVE,
+        httpErrorCodes,
+        /* nV= */ 0, /* nA= */ 0,
+        /* nVDrained= */ 0, /* nADrained= */ 0,
+        /* nVCdnEvidence= */ 0, /* nACdnEvidence= */ 0,
+        /* ttfbFenceUpperVMs= */ -1, /* ttfbFenceUpperAMs= */ -1,
+        nRetries,
+        /* cohortNetworkType= */ "UNKNOWN", /* cohortCdnProvider= */ "UNKNOWN",
+        /* nVAbrLag= */ 0, /* nVAbrLagInCdn= */ 0, /* nVAbrLagInDrain= */ 0,
+        /* nVTtfbExtreme= */ 0, /* nATtfbExtreme= */ 0,
+        /* nVBodyUnhealthy= */ 0, /* nABodyUnhealthy= */ 0,
+        /* nVMtpCollapsed= */ 0,
+        /* drainPeakRatioV= */ 0.0, /* drainPeakSegIdxV= */ -1,
+        /* drainPeakRatioA= */ 0.0, /* drainPeakSegIdxA= */ -1,
+        nARetries,
+        /* ttfbQ1V= */ -1, /* ttfbMedianV= */ -1, /* ttfbQ3V= */ -1,
+        /* ttfbQ1A= */ -1, /* ttfbMedianA= */ -1, /* ttfbQ3A= */ -1,
+        reason, detail);
+  }
+
+  public static Diagnosis classified(
+      Cause cause,
+      int[] httpErrorCodes,
+      int nV, int nA,
+      int nVDrained, int nADrained,
+      int nVCdnEvidence, int nACdnEvidence,
+      int ttfbFenceUpperVMs, int ttfbFenceUpperAMs,
+      int nRetries,
+      String cohortNetworkType, String cohortCdnProvider,
+      int nVAbrLag, int nVAbrLagInCdn, int nVAbrLagInDrain,
+      int nVTtfbExtreme, int nATtfbExtreme,
+      int nVBodyUnhealthy, int nABodyUnhealthy,
+      int nVMtpCollapsed,
+      double drainPeakRatioV, int drainPeakSegIdxV,
+      double drainPeakRatioA, int drainPeakSegIdxA,
+      int nARetries,
+      int ttfbQ1V, int ttfbMedianV, int ttfbQ3V,
+      int ttfbQ1A, int ttfbMedianA, int ttfbQ3A) {
+    return new Diagnosis(
+        cause, httpErrorCodes,
+        nV, nA,
+        nVDrained, nADrained,
+        nVCdnEvidence, nACdnEvidence,
+        ttfbFenceUpperVMs, ttfbFenceUpperAMs,
+        nRetries,
+        cohortNetworkType, cohortCdnProvider,
+        nVAbrLag, nVAbrLagInCdn, nVAbrLagInDrain,
+        nVTtfbExtreme, nATtfbExtreme,
+        nVBodyUnhealthy, nABodyUnhealthy,
+        nVMtpCollapsed,
+        drainPeakRatioV, drainPeakSegIdxV,
+        drainPeakRatioA, drainPeakSegIdxA,
+        nARetries,
+        ttfbQ1V, ttfbMedianV, ttfbQ3V,
+        ttfbQ1A, ttfbMedianA, ttfbQ3A,
+        /* reason= */ null, /* reasonDetail= */ null);
   }
 }

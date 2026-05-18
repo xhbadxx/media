@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- BUG: MPD hợp lệ về XML nhưng KHÔNG có <Period> nào => DashManifestParser throw "No periods found." -->
+<MPD xmlns="urn:mpeg:dash:schema:mpd:2011"
+     profiles="urn:mpeg:dash:profile:isoff-live:2011"
+     type="static"
+     mediaPresentationDuration="PT10S"
+     minBufferTime="PT2S">
+</MPD>

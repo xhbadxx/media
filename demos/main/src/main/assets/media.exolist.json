@@ -860,5 +860,39 @@
         "uri": "https://storage.googleapis.com/exoplayer-test-media-1/iamf/7_1_4_PCM16_48000.mp4"
       }
     ]
+  },
+  {
+    "name": "Debug 3002 (broken MPD)",
+    "samples": [
+      {
+        "name": "Unclosed AdaptationSet tag (XmlPullParserException)",
+        "uri": "asset:///broken_unclosed_tag.mpd",
+        "mime_type": "application/dash+xml"
+      },
+      {
+        "name": "No <Period> element (ParserException: No periods found.)",
+        "uri": "asset:///broken_no_period.mpd",
+        "mime_type": "application/dash+xml"
+      },
+      {
+        "name": "Root is not <MPD> (ParserException: not a valid MPD)",
+        "uri": "asset:///broken_not_mpd.mpd",
+        "mime_type": "application/dash+xml"
+      },
+      {
+        "name": "HTML body, URL .mpd, mime DASH (Scenario A: CDN returns 404 HTML at .mpd URL)",
+        "uri": "asset:///broken_html_as_mpd.mpd",
+        "mime_type": "application/dash+xml"
+      },
+      {
+        "name": "HTML body, URL .html, mime DASH (Scenario B1: player forced into DASH parser via mime_type)",
+        "uri": "asset:///broken_html_as_mpd.html",
+        "mime_type": "application/dash+xml"
+      },
+      {
+        "name": "HTML body, URL .html, no mime (Scenario B2: extension sniff fails to pick a parser)",
+        "uri": "asset:///broken_html_as_mpd.html"
+      }
+    ]
   }
 ]

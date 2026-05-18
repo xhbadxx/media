@@ -36,6 +36,7 @@ import androidx.media3.common.AudioAttributes;
 import androidx.media3.common.C;
 import androidx.media3.common.ErrorMessageProvider;
 import androidx.media3.common.MediaItem;
+import androidx.media3.common.ParserException;
 import androidx.media3.common.PlaybackException;
 import androidx.media3.common.Player;
 import androidx.media3.common.TrackSelectionParameters;
@@ -555,8 +556,39 @@ public class PlayerActivity extends AppCompatActivity
                   decoderInitializationException.codecInfo.name);
         }
       }
-      return Pair.create(0, errorString);
+      String detail = buildCauseChain(e);
+      android.util.Log.e("PlayerActivity", "Playback error:\n" + detail);
+      return Pair.create(0, errorString + "\n\n" + detail);
     }
+  }
+
+  /**
+   * Walks the full Throwable cause chain so wrappers that null out their own message (e.g.
+   * {@link ParserException} from {@code DashManifestParser}) don't hide the real root-cause text.
+   * Useful for diagnosing 3002/3001 errors where the outer exception's message is empty and the
+   * actual XML parse failure lives 2-3 layers deep.
+   */
+  private static String buildCauseChain(PlaybackException error) {
+    StringBuilder sb = new StringBuilder();
+    sb.append("code=").append(error.errorCode)
+        .append(" (").append(error.getErrorCodeName()).append(")\n");
+    Throwable c = error;
+    int depth = 0;
+    while (c != null && depth < 6) {
+      String msg = (c.getMessage() == null || c.getMessage().isEmpty())
+          ? "<no-msg>" : c.getMessage();
+      sb.append('[').append(depth).append("] ")
+          .append(c.getClass().getSimpleName()).append(": ").append(msg);
+      if (c instanceof ParserException) {
+        ParserException pe = (ParserException) c;
+        sb.append(" (dataType=").append(pe.dataType)
+            .append(", malformed=").append(pe.contentIsMalformed).append(')');
+      }
+      sb.append('\n');
+      c = c.getCause();
+      depth++;
+    }
+    return sb.toString();
   }
 
   private static List<MediaItem> createMediaItems(Intent intent, DownloadTracker downloadTracker) {

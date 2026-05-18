@@ -25,12 +25,6 @@ import androidx.media3.exoplayer.qos.hook.QoSAnalyticsHook;
 import androidx.media3.exoplayer.qos.hook.QoSPlayerHook;
 import androidx.media3.exoplayer.qos.hook.QoSTransferListener;
 import androidx.media3.exoplayer.qos.model.Diagnosis;
-import androidx.media3.exoplayer.qos.model.DiagnosisV2;
-import androidx.media3.exoplayer.qos.model.DiagnosisV4;
-import androidx.media3.exoplayer.qos.model.DiagnosisV5;
-import androidx.media3.exoplayer.qos.model.DiagnosisV6;
-import androidx.media3.exoplayer.qos.model.DiagnosisV7;
-import androidx.media3.exoplayer.qos.model.DiagnosisV8;
 import androidx.media3.exoplayer.qos.model.QoSInfo;
 import androidx.media3.exoplayer.qos.model.RebufferGroup;
 import androidx.media3.exoplayer.qos.model.SessionStatistics;
@@ -137,44 +131,52 @@ public final class FPlayQoSMonitor {
       };
 
   /**
-   * Feeds every COMPLETED V scored segment into {@link #sessionStats} so the V5 rolling
-   * Tukey fence baselines warm up from healthy traffic — not only from segments captured
-   * inside rebuffer windows. Without this observer, {@link QoSDiagnoserV5#diagnose} would
-   * only ever see samples that were already abnormal (the rebuffer snapshot), which both
-   * starves the fence (cold-start fallback dominates) and biases it toward elevated TTFB
-   * once it does warm. With it, the very first rebuffer in a session can already use a
-   * Tukey-derived threshold instead of the 800ms cold fallback.
+   * Feeds every COMPLETED V scored segment into {@link #sessionStats} so the rolling Tukey
+   * fence baselines warm up from healthy traffic — not only from segments captured inside
+   * rebuffer windows. Without this observer, {@link QoSDiagnoser#diagnose} would only ever
+   * see samples that were already abnormal (the rebuffer snapshot), which both starves the
+   * fence and biases it toward elevated TTFB once it does warm.
    */
   private final QoSObserver sessionStatsObserver =
       entries -> {
         if (entries.isEmpty()) return;
         QoSInfo last = entries.get(entries.size() - 1);
-        if (QoSDiagnoserV5.isCompletedScoredSegment(last)) {
-          String key = QoSDiagnoserV5.sessionKey(last);
+        if (QoSDiagnoserUtils.isCompletedScoredSegment(last)) {
+          String key = QoSDiagnoserUtils.sessionKey(last);
           if (last.ttfbMs >= 0) {
             sessionStats.addTtfbSample(key, last.ttfbMs);
           }
-          if (last.bitrateKbps > 0 && last.ttfbMs >= 0 && last.bytesLoaded > 0) {
-            long transferMs = Math.max(1L, last.loadDurationMs - last.ttfbMs);
-            int postTtfbKbps = (int) ((last.bytesLoaded * 8L) / transferMs);
+          int postTtfbKbps = computePostTtfbKbps(last);
+          if (postTtfbKbps >= 0) {
             sessionStats.addDeliveryRateSample(key, postTtfbKbps);
           }
           if (last.measuredThroughputKbps > 0) {
             sessionStats.addMtpSample(key, last.measuredThroughputKbps);
           }
-        } else if (QoSDiagnoserV5.isCompletedAudioSegment(last)) {
-          // V7 audio fence feed — separate Maps, same key scheme. No audio mtp.
-          String aKey = QoSDiagnoserV5.sessionKey(last);
+        } else if (QoSDiagnoserUtils.isCompletedAudioSegment(last)) {
+          // Audio fence feed — separate Maps, same key scheme. No audio mtp.
+          String aKey = QoSDiagnoserUtils.sessionKey(last);
           if (last.ttfbMs >= 0) {
             sessionStats.addAudioTtfbSample(aKey, last.ttfbMs);
           }
-          if (last.bitrateKbps > 0 && last.ttfbMs >= 0 && last.bytesLoaded > 0) {
-            long transferMs = Math.max(1L, last.loadDurationMs - last.ttfbMs);
-            int postTtfbKbps = (int) ((last.bytesLoaded * 8L) / transferMs);
+          int postTtfbKbps = computePostTtfbKbps(last);
+          if (postTtfbKbps >= 0) {
             sessionStats.addAudioDeliveryRateSample(aKey, postTtfbKbps);
           }
         }
       };
+
+  /**
+   * Post-TTFB body throughput in kbps for a completed scored segment, derived from bytes
+   * delivered after the first response byte. Returns {@code -1} when the segment is missing
+   * any of {@code bitrateKbps}, {@code ttfbMs}, or {@code bytesLoaded} (i.e. cannot derive).
+   * {@code transferMs} is clamped to {@code ≥ 1} to avoid divide-by-zero on instant loads.
+   */
+  private static int computePostTtfbKbps(QoSInfo s) {
+    if (s.bitrateKbps <= 0 || s.ttfbMs < 0 || s.bytesLoaded <= 0) return -1;
+    long transferMs = Math.max(1L, s.loadDurationMs - s.ttfbMs);
+    return (int) ((s.bytesLoaded * 8L) / transferMs);
+  }
 
   /**
    * Captures a {@link RebufferGroup} on every entry with {@code bs=true}, debounced
@@ -196,183 +198,23 @@ public final class FPlayQoSMonitor {
     int from = Math.max(0, all.size() - PRE_TRIGGER_WINDOW);
     // Deep copy of reference list — RebufferGroup is frozen, must not share with
     // the live ring buffer (which evicts oldest as new entries flow in).
-    List<QoSInfo> snapshot = Collections.unmodifiableList(new ArrayList<>(all.subList(from, all.size())));
-    // Diagnoser walks the snapshot per-entry; result is embedded in the group so
-    // every consumer (HUD, log, support tickets) sees the same verdict.
-    Diagnosis diagnosis = QoSDiagnoser.diagnose(trigger, snapshot);
+    List<QoSInfo> snapshot =
+        Collections.unmodifiableList(new ArrayList<>(all.subList(from, all.size())));
     int groupId = ++nextGroupId;
-    // Build a lightweight RebufferGroup just to feed the buffer-conservation
-    // pipeline — diagnoseFully takes a RebufferGroup. The legacy diagnosis is
-    // re-attached on the final group below alongside fullDiagnosis.
-    RebufferGroup pipelineInput =
-        new RebufferGroup(groupId, trigger.timestampMs, trigger, snapshot, diagnosis);
-    QoSDiagnoser.FullDiagnosis fullDiagnosis = QoSDiagnoser.diagnoseFully(pipelineInput);
-    // Triple-write phase: V1 is source of truth for FullDiagnosis; V2 + V4 run
-    // side-by-side in the log only for cross-validation. After V4 production
-    // validation V2 dual-write can be dropped, then V1 once V4 fully replaces it.
-    DiagnosisV2 v2 = QoSDiagnoserV2.diagnose(pipelineInput);
-    DiagnosisV4 v4 = QoSDiagnoserV4.diagnose(pipelineInput);
-    DiagnosisV5 v5 = QoSDiagnoserV5.diagnose(pipelineInput, sessionStats);
-    DiagnosisV6 v6 = QoSDiagnoserV6.diagnose(pipelineInput, sessionStats);
-    DiagnosisV7 v7 = QoSDiagnoserV7.diagnose(pipelineInput, sessionStats);
-    DiagnosisV8 v8 = QoSDiagnoserV8.diagnose(pipelineInput, sessionStats);
-    StringBuilder log = new StringBuilder(512)
-        .append("Rebuffer #").append(groupId).append(": ").append(diagnosis.summary())
-        .append(" | v1.cause=").append(fullDiagnosis.cause)
-        .append(" v1.mechanism=").append(fullDiagnosis.mechanism)
-        .append(" v1.abrLag=").append(fullDiagnosis.abrLag)
-        .append(" | v2.cause=").append(v2.cause)
-        .append(" v2.totalDrain=").append(v2.totalDrainMs).append("ms")
-        .append(" v2.serverDrain=").append(v2.serverDrainMs).append("ms")
-        .append(" v2.clientDrain=").append(v2.clientDrainMs).append("ms");
-    if (v2.countClientDrain > 0) {
-      log.append(" v2.abrAggr=").append(v2.countAbrAggressive).append('/').append(v2.countClientDrain);
-    }
-    if (v2.sanityFailReason != null) {
-      log.append(" v2.sanityFail=\"").append(v2.sanityFailReason).append('"');
-    }
-    log.append(" | v4.cause=").append(v4.cause);
-    if (v4.cause == DiagnosisV4.Cause.CDN_HTTP_ERROR && v4.httpErrorCodes.length > 0) {
-      log.append(" v4.codes=").append(java.util.Arrays.toString(v4.httpErrorCodes));
-    } else if (v4.sanityFailReason != null) {
-      log.append(" v4.sanityFail=\"").append(v4.sanityFailReason).append('"');
-    } else {
-      log.append(" v4.nV=").append(v4.nVSegments);
-      log.append(" v4.nSlow=").append(v4.nSlowSegments);
-      log.append(" v4.median=").append(String.format(java.util.Locale.US, "%.2f", v4.medianExcessRatio));
-      if (v4.nCdnEvidenceSegments > 0) {
-        log.append(" v4.cdnEv=").append(v4.nCdnEvidenceSegments);
-      }
-      if (v4.nASegments > 0) {
-        log.append(" v4.crossA=").append(v4.crossTrackCorrelated);
-      }
-      log.append(" v4.bufTrend=").append(v4.bufferTrend);
-      log.append(" v4.abrAware=").append(v4.abrWasAware);
-    }
-    log.append(" | v5.cause=").append(v5.cause);
-    log.append(" v5.branch=").append(v5.cacheBranch);
-    if (v5.cause == DiagnosisV5.Cause.CDN_HTTP_ERROR && v5.httpErrorCodes.length > 0) {
-      log.append(" v5.codes=").append(java.util.Arrays.toString(v5.httpErrorCodes));
-    } else if (v5.sanityFailReason != null && v5.cause == DiagnosisV5.Cause.TRANSIENT) {
-      log.append(" v5.sanityFail=\"").append(v5.sanityFailReason).append('"');
-    } else {
-      log.append(" v5.nV=").append(v5.nVSegments);
-      log.append(" v5.nSlow=").append(v5.nSlowSegments);
-      log.append(" v5.median=").append(String.format(java.util.Locale.US, "%.2f", v5.medianExcessRatio));
-      if (v5.nCdnEvidenceSegments > 0) {
-        log.append(" v5.cdnEv=").append(v5.nCdnEvidenceSegments);
-      }
-      if (v5.nDeliveryRateOutlierSegments > 0) {
-        log.append(" v5.delivOut=").append(v5.nDeliveryRateOutlierSegments);
-      }
-      if (v5.nRetrySegments > 0) {
-        log.append(" v5.nRetry=").append(v5.nRetrySegments);
-      }
-      log.append(" v5.fence=").append(v5.ttfbUpperFenceApplied).append("ms");
-      if (v5.usedColdStartFallback) {
-        log.append(" v5.cold=1");
-      }
-      log.append(" v5.cohort=").append(v5.cohortNetworkType)
-          .append('/').append(v5.cohortCacheBranch)
-          .append('/').append(v5.cohortCdnHostname);
-    }
-    log.append(" | v6.cause=").append(v6.cause);
-    if (v6.cause == DiagnosisV6.Cause.INCONCLUSIVE) {
-      log.append(" v6.reason=\"");
-      if (v6.reason != null) {
-        log.append(v6.reason.code);
-        if (v6.reasonDetail != null) {
-          log.append(':').append(v6.reasonDetail);
-        }
-      }
-      log.append('"');
-    } else {
-      log.append(" v6.nV=").append(v6.nV);
-      log.append(" v6.slow=").append(v6.nDrained);
-      log.append(" v6.svrLag=").append(v6.nCdnEvidence);
-      if (v6.mtpCollapseDetected) {
-        log.append(" v6.mtpCollapse=1");
-      }
-      log.append(" v6.fence=").append(v6.ttfbFenceUpperMs).append("ms");
-      log.append(" v6.ttfb=").append(v6.lastTtfbMs).append("ms");
-      log.append(" v6.bl=").append(v6.lastBufferMs).append("ms");
-    }
-    if (v6.nRetries > 0) {
-      log.append(" v6.retry=").append(v6.nRetries);
-    }
-    if (v6.httpErrorCodes.length > 0) {
-      log.append(" v6.codes=").append(java.util.Arrays.toString(v6.httpErrorCodes));
-    }
-    log.append(" | v7.cause=").append(v7.cause);
-    if (v7.cause == DiagnosisV7.Cause.INCONCLUSIVE) {
-      log.append(" v7.reason=\"");
-      if (v7.reason != null) {
-        log.append(v7.reason.code);
-        if (v7.reasonDetail != null) {
-          log.append(':').append(v7.reasonDetail);
-        }
-      }
-      log.append('"');
-    } else {
-      log.append(" v7.nV=").append(v7.nV);
-      log.append(" v7.nA=").append(v7.nA);
-      log.append(" v7.nVD=").append(v7.nVDrained);
-      log.append(" v7.nAD=").append(v7.nADrained);
-      log.append(" v7.nVCE=").append(v7.nVCdnEvidence);
-      log.append(" v7.nACE=").append(v7.nACdnEvidence);
-      log.append(" v7.fenceV=").append(v7.ttfbFenceUpperVMs).append("ms");
-      log.append(" v7.fenceA=").append(v7.ttfbFenceUpperAMs).append("ms");
-    }
-    log.append(" | v8.cause=").append(v8.cause);
-    if (v8.cause == DiagnosisV8.Cause.INCONCLUSIVE) {
-      log.append(" v8.reason=\"");
-      if (v8.reason != null) {
-        log.append(v8.reason.code);
-        if (v8.reasonDetail != null) log.append(':').append(v8.reasonDetail);
-      }
-      log.append('"');
-    } else {
-      log.append(" v8.nV=").append(v8.nV);
-      log.append(" v8.slow=").append(v8.nVDrained);
-      log.append(" v8.svrLag=").append(v8.nVCdnEvidence);
-      if (v8.drainPeakRatioV > 0) {
-        log.append(String.format(java.util.Locale.US, " v8.peakV=%.2f#%d",
-            v8.drainPeakRatioV, v8.drainPeakSegIdxV));
-      }
-      if (v8.nVAbrLag > 0) {
-        log.append(" v8.abrLag=").append(v8.nVAbrLag);
-      }
-      if (v8.nADrained > 0) {
-        log.append(" v8.aSlow=").append(v8.nADrained);
-        log.append(" v8.aSvrLag=").append(v8.nACdnEvidence);
-      }
-      log.append(" v8.fenceV=").append(v8.ttfbFenceUpperVMs).append("ms");
-      log.append(" v8.q123V=").append(v8.ttfbQ1V).append('/')
-          .append(v8.ttfbMedianV).append('/').append(v8.ttfbQ3V);
-    }
-    if (v8.nRetries > 0 || v8.nARetries > 0) {
-      log.append(" v8.retry=").append(v8.nRetries).append('+').append(v8.nARetries);
-    }
-    Log.i(TAG, log.toString());
+    // Build a temporary RebufferGroup (without diagnosis) to feed the diagnoser;
+    // final group below carries the diagnosis. Diagnoser only reads entries + trigger.
+    RebufferGroup diagnoserInput =
+        new RebufferGroup(groupId, trigger.timestampMs, trigger, snapshot, /* diagnosis= */ null);
+    Diagnosis diagnosis = QoSDiagnoser.diagnose(diagnoserInput, sessionStats);
+    Log.i(TAG, "Rebuffer #" + groupId + ": " + diagnosis.toDisplaySummary());
     RebufferGroup group =
-        new RebufferGroup(
-            groupId,
-            trigger.timestampMs,
-            trigger,
-            snapshot,
-            diagnosis,
-            fullDiagnosis,
-            v2,
-            v4,
-            v5,
-            v6,
-            v7,
-            v8);
+        new RebufferGroup(groupId, trigger.timestampMs, trigger, snapshot, diagnosis);
     rebufferGroups.add(group);
     while (rebufferGroups.size() > MAX_REBUFFER_GROUPS) {
       rebufferGroups.remove(0);
     }
-    List<RebufferGroup> groupSnapshot = Collections.unmodifiableList(new ArrayList<>(rebufferGroups));
+    List<RebufferGroup> groupSnapshot =
+        Collections.unmodifiableList(new ArrayList<>(rebufferGroups));
     for (RebufferGroupObserver observer : groupObservers) {
       observer.onRebufferGroupsChanged(groupSnapshot);
     }

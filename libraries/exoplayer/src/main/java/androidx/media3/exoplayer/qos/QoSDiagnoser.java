@@ -15,1285 +15,307 @@
  */
 package androidx.media3.exoplayer.qos;
 
-import androidx.media3.common.C;
+import androidx.annotation.Nullable;
 import androidx.media3.common.util.UnstableApi;
 import androidx.media3.exoplayer.qos.model.Diagnosis;
-import androidx.media3.exoplayer.qos.model.Pattern;
 import androidx.media3.exoplayer.qos.model.QoSInfo;
 import androidx.media3.exoplayer.qos.model.RebufferGroup;
+import androidx.media3.exoplayer.qos.model.SessionStatistics;
 import java.util.ArrayList;
-import java.util.Collections;
-import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Locale;
-import java.util.Map;
-import java.util.regex.Matcher;
-// java.util.regex.Pattern is fully-qualified at usage sites to disambiguate from
-// androidx.media3.exoplayer.qos.model.Pattern.
 
 /**
- * Pure-function diagnoser for rebuffer events. Walks {@link RebufferGroup#entries}
- * chronologically, tags each A/V entry with a {@link Diagnosis.Severity} and a list of
- * specific issues, infers the {@link Pattern} from observations, and emits an
- * audit-friendly {@link Diagnosis}.
+ * Pure-function rebuffer diagnoser — 3-cause classifier (CDN / NETWORK / INCONCLUSIVE) với 33
+ * evidence fields per event for UI/analyst manual reasoning.
  *
- * <p>Methodology — per-entry walk (Spec §IV revised). Every threshold cited in
- * {@code Spec - QoS Diagnosis Method.md §III} maps to a specific check below; the
- * issue strings quote the exact metric value so reports remain verifiable directly
- * against the underlying log entry.
+ * <p>Cascade (7 steps):
  *
- * <p>Stateless static API: {@link #diagnose(RebufferGroup)} is thread-safe and
- * allocation-light (one {@code List<Finding>} + a few short strings per call).
- * Designed to run on the player application thread inside
- * {@code FPlayQoSMonitor.captureRebufferSnapshot}.
+ * <ol>
+ *   <li>Filter V + A scored segs. V empty → INCONCLUSIVE(NO_COMPLETED_V_SEG).
+ *   <li>TRACK_SWITCH guard: trigger là init.mp4 / index.mpd (chunkDurationMs ≤ 0 +
+ *       bytesLoaded &gt; 0). INCONCLUSIVE(TRACK_SWITCH).
+ *   <li>Sanity gate (V-only ΔSupply): demand_ratio ∈ [0.7, 1.3]. INCONCLUSIVE(SANITY_FAIL) khi
+ *       fail, detail string carries reason.
+ *   <li>Cold-start: getTtfbFence(vKey) == null → INCONCLUSIVE(COLD_START).
+ *   <li>Per-V evidence: drained + ttfbExtreme(K=3) + bodyHealthy(≥0.90 × bitrate) +
+ *       !mtpCollapsed → V CDN evidence.
+ *   <li>Per-A evidence: drained + ttfbExtreme(K=3 on audioFence) + bodyHealthy(≥0.90 ×
+ *       audioBitrate). No mtp guard (audio không có BandwidthMeter measurement).
+ *   <li>Merge: nDrained = nVD + nAD; nCdnEv = nVCE + nACE; gate {@code nCdnEv × 2 ≥ nDrained}
+ *       → CDN/NETWORK. nDrained = 0 → INCONCLUSIVE(NO_DRAIN).
+ * </ol>
+ *
+ * <p>Constants: SLOW_RATIO=0.10, BODY_HEALTHY_RATIO=0.90, TUKEY_K=3, ABR_LAG_RATIO=0.80,
+ * majority gate ≥50%.
+ *
+ * <p>Evidence fields ({@code nVAbrLag}, drain peak, per-condition counts, audio retries,
+ * baseline quartiles) populated alongside verdict — không tham gia classification logic.
  */
 @UnstableApi
 public final class QoSDiagnoser {
 
-  // ===== Thresholds (Spec §III) =====
-
-  /** TTFB warn — server response slow (web.dev tighten for video segments). */
-  static final int TTFB_WARN_MS = 500;
-
-  /** TTFB severe — origin definitively slow. */
-  static final int TTFB_SEVERE_MS = 1000;
-
-  /** Load duration / chunk duration ratio that signals buffer-drain start. */
-  static final double DUR_CDUR_WARN_RATIO = 1.0;
-
-  /** Load duration / chunk duration ratio that signals critical drain. */
-  static final double DUR_CDUR_CRITICAL_RATIO = 1.5;
-
-  /** Per-load throughput must be at least {@code br × this} (Media3 ABR safety). */
-  static final double THROUGHPUT_BR_FRACTION = 0.7;
-
-  /** ABR lag threshold — selected bitrate / mtp at trigger. */
-  static final double ABR_LAG_RATIO = 0.8;
-
-  /** Minimum A/V entries needed to issue a non-TRANSIENT verdict. */
-  static final int MIN_AV_ENTRIES = 5;
-
-  /** Lower bound of {@code demand_ratio} accepted as normal 1× playback. */
-  static final double SANITY_GATE_RATIO_MIN = 0.7;
-
-  /** Upper bound of {@code demand_ratio} accepted as normal 1× playback. */
-  static final double SANITY_GATE_RATIO_MAX = 1.3;
-
-  /** A single segment's deficit must exceed this fraction of initial buffer to fire SINGLE_SPIKE. */
-  static final double MECHANISM_SPIKE_RATIO = 0.5;
-
-  /** Fraction of segments draining required to fire CONTINUOUS_DRAIN. */
-  static final double MECHANISM_DRAIN_RATIO = 0.5;
-
-  /** Minimum scored segments needed before mechanism detection issues anything other than INSUFFICIENT_LOG. */
-  static final int MIN_SEGMENTS_FOR_MECHANISM = 3;
-
-  /** Manifest load duration above this is treated as slow (baseline ≤ 200ms × 5). */
-  static final long MANIFEST_SLOW_LOAD_MS = 1_000L;
-
-  /**
-   * postTtfb below this fraction of {@code prior_median_postTtfb} fires the
-   * defense-in-depth degradation trigger (Spec §IV.3).
-   */
-  static final double ATTRIBUTION_DEGRADATION_RATIO = 0.3;
-
-  /**
-   * When {@code ttfb / loadDur} exceeds this fraction, Phase 1 dominated the
-   * load and we attribute the deficit to slow response start (ambiguous: origin
-   * or client RTT — we cannot disambiguate without server timing).
-   */
-  static final double ATTRIBUTION_TTFB_DOMINANT_RATIO = 0.7;
-
-  // ===== HTTP 5xx detection =====
-
-  private static final java.util.regex.Pattern HTTP_5XX =
-      java.util.regex.Pattern.compile("\\b5\\d{2}\\b");
-
   private QoSDiagnoser() {}
 
-  /**
-   * Runs the per-entry walk, infers verdict, and returns a {@link Diagnosis}.
-   * Never returns {@code null}.
-   *
-   * <p>Takes {@code (trigger, entries)} directly rather than a {@link RebufferGroup}
-   * because the caller (e.g., {@code FPlayQoSMonitor.captureRebufferSnapshot})
-   * needs the diagnosis BEFORE constructing the group — the group's
-   * {@link RebufferGroup#diagnosis} field is final, so we can't mutate it after
-   * construction. The group's id and triggerTimeMs are not consumed by the
-   * diagnoser anyway.
-   */
-  public static Diagnosis diagnose(QoSInfo trigger, List<QoSInfo> entries) {
-    List<Diagnosis.Finding> findings = new ArrayList<>(entries.size());
-    for (QoSInfo entry : entries) {
-      findings.add(analyzeEntry(entry, trigger));
-    }
+  // Constants copied EXACTLY from V7.
+  /** Per-segment slowness threshold: {@code excessRatio > 0.10} = drained. */
+  static final double SLOW_RATIO = 0.10;
 
-    int avEntries = 0;
-    for (Diagnosis.Finding f : findings) {
-      if (f.entry.trackType == C.TRACK_TYPE_VIDEO || f.entry.trackType == C.TRACK_TYPE_AUDIO) {
-        avEntries++;
-      }
-    }
+  /** Majority gate: {@code nCdnEvidence × DENOM ≥ nDrained × NUM} (≥50%). */
+  static final int CDN_MAJORITY_NUM = 1;
 
-    Pattern pattern;
-    if (avEntries < MIN_AV_ENTRIES) {
-      pattern = Pattern.TRANSIENT;
-    } else {
-      pattern = inferPattern(findings);
-    }
+  static final int CDN_MAJORITY_DENOM = 2;
 
-    boolean abrLag = checkAbrLag(trigger);
-    String conclusion = buildConclusion(findings, pattern, abrLag, trigger);
+  /** Strict Tukey multiplier (Tukey 1977 outer fence). Applied per-track on TTFB. */
+  static final double TTFB_STRICT_TUKEY_K = 3.0;
 
-    return new Diagnosis(pattern, abrLag, findings, conclusion);
-  }
+  /** Body-delivery healthy threshold (90% of bitrate). Same for V and A. */
+  static final double BODY_HEALTHY_RATIO = 0.90;
 
-  /** Convenience overload — diagnose a {@link RebufferGroup} (used by tests / external callers). */
-  public static Diagnosis diagnose(RebufferGroup group) {
-    return diagnose(group.trigger, group.entries);
-  }
+  /** Bitrate-to-mtp ratio threshold for ABR (Adaptive Bitrate) over-estimate detection (CMCD-informed). */
+  static final double ABR_LAG_RATIO = 0.8;
 
-  // ===== Window-level conservation metrics =====
-
-  /**
-   * Window-level metrics derived from a {@link RebufferGroup}, implementing the
-   * core buffer-conservation equation from {@code Spec - QoS Buffer Conservation
-   * Diagnosis §I}:
-   * <pre>
-   *   Δbuffer  = ΔSupply − ΔDemand
-   *   ΔDemand  = ΔSupply − Δbuffer
-   *   ratio    = ΔDemand / wall_time
-   * </pre>
-   *
-   * <p>The ratio classifies playback regime:
-   * <ul>
-   *   <li>{@code ≈ 1.0} → normal 1× playback
-   *   <li>{@code ≈ 0}   → player paused throughout the window
-   *   <li>{@code > 1.5} → speed up (trick play / LL-DASH speed control)
-   *   <li>{@code < 0.5} → seek refill / partial pause
-   * </ul>
-   * Downstream the sanity gate uses this ratio to distinguish real network
-   * rebuffer from spurious bs flagged during pause/seek.
-   */
-  public static final class WindowMetrics {
-    public final long wallTimeMs;
-    public final long deltaBufferMs;
-    public final long deltaSupplyMs;
-    public final long deltaDemandMs;
-    public final double demandRatio;
-
-    WindowMetrics(
-        long wallTimeMs,
-        long deltaBufferMs,
-        long deltaSupplyMs,
-        long deltaDemandMs,
-        double demandRatio) {
-      this.wallTimeMs = wallTimeMs;
-      this.deltaBufferMs = deltaBufferMs;
-      this.deltaSupplyMs = deltaSupplyMs;
-      this.deltaDemandMs = deltaDemandMs;
-      this.demandRatio = demandRatio;
-    }
-  }
-
-  /**
-   * Computes the window-level conservation metrics for {@code group}. Returns a
-   * zero-valued {@link WindowMetrics} when the group has fewer than 2 entries
-   * (degenerate window) or when the window has zero wall-clock duration.
-   *
-   * <p>{@code ΔSupply} sums {@code chunkDurationMs} only over completed
-   * scored-track segments (V/A/HLS muxed). Manifests, init segments, and failed
-   * loads do not contribute supply because they don't deliver playable media.
-   */
-  public static WindowMetrics computeWindowMetrics(RebufferGroup group) {
+  public static Diagnosis diagnose(
+      @Nullable RebufferGroup group, @Nullable SessionStatistics sessionStats) {
     if (group == null || group.entries == null || group.entries.isEmpty()) {
-      return new WindowMetrics(0L, 0L, 0L, 0L, 0.0);
+      return Diagnosis.inconclusive(Diagnosis.Reason.EMPTY_GROUP, new int[0]);
     }
-    QoSInfo first = group.entries.get(0);
-    QoSInfo last = group.trigger;
 
-    long wallTimeMs = Math.max(0L, last.timestampMs - first.timestampMs);
-    long deltaBufferMs =
-        clampNonNegativeBl(last.bufferedDurationMs)
-            - clampNonNegativeBl(first.bufferedDurationMs);
+    int[] httpErrorCodes = collectHttpErrorCodes(group.entries);
 
-    long deltaSupplyMs = 0L;
-    for (QoSInfo entry : group.entries) {
-      if (isCompletedSegment(entry)) {
-        deltaSupplyMs += entry.chunkDurationMs;
+    // Step 1: filter V + A completed scored segments.
+    List<QoSInfo> vSegs = new ArrayList<>();
+    List<QoSInfo> aSegs = new ArrayList<>();
+    for (QoSInfo s : group.entries) {
+      if (QoSDiagnoserUtils.isCompletedScoredSegment(s)) {
+        vSegs.add(s);
+      } else if (QoSDiagnoserUtils.isCompletedAudioSegment(s)) {
+        aSegs.add(s);
       }
     }
-
-    long deltaDemandMs = deltaSupplyMs - deltaBufferMs;
-    double demandRatio = wallTimeMs > 0L ? (double) deltaDemandMs / wallTimeMs : 0.0;
-
-    return new WindowMetrics(
-        wallTimeMs, deltaBufferMs, deltaSupplyMs, deltaDemandMs, demandRatio);
-  }
-
-  /**
-   * Treats the {@code bufferedDurationMs = -1} sentinel as 0 for arithmetic
-   * purposes. Snapshots may legitimately be missing if {@code QoSAnalyticsHook}
-   * couldn't capture the player state at load start; in that case we don't want
-   * the computation to flip sign.
-   */
-  private static long clampNonNegativeBl(int bufferedDurationMs) {
-    return bufferedDurationMs >= 0 ? bufferedDurationMs : 0L;
-  }
-
-  /**
-   * Sanity gate from {@code Spec - QoS Buffer Conservation Diagnosis §IV.1}.
-   * Returns {@code null} when the window represents normal 1× playback (and
-   * thus is suitable for network diagnosis); otherwise returns a human-readable
-   * reason describing why the window is abnormal (paused, sped up, seeked, or
-   * degenerate).
-   *
-   * <p>This is a pure check — it does not mutate the diagnosis. The eventual
-   * pipeline rewrite (see plan Task 6) will short-circuit to {@code TRANSIENT}
-   * when this gate returns non-null.
-   *
-   * <p>Bounds:
-   * <ul>
-   *   <li>{@code wall_time ≤ 0}                 → degenerate window
-   *   <li>{@code demand_ratio < 0.7}            → likely paused / partially paused
-   *   <li>{@code demand_ratio > 1.3}            → likely speed up (trick play)
-   *   <li>{@code 0.7 ≤ demand_ratio ≤ 1.3}     → passes
-   * </ul>
-   */
-  @androidx.annotation.Nullable
-  public static String applySanityG1ate(WindowMetrics metrics) {
-    if (metrics == null || metrics.wallTimeMs <= 0L) {
-      return "wall_time = "
-          + (metrics == null ? 0L : metrics.wallTimeMs)
-          + "ms (window degenerate, cannot diagnose)";
-    }
-    double ratio = metrics.demandRatio;
-    if (ratio < SANITY_GATE_RATIO_MIN || ratio > SANITY_GATE_RATIO_MAX) {
-      return String.format(
-          Locale.US,
-          "demand_ratio %.2f ∉ [%.1f, %.1f] (abnormal playback: pause/seek/speed change)",
-          ratio,
-          SANITY_GATE_RATIO_MIN,
-          SANITY_GATE_RATIO_MAX);
-    }
-    return null;
-  }
-
-  // ===== Mechanism detection =====
-
-  /**
-   * Shape of how the rebuffer happened, derived from the buffer-trajectory and
-   * error/manifest signals per {@code Spec - QoS Buffer Conservation Diagnosis §IV.2}.
-   * Mechanism is independent of attribution (the per-load reason for the deficit);
-   * a {@code SINGLE_SPIKE} mechanism could have a {@code CLIENT_BANDWIDTH},
-   * {@code SLOW_RESPONSE_START}, or {@code ORIGIN_ERROR} attribution.
-   */
-  public enum Mechanism {
-    /** ≥1 scored segment with HTTP 5xx or {@code retryCount > 0}. Highest priority. */
-    ORIGIN_ERROR_DETECTED,
-    /** ≥1 manifest entry with {@code status == ERROR}. */
-    MANIFEST_FAILURE_DETECTED,
-    /** Fewer than {@link #MIN_SEGMENTS_FOR_MECHANISM} scored segments — not enough data. */
-    INSUFFICIENT_LOG,
-    /** One segment's deficit consumed > 50% of initial buffer alone. */
-    SINGLE_SPIKE,
-    /** Majority of segments draining + bl declining head→tail. */
-    CONTINUOUS_DRAIN,
-    /** ≥2 manifests took > {@link #MANIFEST_SLOW_LOAD_MS}. */
-    MANIFEST_SLOW_DETECTED,
-    /** No observable drain pattern — likely TRANSIENT (codec init, startup, etc.). */
-    NONE,
-  }
-
-  /** Mechanism plus the entries identified as causing the rebuffer. */
-  public static final class MechanismResult {
-    public final Mechanism mechanism;
-    public final List<QoSInfo> smokingGuns;
-
-    MechanismResult(Mechanism mechanism, List<QoSInfo> smokingGuns) {
-      this.mechanism = mechanism;
-      this.smokingGuns = Collections.unmodifiableList(smokingGuns);
-    }
-  }
-
-  /**
-   * Detects which {@link Mechanism} caused the rebuffer in {@code group} and
-   * returns the responsible smoking-gun entries. Pure function — does not
-   * mutate the group.
-   *
-   * <p>Priority order (early exit at first match):
-   * <ol>
-   *   <li>{@code ORIGIN_ERROR_DETECTED} — segment with HTTP 5xx or retry
-   *   <li>{@code MANIFEST_FAILURE_DETECTED} — manifest with status=ERROR
-   *   <li>{@code INSUFFICIENT_LOG} — fewer than 3 scored segments
-   *   <li>{@code SINGLE_SPIKE} — one segment's deficit > 50% × initial bl
-   *   <li>{@code CONTINUOUS_DRAIN} — majority drain + bl monotonic decline
-   *   <li>{@code MANIFEST_SLOW_DETECTED} — ≥2 manifests with loadDur > 1000ms
-   *   <li>{@code NONE} — no observable drain
-   * </ol>
-   */
-  public static MechanismResult detectMechanism(RebufferGroup group) {
-    if (group == null || group.entries == null || group.entries.isEmpty()) {
-      return new MechanismResult(Mechanism.NONE, Collections.<QoSInfo>emptyList());
+    if (vSegs.isEmpty()) {
+      return Diagnosis.inconclusive(
+          Diagnosis.Reason.NO_COMPLETED_V_SEG, /* detail= */ null, httpErrorCodes,
+          /* nRetries= */ 0, countAudioRetries(aSegs));
     }
 
-    // 1. Origin error (segment with 5xx or retry)
-    List<QoSInfo> originErrors = new ArrayList<>();
-    for (QoSInfo e : group.entries) {
-      if (hasOriginError(e)) {
-        originErrors.add(e);
-      }
-    }
-    if (!originErrors.isEmpty()) {
-      return new MechanismResult(Mechanism.ORIGIN_ERROR_DETECTED, originErrors);
+    // Step 1.4: track-switch / manifest-refresh guard (V-side trigger only).
+    if (group.trigger != null
+        && group.trigger.chunkDurationMs <= 0L
+        && group.trigger.bytesLoaded > 0L) {
+      return Diagnosis.inconclusive(
+          Diagnosis.Reason.TRACK_SWITCH, /* detail= */ null, httpErrorCodes,
+          /* nRetries= */ 0, countAudioRetries(aSegs));
     }
 
-    // 2. Manifest failure (manifest with status=ERROR)
-    List<QoSInfo> manifestFails = new ArrayList<>();
-    for (QoSInfo e : group.entries) {
-      if (hasManifestFailure(e)) {
-        manifestFails.add(e);
-      }
-    }
-    if (!manifestFails.isEmpty()) {
-      return new MechanismResult(Mechanism.MANIFEST_FAILURE_DETECTED, manifestFails);
-    }
-
-    // 3. Collect scored segments for buffer-trajectory analysis
-    List<QoSInfo> segments = new ArrayList<>();
-    for (QoSInfo e : group.entries) {
-      if (isCompletedSegment(e)) {
-        segments.add(e);
-      }
-    }
-    if (segments.size() < MIN_SEGMENTS_FOR_MECHANISM) {
-      return new MechanismResult(Mechanism.INSUFFICIENT_LOG, Collections.<QoSInfo>emptyList());
-    }
-
-    // 4. Compute per-segment deficits + find max + count drains. Track the
-    // highest bl observed in the entire window (not just the first entry) —
-    // post-switch / cold-start groups can have bl=0 at entries[0], which would
-    // make the SPIKE check vacuous if pinned to initialBl alone.
-    long peakBl = 0L;
-    for (QoSInfo e : group.entries) {
-      long bl = clampNonNegativeBl(e.bufferedDurationMs);
-      if (bl > peakBl) {
-        peakBl = bl;
-      }
-    }
-    long maxDeficit = 0L;
-    int spikeIndex = -1;
-    int drainCount = 0;
-    for (int i = 0; i < segments.size(); i++) {
-      QoSInfo s = segments.get(i);
-      long deficit = s.loadDurationMs - s.chunkDurationMs;
-      if (deficit > 0L) {
-        drainCount++;
-      }
-      if (deficit > maxDeficit) {
-        maxDeficit = deficit;
-        spikeIndex = i;
-      }
-    }
-
-    // 5. SINGLE_SPIKE — one deficit dominates the window's peak buffer cushion.
-    if (peakBl > 0L && (double) maxDeficit / peakBl > MECHANISM_SPIKE_RATIO) {
-      List<QoSInfo> guns = new ArrayList<>(1);
-      guns.add(segments.get(spikeIndex));
-      return new MechanismResult(Mechanism.SINGLE_SPIKE, guns);
-    }
-
-    // 6. CONTINUOUS_DRAIN — majority drain + bl monotonic decline
-    if (drainCount > segments.size() * MECHANISM_DRAIN_RATIO && isBlDeclining(segments)) {
-      List<QoSInfo> guns = new ArrayList<>();
-      for (QoSInfo s : segments) {
-        if (s.loadDurationMs - s.chunkDurationMs > 0L) {
-          guns.add(s);
-        }
-      }
-      return new MechanismResult(Mechanism.CONTINUOUS_DRAIN, guns);
-    }
-
-    // 7. MANIFEST_SLOW — ≥2 manifests with loadDur > threshold
-    List<QoSInfo> manifestSlows = new ArrayList<>();
-    for (QoSInfo e : group.entries) {
-      if (isManifest(e) && e.loadDurationMs > MANIFEST_SLOW_LOAD_MS) {
-        manifestSlows.add(e);
-      }
-    }
-    if (manifestSlows.size() >= 2) {
-      return new MechanismResult(Mechanism.MANIFEST_SLOW_DETECTED, manifestSlows);
-    }
-
-    // 8. No observable drain
-    return new MechanismResult(Mechanism.NONE, Collections.<QoSInfo>emptyList());
-  }
-
-  /**
-   * Buffer length is monotonically declining when the tail bl is below both the
-   * head and the midpoint — confirms a sustained downward trend rather than two
-   * cherry-picked endpoints.
-   */
-  private static boolean isBlDeclining(List<QoSInfo> segments) {
-    if (segments.size() < 3) {
-      return false;
-    }
-    int n = segments.size();
-    long head = clampNonNegativeBl(segments.get(0).bufferedDurationMs);
-    long mid = clampNonNegativeBl(segments.get(n / 2).bufferedDurationMs);
-    long tail = clampNonNegativeBl(segments.get(n - 1).bufferedDurationMs);
-    return tail < head && tail < mid;
-  }
-
-  private static boolean hasOriginError(QoSInfo e) {
-    if (e == null || !isScoredTrackType(e.trackType)) {
-      return false;
-    }
-    if (e.retryCount > 0) {
-      return true;
-    }
-    return e.status == QoSInfo.LoadStatus.ERROR && containsHttp5xx(e.errorMessage);
-  }
-
-  private static boolean hasManifestFailure(QoSInfo e) {
-    return isManifest(e) && e.status == QoSInfo.LoadStatus.ERROR;
-  }
-
-  private static boolean isManifest(QoSInfo e) {
-    if (e == null || e.trackType != C.TRACK_TYPE_UNKNOWN) {
-      return false;
-    }
-    if (e.url == null || e.url.isEmpty()) {
-      return true;
-    }
-    String lower = e.url.toLowerCase(Locale.US);
-    int q = lower.indexOf('?');
-    if (q > 0) {
-      lower = lower.substring(0, q);
-    }
-    return lower.endsWith(".m3u8") || lower.endsWith(".mpd");
-  }
-
-  // ===== Per-load attribution =====
-
-  /**
-   * Per-smoking-gun attribution from {@code Spec - QoS Buffer Conservation
-   * Diagnosis §IV.3}. Two of the categories are deterministic:
-   * <ul>
-   *   <li>{@link #CLIENT_BANDWIDTH} fires whenever {@code postTtfb < bitrate};
-   *       a single smoking gun is sufficient because Phase 2 throughput is a
-   *       direct measurement of the client pipe (server has already committed
-   *       the byte stream by T1).
-   *   <li>{@link #ORIGIN_ERROR} is the HTTP status / retry signal — server-side
-   *       semantics give us full confidence on a single entry.
-   * </ul>
-   * The other categories are weaker signals that need group-level corroboration
-   * (handled in Task 6 aggregation).
-   */
-  public enum Attribution {
-    /** {@code postTtfb < bitrate} — pipe deterministically below requested bitrate. */
-    CLIENT_BANDWIDTH,
-    /** {@code postTtfb < prior_median × 0.3} — pipe degraded vs prior baseline. */
-    CLIENT_BANDWIDTH_DEGRADATION,
-    /** {@code ttfb > 0.7 × loadDur} but Phase 2 healthy — origin OR client RTT (ambiguous). */
-    SLOW_RESPONSE_START,
-    /** HTTP error or retry > 0 — server-side failure. */
-    ORIGIN_ERROR,
-    /** None of the deterministic triggers fire — deficit cause not attributable. */
-    MIXED,
-    /** {@code bytesLoaded ≤ 0} so we cannot derive {@code postTtfb}. */
-    UNKNOWN,
-  }
-
-  /** Per-gun attribution map plus the prior median used for degradation comparison. */
-  public static final class AttributionResult {
-    public final Map<QoSInfo, Attribution> perGun;
-    public final long priorMedianPostTtfbKbps;
-
-    AttributionResult(Map<QoSInfo, Attribution> perGun, long priorMedianPostTtfbKbps) {
-      this.perGun = Collections.unmodifiableMap(perGun);
-      this.priorMedianPostTtfbKbps = priorMedianPostTtfbKbps;
-    }
-  }
-
-  /**
-   * Attributes each smoking-gun entry to one of {@link Attribution}, using the
-   * post-TTFB throughput of {@code priorSegments} as the degradation baseline.
-   *
-   * <p>Entry order in the returned map follows {@code smokingGuns} so callers
-   * can render evidence in chronological order.
-   */
-  public static AttributionResult attribute(
-      List<QoSInfo> smokingGuns, List<QoSInfo> priorSegments) {
-    long priorMedian = computeMedianPostTtfbKbps(priorSegments);
-    Map<QoSInfo, Attribution> perGun = new LinkedHashMap<>();
-    if (smokingGuns != null) {
-      for (QoSInfo sg : smokingGuns) {
-        perGun.put(sg, attributeOne(sg, priorMedian));
-      }
-    }
-    return new AttributionResult(perGun, priorMedian);
-  }
-
-  /** Single-entry attribution per Spec §IV.3 priority order. */
-  private static Attribution attributeOne(QoSInfo sg, long priorMedianPostTtfbKbps) {
-    if (sg == null) {
-      return Attribution.UNKNOWN;
-    }
-    // Server-side error / retry has highest priority (HTTP semantics give certainty).
-    if (sg.status == QoSInfo.LoadStatus.ERROR || sg.retryCount > 0) {
-      return Attribution.ORIGIN_ERROR;
-    }
-    if (sg.bytesLoaded <= 0L || sg.loadDurationMs <= 0L) {
-      return Attribution.UNKNOWN;
-    }
-
-    long transferMs = Math.max(1L, sg.loadDurationMs - Math.max(0, sg.ttfbMs));
-    long postTtfbKbps = sg.bytesLoaded * 8L / transferMs;
-
-    // Trigger 1: Phase 2 deterministic — pipe insufficient for selected bitrate.
-    if (sg.bitrateKbps > 0 && postTtfbKbps < sg.bitrateKbps) {
-      return Attribution.CLIENT_BANDWIDTH;
-    }
-
-    // Trigger 2: degradation vs baseline (defense-in-depth, also deterministic).
-    if (priorMedianPostTtfbKbps > 0L
-        && postTtfbKbps < priorMedianPostTtfbKbps * ATTRIBUTION_DEGRADATION_RATIO) {
-      return Attribution.CLIENT_BANDWIDTH_DEGRADATION;
-    }
-
-    // Phase 2 healthy but TTFB dominated the load → response start was slow
-    // (origin or client RTT — cannot disambiguate without server timing).
-    if (sg.ttfbMs > 0
-        && (double) sg.ttfbMs / sg.loadDurationMs > ATTRIBUTION_TTFB_DOMINANT_RATIO) {
-      return Attribution.SLOW_RESPONSE_START;
-    }
-
-    return Attribution.MIXED;
-  }
-
-  // ===== Cause aggregation + ABR cross-cut =====
-
-  /**
-   * Final verdict — what the rebuffer was caused by. Seven values per
-   * {@code Spec - QoS Buffer Conservation Diagnosis §V.1}, ordered by certainty
-   * from definitive (server error) to admit-don't-know ({@link #INSUFFICIENT_DATA}).
-   */
-  public enum Cause {
-    /** ≥1 segment with HTTP 5xx or {@code retryCount > 0}. */
-    ORIGIN_ERROR,
-    /** Manifest fetch failed with {@code status == ERROR}. */
-    MANIFEST_FAILURE,
-    /** ≥2 manifests took > {@link #MANIFEST_SLOW_LOAD_MS}. */
-    MANIFEST_SLOW,
-    /** Phase 2 deterministic — pipe insufficient for selected bitrate. */
-    CLIENT_BANDWIDTH,
-    /** Drain with consistent TTFB-dominant attribution; cannot distinguish origin vs client RTT. */
-    CDN_SLOW_DELIVERY,
-    /** Mixed/ambiguous signals — not enough evidence for a deterministic verdict. */
-    INSUFFICIENT_DATA,
-    /** Sanity gate failed, no observable drain, or group too short to verdict. */
-    TRANSIENT,
-  }
-
-  /**
-   * Maps a {@link MechanismResult} + {@link AttributionResult} pair to a single
-   * {@link Cause} per {@code Spec - QoS Buffer Conservation Diagnosis §IV.4}.
-   * Pure function — does not consult window metrics or sanity gate; callers are
-   * expected to handle the gate fail upstream.
-   */
-  public static Cause aggregateCause(MechanismResult mr, AttributionResult ar) {
-    if (mr == null) {
-      return Cause.TRANSIENT;
-    }
-    switch (mr.mechanism) {
-      case ORIGIN_ERROR_DETECTED:
-        return Cause.ORIGIN_ERROR;
-      case MANIFEST_FAILURE_DETECTED:
-        return Cause.MANIFEST_FAILURE;
-      case MANIFEST_SLOW_DETECTED:
-        return Cause.MANIFEST_SLOW;
-      case SINGLE_SPIKE: {
-        if (mr.smokingGuns.isEmpty() || ar == null) {
-          return Cause.INSUFFICIENT_DATA;
-        }
-        QoSInfo sg = mr.smokingGuns.get(0);
-        Attribution attr = ar.perGun.get(sg);
-        if (attr == null) {
-          return Cause.INSUFFICIENT_DATA;
-        }
-        switch (attr) {
-          case CLIENT_BANDWIDTH:
-          case CLIENT_BANDWIDTH_DEGRADATION:
-            return Cause.CLIENT_BANDWIDTH;
-          case ORIGIN_ERROR:
-            return Cause.ORIGIN_ERROR;
-          case SLOW_RESPONSE_START:
-          case MIXED:
-          case UNKNOWN:
-          default:
-            return Cause.INSUFFICIENT_DATA;
-        }
-      }
-      case CONTINUOUS_DRAIN: {
-        if (ar == null) {
-          return Cause.INSUFFICIENT_DATA;
-        }
-        int clientBwCount = 0;
-        int slowStartCount = 0;
-        for (Attribution a : ar.perGun.values()) {
-          if (a == Attribution.CLIENT_BANDWIDTH || a == Attribution.CLIENT_BANDWIDTH_DEGRADATION) {
-            clientBwCount++;
-          } else if (a == Attribution.SLOW_RESPONSE_START) {
-            slowStartCount++;
-          }
-        }
-        // One CLIENT_BANDWIDTH attribution is enough — Phase 2 is a direct
-        // measurement, no corroboration needed for client side.
-        if (clientBwCount >= 1) {
-          return Cause.CLIENT_BANDWIDTH;
-        }
-        // TTFB-dominant entries need ≥2 corroboration since the signal is noisy.
-        if (slowStartCount >= 2) {
-          return Cause.CDN_SLOW_DELIVERY;
-        }
-        return Cause.INSUFFICIENT_DATA;
-      }
-      case INSUFFICIENT_LOG:
-      case NONE:
-      default:
-        return Cause.TRANSIENT;
-    }
-  }
-
-  /**
-   * ABR lag cross-cut per {@code Spec - QoS Buffer Conservation Diagnosis §IV.5}.
-   * Independent of {@link Cause} — can co-occur with any verdict, most often
-   * {@link Cause#CLIENT_BANDWIDTH}.
-   *
-   * <p>True when either:
-   * <ul>
-   *   <li>{@code trigger.bitrate / trigger.mtp > 0.8} (Media3 ABR safety bound), or
-   *   <li>{@code trigger.bitrate > prior_median_postTtfb} (selected bitrate exceeds
-   *       what the pipe was actually delivering).
-   * </ul>
-   */
-  public static boolean computeAbrLag(QoSInfo trigger, long priorMedianPostTtfbKbps) {
-    if (trigger == null || trigger.bitrateKbps <= 0) {
-      return false;
-    }
-    if (trigger.measuredThroughputKbps > 0
-        && (double) trigger.bitrateKbps / trigger.measuredThroughputKbps > ABR_LAG_RATIO) {
-      return true;
-    }
-    return priorMedianPostTtfbKbps > 0L && trigger.bitrateKbps > priorMedianPostTtfbKbps;
-  }
-
-  // ===== Pipeline orchestration =====
-
-  /**
-   * Full rich diagnosis bundling every step of the pipeline together for
-   * downstream evidence rendering. Built by {@link #diagnoseFully(RebufferGroup)}.
-   */
-  public static final class FullDiagnosis {
-    public final Cause cause;
-    public final Mechanism mechanism;
-    public final List<QoSInfo> smokingGuns;
-    public final Map<QoSInfo, Attribution> attributions;
-    public final long priorMedianPostTtfbKbps;
-    public final WindowMetrics windowMetrics;
-    public final boolean abrLag;
-    /** {@code null} when the sanity gate passed; otherwise the human-readable reason. */
-    @androidx.annotation.Nullable public final String sanityFailReason;
-
-    FullDiagnosis(
-        Cause cause,
-        Mechanism mechanism,
-        List<QoSInfo> smokingGuns,
-        Map<QoSInfo, Attribution> attributions,
-        long priorMedianPostTtfbKbps,
-        WindowMetrics windowMetrics,
-        boolean abrLag,
-        @androidx.annotation.Nullable String sanityFailReason) {
-      this.cause = cause;
-      this.mechanism = mechanism;
-      this.smokingGuns = Collections.unmodifiableList(smokingGuns);
-      this.attributions = Collections.unmodifiableMap(attributions);
-      this.priorMedianPostTtfbKbps = priorMedianPostTtfbKbps;
-      this.windowMetrics = windowMetrics;
-      this.abrLag = abrLag;
-      this.sanityFailReason = sanityFailReason;
-    }
-  }
-
-  /**
-   * End-to-end orchestration of the buffer-conservation pipeline:
-   * window metrics → sanity gate → mechanism detection → per-load
-   * attribution → cause aggregation → ABR cross-cut.
-   *
-   * <p>Returns a {@link FullDiagnosis} suitable for evidence rendering. When
-   * the sanity gate fails the cause is short-circuited to {@link Cause#TRANSIENT}
-   * with {@link FullDiagnosis#sanityFailReason} populated.
-   */
-  public static FullDiagnosis diagnoseFully(RebufferGroup group) {
-    WindowMetrics metrics = computeWindowMetrics(group);
-    String sanityFail = applySanityG1ate(metrics);
+    // Step 1.5: sanity gate (V-only ΔSupply, V1 reuse).
+    QoSDiagnoserUtils.WindowMetrics metrics = QoSDiagnoserUtils.computeWindowMetrics(group);
+    String sanityFail = QoSDiagnoserUtils.applySanityGate(metrics);
     if (sanityFail != null) {
-      return new FullDiagnosis(
-          Cause.TRANSIENT,
-          Mechanism.NONE,
-          Collections.<QoSInfo>emptyList(),
-          Collections.<QoSInfo, Attribution>emptyMap(),
-          0L,
-          metrics,
-          false,
-          sanityFail);
+      return Diagnosis.inconclusive(
+          Diagnosis.Reason.SANITY_FAIL, sanityFail, httpErrorCodes,
+          /* nRetries= */ 0, countAudioRetries(aSegs));
     }
 
-    MechanismResult mr = detectMechanism(group);
-    List<QoSInfo> priorSegments = collectPriorSegments(group, mr.smokingGuns);
-    AttributionResult ar = attribute(mr.smokingGuns, priorSegments);
-    Cause cause = aggregateCause(mr, ar);
-    boolean abrLag =
-        group != null && computeAbrLag(group.trigger, ar.priorMedianPostTtfbKbps);
+    // Step 2: cold-start check via Tukey fence on V key.
+    QoSInfo lastV = vSegs.get(vSegs.size() - 1);
+    String vKey = QoSDiagnoserUtils.sessionKey(lastV);
+    SessionStatistics.TukeyFence ttfbFence =
+        sessionStats == null ? null : sessionStats.getTtfbFence(vKey);
+    if (ttfbFence == null) {
+      return Diagnosis.inconclusive(
+          Diagnosis.Reason.COLD_START, /* detail= */ null, httpErrorCodes,
+          /* nRetries= */ 0, countAudioRetries(aSegs));
+    }
+    SessionStatistics.TukeyFence mtpFence = sessionStats.getMtpFence(vKey);
 
-    return new FullDiagnosis(
+    int strictTtfbUpperV =
+        ttfbFence.q3 + (int) Math.round(TTFB_STRICT_TUKEY_K * ttfbFence.iqr);
+
+    // Step 3: per-V evidence.
+    int nV = vSegs.size();
+    int nVDrained = 0;
+    int nVCdnEvidence = 0;
+    int nRetries = 0;
+    int nVAbrLag = 0;
+    int nVAbrLagInDrain = 0;
+    int nVAbrLagInCdn = 0;
+    // B3: per-condition counters — observational only, do not affect verdict.
+    int nVTtfbExtreme = 0;
+    int nVBodyUnhealthy = 0;
+    int nVMtpCollapsed = 0;
+    // B4: drain peak — max excessRatio across V drained segs + its 0-based index in vSegs.
+    // drainPeakSegIdxV is a 0-based index into vSegs (the scored+completed V segments list
+    // passed into this method). The counter vSegIdx increments for every seg — drained or not —
+    // so index 2 means the 3rd element of vSegs regardless of drain status. Tie-break: strict >
+    // keeps the first occurrence (first drained seg wins if excessRatio is equal).
+    double drainPeakRatioV = 0.0;
+    int drainPeakSegIdxV = -1;
+    int vSegIdx = -1;
+    for (QoSInfo s : vSegs) {
+      vSegIdx++;
+      if (s.retryCount > 0) nRetries++;
+      // abr-lag = segment requested at a bitrate exceeding 80% of measured throughput.
+      // Applies to ALL V scored segs regardless of drain status.
+      boolean isAbrLag =
+          s.measuredThroughputKbps > 0 && s.bitrateKbps > s.measuredThroughputKbps * ABR_LAG_RATIO;
+      if (isAbrLag) nVAbrLag++;
+      double excessRatio =
+          (double) Math.max(0L, s.loadDurationMs - s.chunkDurationMs) / s.chunkDurationMs;
+      boolean isDrained = excessRatio > SLOW_RATIO;
+      if (!isDrained) continue;
+      nVDrained++;
+      if (excessRatio > drainPeakRatioV) {
+        drainPeakRatioV = excessRatio;
+        drainPeakSegIdxV = vSegIdx;
+      }
+      if (isAbrLag) nVAbrLagInDrain++;
+      boolean isTtfbExtreme = s.ttfbMs > strictTtfbUpperV;
+      boolean isMtpCollapsed =
+          mtpFence != null
+              && s.measuredThroughputKbps > 0
+              && s.measuredThroughputKbps < mtpFence.lowerFence;
+      boolean isBodyHealthy = false;
+      if (s.bitrateKbps > 0
+          && s.ttfbMs >= 0
+          && s.bytesLoaded > 0
+          && s.loadDurationMs > s.ttfbMs) {
+        long transferMs = s.loadDurationMs - s.ttfbMs;
+        double postTtfbKbps = (s.bytesLoaded * 8.0) / transferMs;
+        isBodyHealthy = postTtfbKbps >= s.bitrateKbps * BODY_HEALTHY_RATIO;
+      }
+      // B3: increment independent per-condition counters (overlapping by design).
+      if (isTtfbExtreme) nVTtfbExtreme++;
+      if (!isBodyHealthy) nVBodyUnhealthy++;
+      if (isMtpCollapsed) nVMtpCollapsed++;
+      if (isTtfbExtreme && !isMtpCollapsed && isBodyHealthy) {
+        nVCdnEvidence++;
+        if (isAbrLag) nVAbrLagInCdn++;
+      }
+    }
+
+    // Step 3.5: per-A evidence. Audio fence cold-start → A side silently skipped.
+    int nA = aSegs.size();
+    int nADrained = 0;
+    int nACdnEvidence = 0;
+    int strictTtfbUpperA = -1;
+    // B3: per-condition counters for A (no nAMtpCollapsed — audio has no mtp).
+    int nATtfbExtreme = 0;
+    int nABodyUnhealthy = 0;
+    // B4: drain peak for A — same semantic as V: 0-based index into aSegs, advances for all segs.
+    double drainPeakRatioA = 0.0;
+    int drainPeakSegIdxA = -1;
+    SessionStatistics.TukeyFence audioTtfbFence =
+        aSegs.isEmpty() ? null : sessionStats.getAudioTtfbFence(vKey);
+    if (audioTtfbFence != null) {
+      strictTtfbUpperA =
+          audioTtfbFence.q3 + (int) Math.round(TTFB_STRICT_TUKEY_K * audioTtfbFence.iqr);
+      int aSegIdx = -1;
+      for (QoSInfo s : aSegs) {
+        aSegIdx++;
+        double excessRatio =
+            (double) Math.max(0L, s.loadDurationMs - s.chunkDurationMs) / s.chunkDurationMs;
+        boolean isDrained = excessRatio > SLOW_RATIO;
+        if (!isDrained) continue;
+        nADrained++;
+        if (excessRatio > drainPeakRatioA) {
+          drainPeakRatioA = excessRatio;
+          drainPeakSegIdxA = aSegIdx;
+        }
+        boolean isTtfbExtreme = s.ttfbMs > strictTtfbUpperA;
+        boolean isBodyHealthy = false;
+        if (s.bitrateKbps > 0
+            && s.ttfbMs >= 0
+            && s.bytesLoaded > 0
+            && s.loadDurationMs > s.ttfbMs) {
+          long transferMs = s.loadDurationMs - s.ttfbMs;
+          double postTtfbKbps = (s.bytesLoaded * 8.0) / transferMs;
+          isBodyHealthy = postTtfbKbps >= s.bitrateKbps * BODY_HEALTHY_RATIO;
+        }
+        // B3: increment independent per-condition counters for A.
+        if (isTtfbExtreme) nATtfbExtreme++;
+        if (!isBodyHealthy) nABodyUnhealthy++;
+        if (isTtfbExtreme && isBodyHealthy) {
+          nACdnEvidence++;
+        }
+      }
+    }
+
+    // Step 4: classify on combined V+A counts.
+    int nDrainedTotal = nVDrained + nADrained;
+    int nCdnEvTotal = nVCdnEvidence + nACdnEvidence;
+    if (nDrainedTotal == 0) {
+      return Diagnosis.inconclusive(
+          Diagnosis.Reason.NO_DRAIN, /* detail= */ null, httpErrorCodes,
+          nRetries, countAudioRetries(aSegs));
+    }
+    Diagnosis.Cause cause =
+        (nCdnEvTotal * CDN_MAJORITY_DENOM >= nDrainedTotal * CDN_MAJORITY_NUM)
+            ? Diagnosis.Cause.CDN
+            : Diagnosis.Cause.NETWORK;
+
+    String cohortNet = QoSDiagnoserUtils.networkTypeStr(lastV.networkType);
+    String cohortCdn =
+        (lastV.cdnProvider != null && !lastV.cdnProvider.isEmpty()) ? lastV.cdnProvider : "UNKNOWN";
+
+    // Step 5: attach metadata. V8 new fields — DEFAULTS for B1, populated in B2..B6.
+    int nARetries = countAudioRetries(aSegs);
+    return Diagnosis.classified(
         cause,
-        mr.mechanism,
-        mr.smokingGuns,
-        ar.perGun,
-        ar.priorMedianPostTtfbKbps,
-        metrics,
-        abrLag,
-        null);
+        httpErrorCodes,
+        nV,
+        nA,
+        nVDrained,
+        nADrained,
+        nVCdnEvidence,
+        nACdnEvidence,
+        strictTtfbUpperV,
+        strictTtfbUpperA,
+        nRetries,
+        cohortNet,
+        cohortCdn,
+        /* nVAbrLag= */ nVAbrLag,
+        /* nVAbrLagInCdn= */ nVAbrLagInCdn,
+        /* nVAbrLagInDrain= */ nVAbrLagInDrain,
+        /* nVTtfbExtreme= */ nVTtfbExtreme,
+        /* nATtfbExtreme= */ nATtfbExtreme,
+        /* nVBodyUnhealthy= */ nVBodyUnhealthy,
+        /* nABodyUnhealthy= */ nABodyUnhealthy,
+        /* nVMtpCollapsed= */ nVMtpCollapsed,
+        /* drainPeakRatioV= */ drainPeakRatioV,
+        /* drainPeakSegIdxV= */ drainPeakSegIdxV,
+        /* drainPeakRatioA= */ drainPeakRatioA,
+        /* drainPeakSegIdxA= */ drainPeakSegIdxA,
+        /* nARetries= */ nARetries,
+        /* ttfbQ1V= */ ttfbFence.q1,
+        /* ttfbMedianV= */ ttfbFence.median,
+        /* ttfbQ3V= */ ttfbFence.q3,
+        /* ttfbQ1A= */ audioTtfbFence != null ? audioTtfbFence.q1 : -1,
+        /* ttfbMedianA= */ audioTtfbFence != null ? audioTtfbFence.median : -1,
+        /* ttfbQ3A= */ audioTtfbFence != null ? audioTtfbFence.q3 : -1);
   }
 
-  /**
-   * Builds an audit-friendly conclusion text from a {@link FullDiagnosis} per
-   * {@code Spec - QoS Buffer Conservation Diagnosis §V.2}. Every metric value
-   * cited resolves to a specific entry timestamp + a rule from §IV.
-   *
-   * <p>Layout:
-   * <pre>
-   *   ═══ Rebuffer @ HH:MM:SS.mmm ═══
-   *   Cause: X    Mechanism: Y    abrLag: Z
-   *   [If sanity gate failed: Sanity gate: FAIL (&lt;reason&gt;) — and stop]
-   *   Window: wall=Xms Δbuf=Yms ΔSupply=Zms ΔDemand=Wms ratio=R
-   *   Smoking gun(s):
-   *     HH:MM:SS.mmm: ttfb=… loadDur=… cdur=… bytes=… br=…
-   *       derived: deficit=… transferMs=… postTtfb=…
-   *       attribution: …
-   *   [If abrLag: ABR cross-cut: br/mtp / prior_median facts]
-   *   [If CDN_SLOW_DELIVERY or INSUFFICIENT_DATA: caveat about upstream_response_time]
-   * </pre>
-   */
-  public static String buildConclusion(FullDiagnosis fd, @androidx.annotation.Nullable QoSInfo trigger) {
-    // Trimmed for card rendering — the host UI surfaces trigger time as a
-    // separate row above this body, so we skip the ═══ banner. We do keep a
-    // compact verdict line up top so logcat / JSON consumers still have the
-    // verdict + flag inline (the host UI may show its own badge as well; one
-    // duplicated label is cheaper than missing it from the searchable text).
-    StringBuilder sb = new StringBuilder(384);
-    sb.append(fd.cause.name()).append(" · ").append(fd.mechanism.name());
-    if (fd.abrLag) {
-      sb.append(" · ABR_LAG");
+  /** Count audio segments with at least one retry (retryCount &gt; 0). */
+  private static int countAudioRetries(List<QoSInfo> aSegs) {
+    int n = 0;
+    for (QoSInfo a : aSegs) {
+      if (a.retryCount > 0) n++;
     }
-    sb.append('\n');
+    return n;
+  }
 
-    if (fd.sanityFailReason != null) {
-      sb.append("Sanity gate: FAIL — ").append(fd.sanityFailReason).append('\n');
-      return sb.toString();
-    }
-
-    WindowMetrics m = fd.windowMetrics;
-    sb.append(
-        String.format(
-            Locale.US,
-            "Window: wall=%dms · Δbuf=%+dms · ΔSupply=%dms · ΔDemand=%dms · demand_ratio=%.2f%n",
-            m.wallTimeMs,
-            m.deltaBufferMs,
-            m.deltaSupplyMs,
-            m.deltaDemandMs,
-            m.demandRatio));
-
-    if (!fd.smokingGuns.isEmpty()) {
-      sb.append("Smoking gun(s):\n");
-      for (QoSInfo sg : fd.smokingGuns) {
-        appendSmokingGunLine(sb, sg, fd.attributions.get(sg));
+  /** Collect 4xx + 5xx HTTP status codes from any errored entry — metadata only. */
+  private static int[] collectHttpErrorCodes(List<QoSInfo> entries) {
+    List<Integer> codes = new ArrayList<>();
+    for (QoSInfo s : entries) {
+      if (s == null) continue;
+      if (s.status != QoSInfo.LoadStatus.ERROR) continue;
+      if (s.httpStatusCode >= 400 && s.httpStatusCode <= 599) {
+        codes.add(s.httpStatusCode);
       }
     }
-
-    if (fd.abrLag && trigger != null) {
-      sb.append("ABR cross-cut: br=").append(trigger.bitrateKbps).append("kbps");
-      if (trigger.measuredThroughputKbps > 0) {
-        sb.append(" · mtp=").append(trigger.measuredThroughputKbps).append("kbps");
-        if (trigger.bitrateKbps > 0) {
-          sb.append(
-              String.format(
-                  Locale.US,
-                  " · br/mtp=%.2f",
-                  (double) trigger.bitrateKbps / trigger.measuredThroughputKbps));
-        }
-      }
-      if (fd.priorMedianPostTtfbKbps > 0L) {
-        sb.append(" · prior_median_postTtfb=").append(fd.priorMedianPostTtfbKbps).append("kbps");
-      }
-      sb.append('\n');
-    }
-
-    if (fd.cause == Cause.CDN_SLOW_DELIVERY || fd.cause == Cause.INSUFFICIENT_DATA) {
-      sb.append(
-          "Caveat: cannot disambiguate origin vs client RTT without server-side "
-              + "upstream_response_time / Server-Timing header.\n");
-    }
-
-    return sb.toString();
-  }
-
-  /** Renders one smoking-gun row: raw + derived + attribution. */
-  private static void appendSmokingGunLine(
-      StringBuilder sb, QoSInfo sg, @androidx.annotation.Nullable Attribution attr) {
-    sb.append("  ").append(formatTime(sg.timestampMs)).append(": ");
-    if (sg.ttfbMs >= 0) {
-      sb.append("ttfb=").append(sg.ttfbMs).append("ms ");
-    }
-    if (sg.loadDurationMs > 0) {
-      sb.append("loadDur=").append(sg.loadDurationMs).append("ms ");
-    }
-    if (sg.chunkDurationMs > 0) {
-      sb.append("cdur=").append(sg.chunkDurationMs).append("ms ");
-    }
-    if (sg.bytesLoaded > 0) {
-      sb.append("bytes=").append(sg.bytesLoaded).append("B ");
-    }
-    if (sg.bitrateKbps > 0) {
-      sb.append("br=").append(sg.bitrateKbps).append("kbps");
-    }
-    if (sg.status == QoSInfo.LoadStatus.ERROR && sg.errorMessage != null) {
-      sb.append(" status=ERROR(").append(sg.errorMessage).append(")");
-    }
-    if (sg.cacheStatus != null) {
-      sb.append(" cache=").append(sg.cacheStatus);
-    }
-    sb.append('\n');
-
-    if (sg.chunkDurationMs > 0 && sg.loadDurationMs > 0) {
-      long deficit = sg.loadDurationMs - sg.chunkDurationMs;
-      long transferMs = Math.max(1L, sg.loadDurationMs - Math.max(0, sg.ttfbMs));
-      sb.append(
-          String.format(Locale.US, "    derived: deficit=%+dms · transferMs=%dms", deficit, transferMs));
-      if (sg.bytesLoaded > 0) {
-        long postTtfbKbps = sg.bytesLoaded * 8L / transferMs;
-        sb.append(" · postTtfb=").append(postTtfbKbps).append("kbps");
-      }
-      sb.append('\n');
-    }
-
-    if (attr != null) {
-      sb.append("    attribution: ").append(attr.name()).append('\n');
-    }
-  }
-
-  /**
-   * Returns the completed scored segments that occurred strictly before the
-   * earliest smoking-gun entry. When there are no smoking guns, returns all
-   * completed scored segments — the caller treats them as the baseline pool.
-   */
-  private static List<QoSInfo> collectPriorSegments(
-      RebufferGroup group, List<QoSInfo> smokingGuns) {
-    if (group == null || group.entries == null || group.entries.isEmpty()) {
-      return Collections.<QoSInfo>emptyList();
-    }
-    long earliest = Long.MAX_VALUE;
-    if (smokingGuns != null && !smokingGuns.isEmpty()) {
-      for (QoSInfo sg : smokingGuns) {
-        if (sg.timestampMs < earliest) {
-          earliest = sg.timestampMs;
-        }
-      }
-    }
-    List<QoSInfo> prior = new ArrayList<>();
-    for (QoSInfo e : group.entries) {
-      if (!isCompletedSegment(e)) {
-        continue;
-      }
-      if (earliest == Long.MAX_VALUE || e.timestampMs < earliest) {
-        prior.add(e);
-      }
-    }
-    return prior;
-  }
-
-  /** Median of post-TTFB throughput across completed scored segments. */
-  private static long computeMedianPostTtfbKbps(List<QoSInfo> entries) {
-    if (entries == null || entries.isEmpty()) {
-      return 0L;
-    }
-    List<Long> values = new ArrayList<>();
-    for (QoSInfo e : entries) {
-      if (!isCompletedSegment(e) || e.bytesLoaded <= 0L || e.loadDurationMs <= 0L) {
-        continue;
-      }
-      long transferMs = Math.max(1L, e.loadDurationMs - Math.max(0, e.ttfbMs));
-      values.add(e.bytesLoaded * 8L / transferMs);
-    }
-    if (values.isEmpty()) {
-      return 0L;
-    }
-    Collections.sort(values);
-    int n = values.size();
-    if (n % 2 == 1) {
-      return values.get(n / 2);
-    }
-    return (values.get(n / 2 - 1) + values.get(n / 2)) / 2L;
-  }
-
-  /**
-   * A video-bottleneck segment that completed loading and carries a positive
-   * media duration. Filters in:
-   * <ul>
-   *   <li>{@link C#TRACK_TYPE_VIDEO} — DASH-style separate video track
-   *   <li>{@link C#TRACK_TYPE_DEFAULT} — HLS .ts muxed segment (V+A combined)
-   * </ul>
-   * Filters out: audio tracks (DASH plays A+V in parallel — counting both would
-   * double the {@code ΔSupply} value relative to the single-stream wall clock),
-   * manifests, init segments, text/image/metadata, and failed loads.
-   */
-  private static boolean isCompletedSegment(QoSInfo entry) {
-    return entry != null
-        && entry.status == QoSInfo.LoadStatus.COMPLETED
-        && entry.chunkDurationMs > 0L
-        && isVideoLikeTrackType(entry.trackType);
-  }
-
-  /**
-   * Classifies a single entry. Manifest (P) entries are tagged {@code OK} with no
-   * issues — they don't reflect playback quality directly. The trigger entry is
-   * tagged {@code TRIGGER} regardless of severity from rule firings (the trigger
-   * tag is what the UI uses to show the {@code *bs*} icon).
-   */
-  static Diagnosis.Finding analyzeEntry(QoSInfo entry, QoSInfo trigger) {
-    boolean isTrigger = entry == trigger;
-    if (!isScoredTrackType(entry.trackType)) {
-      // Manifest / unknown / text / image / metadata entries don't reflect playback
-      // quality directly. If this entry is the trigger we still tag it so the UI
-      // can render the *bs* icon, but we don't compute issues against it.
-      return new Diagnosis.Finding(
-          entry,
-          isTrigger ? Diagnosis.Severity.TRIGGER : Diagnosis.Severity.OK,
-          Collections.<String>emptyList());
-    }
-
-    List<String> issues = new ArrayList<>();
-    Diagnosis.Severity severity = Diagnosis.Severity.OK;
-
-    // Check 1: HTTP 5xx error (CRITICAL)
-    if (entry.status == QoSInfo.LoadStatus.ERROR && containsHttp5xx(entry.errorMessage)) {
-      severity = raise(severity, Diagnosis.Severity.CRITICAL);
-      issues.add("HTTP 5xx error: " + safe(entry.errorMessage));
-    }
-
-    // Check 2: retry > 0 (WARN — Media3 had to retry)
-    if (entry.retryCount > 0) {
-      severity = raise(severity, Diagnosis.Severity.WARN);
-      issues.add("retry=" + entry.retryCount + " (Media3 had to retry)");
-    }
-
-    // Check 3: TTFB
-    if (entry.ttfbMs >= 0) {
-      if (entry.ttfbMs > TTFB_SEVERE_MS) {
-        severity = raise(severity, Diagnosis.Severity.CRITICAL);
-        issues.add("TTFB " + entry.ttfbMs + "ms > " + TTFB_SEVERE_MS + "ms (origin slow)");
-      } else if (entry.ttfbMs > TTFB_WARN_MS) {
-        severity = raise(severity, Diagnosis.Severity.WARN);
-        issues.add("TTFB " + entry.ttfbMs + "ms > " + TTFB_WARN_MS + "ms");
-      }
-    }
-
-    // Check 4: dur/cdur ratio
-    if (entry.chunkDurationMs > 0 && entry.loadDurationMs > 0) {
-      double ratio = (double) entry.loadDurationMs / entry.chunkDurationMs;
-      if (ratio > DUR_CDUR_CRITICAL_RATIO) {
-        severity = raise(severity, Diagnosis.Severity.CRITICAL);
-        issues.add(
-            String.format(
-                Locale.US,
-                "dur %dms > cdur %dms × %.1f (transfer too slow, buffer drain)",
-                entry.loadDurationMs,
-                entry.chunkDurationMs,
-                DUR_CDUR_CRITICAL_RATIO));
-      } else if (ratio > DUR_CDUR_WARN_RATIO) {
-        severity = raise(severity, Diagnosis.Severity.WARN);
-        issues.add(
-            String.format(
-                Locale.US,
-                "dur %dms > cdur %dms (buffer drain start)",
-                entry.loadDurationMs,
-                entry.chunkDurationMs));
-      }
-    }
-
-    // Check 5: per-load throughput < br × 0.7 (video-like only — audio loads are too
-    // small to measure reliably). HLS muxed (TRACK_TYPE_DEFAULT) carries video data
-    // alongside audio in a single segment, so its throughput is meaningful for the
-    // bitrate-vs-pipe comparison.
-    //
-    // Skip init segments (chunkDurationMs <= 0): init payloads are tiny header/codec data
-    // (often < 1 KB), so the throughput formula yields a misleading low value even on fast
-    // networks (e.g., 767-byte init in 21ms → 292kbps, would falsely trigger CRITICAL).
-    // Only media segments — those carrying actual playback duration — can attest to whether
-    // the network is sustaining the chosen bitrate.
-    if (isVideoLikeTrackType(entry.trackType)
-        && entry.bitrateKbps > 0
-        && entry.bytesLoaded > 0
-        && entry.loadDurationMs > 0
-        && entry.chunkDurationMs > 0) {
-      long throughputKbps = entry.bytesLoaded * 8 / entry.loadDurationMs;
-      long threshold = (long) (entry.bitrateKbps * THROUGHPUT_BR_FRACTION);
-      if (throughputKbps < threshold) {
-        severity = raise(severity, Diagnosis.Severity.CRITICAL);
-        issues.add(
-            String.format(
-                Locale.US,
-                "throughput %dkbps < br %dkbps × %.1f (%dkbps)",
-                throughputKbps,
-                entry.bitrateKbps,
-                THROUGHPUT_BR_FRACTION,
-                threshold));
-      }
-    }
-
-    // The trigger entry gets a distinct tag for UI rendering, regardless of issues.
-    if (isTrigger) {
-      severity = Diagnosis.Severity.TRIGGER;
-    }
-
-    return new Diagnosis.Finding(entry, severity, issues);
-  }
-
-  /**
-   * Walks findings and returns the inferred {@link Pattern} per Spec §IV decision tree.
-   * Ordered priority — early exit on first match.
-   */
-  static Pattern inferPattern(List<Diagnosis.Finding> findings) {
-    // Priority 1: HTTP 5xx or retry
-    if (anyIssueContains(findings, "HTTP 5xx") || anyIssueContains(findings, "retry=")) {
-      return Pattern.ORIGIN_ERROR;
-    }
-
-    // Priority 2: TTFB > 1000ms severe
-    if (anyIssueContains(findings, "(origin slow)")) {
-      // Differentiate edge vs origin: if HIT entries also slow → edge overload
-      if (hasSlowHit(findings)) return Pattern.CDN_EDGE_OVERLOAD;
-      return Pattern.CDN_ORIGIN_SLOW;
-    }
-
-    // Priority 3: TTFB > 500ms on both HIT and MISS → edge overload
-    if (hasWarnTtfbOnHitAndMiss(findings)) {
-      return Pattern.CDN_EDGE_OVERLOAD;
-    }
-
-    // Priority 4: throughput < br × 0.7 (V loads insufficient)
-    if (anyIssueContains(findings, "throughput")) {
-      return Pattern.USER_NETWORK;
-    }
-
-    // Priority 5: transfer too slow with low TTFB → user network
-    if (anyIssueContains(findings, "transfer too slow")) {
-      return Pattern.USER_NETWORK;
-    }
-
-    // No problem entries — rebuffer fired but no metric anomaly (codec init, seek, etc.)
-    return Pattern.TRANSIENT;
-  }
-
-  /** Cross-cut ABR check on the trigger entry. Returns true when br/mtp > 0.8. */
-  static boolean checkAbrLag(QoSInfo trigger) {
-    if (trigger.bitrateKbps <= 0 || trigger.measuredThroughputKbps <= 0) return false;
-    double ratio = (double) trigger.bitrateKbps / trigger.measuredThroughputKbps;
-    return ratio > ABR_LAG_RATIO;
-  }
-
-  /**
-   * Builds 2–3 sentence natural-language summary referencing the first-problem entry
-   * (its timestamp + the metric values that fired the rule). Designed to be copied
-   * directly into a support ticket.
-   */
-  static String buildConclusion(
-      List<Diagnosis.Finding> findings, Pattern pattern, boolean abrLag, QoSInfo trigger) {
-    Diagnosis.Finding firstProblem = null;
-    for (Diagnosis.Finding f : findings) {
-      if (f.severity == Diagnosis.Severity.CRITICAL || f.severity == Diagnosis.Severity.WARN) {
-        firstProblem = f;
-        break;
-      }
-    }
-
-    StringBuilder sb = new StringBuilder(240);
-    switch (pattern) {
-      case USER_NETWORK:
-        sb.append("CDN healthy throughout (TTFB low, no errors). ");
-        if (firstProblem != null) {
-          sb.append("Problem started at ")
-              .append(formatTime(firstProblem.entry.timestampMs))
-              .append(": ");
-          if (!firstProblem.issues.isEmpty()) {
-            sb.append(firstProblem.issues.get(0)).append(". ");
-          }
-        }
-        sb.append("User network insufficient for selected bitrate.");
-        break;
-      case CDN_EDGE_OVERLOAD:
-        sb.append("CDN edge slow on both HIT and MISS responses. ");
-        if (firstProblem != null) {
-          sb.append("First flagged at ")
-              .append(formatTime(firstProblem.entry.timestampMs))
-              .append(": ");
-          if (!firstProblem.issues.isEmpty()) {
-            sb.append(firstProblem.issues.get(0)).append(". ");
-          }
-        }
-        sb.append("Edge node likely overloaded.");
-        break;
-      case CDN_ORIGIN_SLOW:
-        sb.append("Origin response slow on cache MISS. ");
-        if (firstProblem != null) {
-          sb.append("First flagged at ")
-              .append(formatTime(firstProblem.entry.timestampMs))
-              .append(": ");
-          if (!firstProblem.issues.isEmpty()) {
-            sb.append(firstProblem.issues.get(0)).append(". ");
-          }
-        }
-        break;
-      case ORIGIN_ERROR:
-        sb.append("Server error / retry detected. ");
-        if (firstProblem != null) {
-          sb.append("At ")
-              .append(formatTime(firstProblem.entry.timestampMs))
-              .append(": ");
-          if (!firstProblem.issues.isEmpty()) {
-            sb.append(firstProblem.issues.get(0)).append(". ");
-          }
-        }
-        break;
-      case TRANSIENT:
-        sb.append(
-            "Rebuffer fired but no entry showed a clear metric anomaly. Possible causes: "
-                + "codec init delay, seek, or initial buffer fill.");
-        break;
-      case UNKNOWN:
-      default:
-        sb.append("Insufficient evidence for verdict.");
-        break;
-    }
-
-    if (abrLag) {
-      sb.append(
-          String.format(
-              Locale.US,
-              " ABR_LAG: br %dkbps / mtp %dkbps = %.2f (Media3 safety bound %.1f).",
-              trigger.bitrateKbps,
-              trigger.measuredThroughputKbps,
-              (double) trigger.bitrateKbps / trigger.measuredThroughputKbps,
-              ABR_LAG_RATIO));
-    }
-
-    return sb.toString();
-  }
-
-  // ===== Helpers =====
-
-  /**
-   * Track types whose loads attest to playback quality and therefore enter the
-   * per-entry checks: video, audio, or HLS muxed ({@code TRACK_TYPE_DEFAULT}).
-   * Manifest, text, image, metadata, and unknown loads are excluded — they don't
-   * carry buffered media, so anomalies on them don't directly indicate rebuffer
-   * cause.
-   */
-  private static boolean isScoredTrackType(int trackType) {
-    return trackType == C.TRACK_TYPE_VIDEO
-        || trackType == C.TRACK_TYPE_AUDIO
-        || trackType == C.TRACK_TYPE_DEFAULT;
-  }
-
-  /**
-   * Subset of {@link #isScoredTrackType} that carries video bytes (sufficient
-   * payload size for reliable throughput measurement). Used to gate the
-   * throughput-vs-bitrate check, which is unreliable on small audio payloads.
-   */
-  private static boolean isVideoLikeTrackType(int trackType) {
-    return trackType == C.TRACK_TYPE_VIDEO || trackType == C.TRACK_TYPE_DEFAULT;
-  }
-
-  private static boolean containsHttp5xx(String message) {
-    if (message == null) return false;
-    Matcher m = HTTP_5XX.matcher(message);
-    return m.find();
-  }
-
-  private static String safe(String s) {
-    return s == null ? "" : s;
-  }
-
-  private static Diagnosis.Severity raise(Diagnosis.Severity current, Diagnosis.Severity candidate) {
-    // OK < WARN < CRITICAL (TRIGGER applied separately at the end)
-    return current.ordinal() < candidate.ordinal() ? candidate : current;
-  }
-
-  private static boolean anyIssueContains(List<Diagnosis.Finding> findings, String needle) {
-    for (Diagnosis.Finding f : findings) {
-      for (String issue : f.issues) {
-        if (issue.contains(needle)) return true;
-      }
-    }
-    return false;
-  }
-
-  private static boolean hasSlowHit(List<Diagnosis.Finding> findings) {
-    for (Diagnosis.Finding f : findings) {
-      if (!"HIT".equalsIgnoreCase(f.entry.cacheStatus)) continue;
-      for (String issue : f.issues) {
-        if (issue.contains("TTFB") && (issue.contains("> 1000ms") || issue.contains("> 500ms"))) {
-          return true;
-        }
-      }
-    }
-    return false;
-  }
-
-  private static boolean hasWarnTtfbOnHitAndMiss(List<Diagnosis.Finding> findings) {
-    boolean hitSlow = false;
-    boolean missSlow = false;
-    for (Diagnosis.Finding f : findings) {
-      String cache = f.entry.cacheStatus;
-      if (cache == null) continue;
-      boolean ttfbWarn = false;
-      for (String issue : f.issues) {
-        if (issue.contains("TTFB") && issue.contains("> " + TTFB_WARN_MS + "ms")) {
-          ttfbWarn = true;
-          break;
-        }
-      }
-      if (!ttfbWarn) continue;
-      if ("HIT".equalsIgnoreCase(cache)) hitSlow = true;
-      else if ("MISS".equalsIgnoreCase(cache)) missSlow = true;
-    }
-    return hitSlow && missSlow;
-  }
-
-  private static String formatTime(long timestampMs) {
-    // Use the device's default time zone — the previous arithmetic-only
-    // implementation always rendered UTC, which made on-device evidence
-    // diverge from logcat / wall-clock by the local UTC offset.
-    java.util.Calendar cal = java.util.Calendar.getInstance();
-    cal.setTimeInMillis(timestampMs);
-    return String.format(
-        Locale.US,
-        "%02d:%02d:%02d.%03d",
-        cal.get(java.util.Calendar.HOUR_OF_DAY),
-        cal.get(java.util.Calendar.MINUTE),
-        cal.get(java.util.Calendar.SECOND),
-        cal.get(java.util.Calendar.MILLISECOND));
+    if (codes.isEmpty()) return new int[0];
+    int[] arr = new int[codes.size()];
+    for (int i = 0; i < codes.size(); i++) arr[i] = codes.get(i);
+    return arr;
   }
 }

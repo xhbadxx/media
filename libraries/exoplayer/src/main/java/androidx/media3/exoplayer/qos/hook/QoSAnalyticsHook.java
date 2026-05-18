@@ -170,13 +170,13 @@ public final class QoSAnalyticsHook implements AnalyticsListener {
     if (error instanceof HttpDataSource.InvalidResponseCodeException) {
       httpCode = ((HttpDataSource.InvalidResponseCodeException) error).responseCode;
     }
-    // Always tally HTTP 4xx/5xx into the session histogram, even on wasCanceled=true.
+    // Always tally the failure into the session histogram, even on wasCanceled=true.
     // ExoPlayer's retry mechanism dispatches the failed attempt as wasCanceled=true
     // before starting the retry — recording into the histogram (not into rebuffer
-    // entries) gives full visibility into CDN errors without polluting V6 evidence.
-    if (httpCode >= 400 && httpCode <= 599) {
-      QoSMonitor.getInstance().recordHttpError(httpCode);
-    }
+    // entries) gives full visibility into errors without polluting V6 evidence.
+    // QoSMonitor.recordError routes to HTTP histogram for 4xx/5xx or net histogram
+    // (classified via cause-chain walk) for transport-layer failures.
+    QoSMonitor.getInstance().recordError(error, httpCode);
     if (wasCanceled) {
       startSnapshots.remove(loadEventInfo.loadTaskId);
       discardTtfb(loadEventInfo);
@@ -280,15 +280,18 @@ public final class QoSAnalyticsHook implements AnalyticsListener {
     String host = uri.getHost();
     if (host == null) return null;
     String lower = host.toLowerCase(Locale.US);
-    if (lower.endsWith("fptplay.net") || lower.contains("fbox-livecdn")) return "fpt";
+    // Match fptplay.net + numbered shards like fptplay53.net / fptplay24.net
+    if (lower.matches(".*\\bfptplay\\d*\\.net") || lower.contains("fbox-livecdn")) return "fpt";
     if (lower.endsWith("byteoversea.com") || lower.endsWith("byteplus.com")) return "byteplus";
     return null;
   }
 
   /**
    * Identifies the CDN provider that served this response based on distinctive
-   * headers (Cloudflare, AWS CloudFront, Akamai, Fastly). Returns {@code null} if
-   * no signature matches. Add more as needed.
+   * headers (FPT/FTEL, Cloudflare, AWS CloudFront, Akamai, Fastly). Returns
+   * {@code null} if no signature matches. Add more as needed.
+   *
+   * Order is by signature reliability, not vendor priority — first match wins.
    */
   @Nullable
   private static String parseCdnProvider(@Nullable Map<String, List<String>> headers) {
@@ -297,6 +300,16 @@ public final class QoSAnalyticsHook implements AnalyticsListener {
       String name = entry.getKey();
       if (name == null) continue;
       String lower = name.toLowerCase(Locale.US);
+      // FPT Telecom internal CDN signatures (NEA-CDN-SW edge fleet)
+      if ("ftel-server".equals(lower)) return "fpt";
+      if (lower.startsWith("cdn") && lower.length() <= 6) {
+        // cdn53/cdn24/… shard headers — value contains "fpt" confirms FPT shard
+        List<String> values = entry.getValue();
+        if (values != null && !values.isEmpty()
+            && values.get(0).toLowerCase(Locale.US).contains("fpt")) {
+          return "fpt";
+        }
+      }
       if ("cf-ray".equals(lower)) return "cloudflare";
       if ("x-amz-cf-id".equals(lower) || "x-amz-cf-pop".equals(lower)) return "cloudfront";
       if ("x-akamai-request-id".equals(lower)) return "akamai";

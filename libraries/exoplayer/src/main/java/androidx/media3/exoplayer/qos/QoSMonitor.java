@@ -15,6 +15,7 @@
  */
 package androidx.media3.exoplayer.qos;
 
+import androidx.annotation.Nullable;
 import androidx.media3.common.C;
 import androidx.media3.common.util.UnstableApi;
 import androidx.media3.exoplayer.qos.model.QoSInfo;
@@ -77,6 +78,31 @@ public final class QoSMonitor {
    */
   private final Map<Integer, AtomicInteger> httpErrorHistogram = new ConcurrentHashMap<>();
 
+  /**
+   * Classes of non-HTTP transport-layer errors observed during loads. Complements the
+   * HTTP histogram which only captures server-returned 4xx/5xx. These cover failures
+   * that occur before any HTTP status is received (timeouts, DNS, TLS, connection drops).
+   */
+  public enum NetErrorClass {
+    /** Socket read/connect timed out before the server responded. */
+    TIMEOUT,
+    /** TCP-level connection failure (refused / reset / unreachable). */
+    CONNECTION,
+    /** DNS resolution failure ({@link java.net.UnknownHostException}). */
+    DNS,
+    /** TLS/SSL handshake or certificate failure. */
+    TLS,
+    /** Any other {@link java.io.IOException} that isn't an HTTP status error. */
+    OTHER
+  }
+
+  /**
+   * Session-wide non-HTTP transport error histogram. Populated by {@link #recordNetError}
+   * from {@code QoSAnalyticsHook.onLoadError} when the IOException is NOT a
+   * {@code HttpDataSource.InvalidResponseCodeException}. Cleared on {@link #clear()}.
+   */
+  private final Map<NetErrorClass, AtomicInteger> netErrorHistogram = new ConcurrentHashMap<>();
+
   private QoSMonitor() {}
 
   public void recordInfo(QoSInfo info) {
@@ -90,10 +116,14 @@ public final class QoSMonitor {
     }
   }
 
-  /** Resets the entry buffer + HTTP error histogram. Observers notified with empty snapshot. */
+  /**
+   * Resets the entry buffer + HTTP error histogram + net error histogram. Observers
+   * notified with empty snapshot.
+   */
   public void clear() {
     entries.clear();
     httpErrorHistogram.clear();
+    netErrorHistogram.clear();
     List<QoSInfo> snapshot = Collections.unmodifiableList(entries);
     for (QoSObserver o : observers) {
       o.onEntriesChanged(snapshot);
@@ -116,6 +146,53 @@ public final class QoSMonitor {
     httpErrorHistogram.entrySet().stream()
         .sorted(Map.Entry.comparingByKey())
         .forEach(e -> out.put(e.getKey(), e.getValue().get()));
+    return Collections.unmodifiableMap(out);
+  }
+
+  /** Increments the session-wide non-HTTP transport error tally for {@code cls}. */
+  public void recordNetError(NetErrorClass cls) {
+    netErrorHistogram
+        .computeIfAbsent(cls, k -> new AtomicInteger(0))
+        .incrementAndGet();
+  }
+
+  /**
+   * Single-entry dispatcher for {@code onLoadError} call sites. Routes a failed load
+   * into either the HTTP histogram (when {@code httpCode} is 4xx/5xx) or the net-error
+   * histogram (derived from {@code error}'s cause chain). Callers no longer need to
+   * branch on the error type — pass both and the monitor decides.
+   */
+  public void recordError(@Nullable Throwable error, int httpCode) {
+    if (httpCode >= 400 && httpCode <= 599) {
+      recordHttpError(httpCode);
+    } else if (error != null) {
+      recordNetError(classifyNetError(error));
+    }
+  }
+
+  /** Walks the cause chain to find the first known transport-layer failure type. */
+  private static NetErrorClass classifyNetError(Throwable error) {
+    Throwable t = error;
+    while (t != null) {
+      if (t instanceof java.net.SocketTimeoutException) return NetErrorClass.TIMEOUT;
+      if (t instanceof java.net.UnknownHostException) return NetErrorClass.DNS;
+      if (t instanceof javax.net.ssl.SSLException) return NetErrorClass.TLS;
+      if (t instanceof java.net.ConnectException
+          || t instanceof java.net.SocketException) {
+        return NetErrorClass.CONNECTION;
+      }
+      t = t.getCause();
+    }
+    return NetErrorClass.OTHER;
+  }
+
+  /** Returns an immutable snapshot of the net error histogram (class → count). */
+  public Map<NetErrorClass, Integer> getNetErrorHistogram() {
+    LinkedHashMap<NetErrorClass, Integer> out = new LinkedHashMap<>();
+    for (NetErrorClass cls : NetErrorClass.values()) {
+      AtomicInteger v = netErrorHistogram.get(cls);
+      out.put(cls, v == null ? 0 : v.get());
+    }
     return Collections.unmodifiableMap(out);
   }
 
