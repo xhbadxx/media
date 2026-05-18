@@ -325,7 +325,6 @@ public class MediaCodecAudioRenderer extends MediaCodecRenderer implements Media
     rendererPriority = C.PRIORITY_PLAYBACK;
     eventDispatcher = new EventDispatcher(eventHandler, eventListener);
     nextBufferToWritePresentationTimeUs = C.TIME_UNSET;
-    audioSink.setListener(new AudioSinkListener());
   }
 
   @Override
@@ -511,7 +510,10 @@ public class MediaCodecAudioRenderer extends MediaCodecRenderer implements Media
 
   @Override
   protected DecoderReuseEvaluation canReuseCodec(
-      MediaCodecInfo codecInfo, Format oldFormat, Format newFormat) {
+      MediaCodecInfo codecInfo,
+      Format oldFormat,
+      Format newFormat,
+      boolean isAdaptiveFormatChange) {
     DecoderReuseEvaluation evaluation = codecInfo.canReuseCodec(oldFormat, newFormat);
 
     @DecoderDiscardReasons int discardReasons = evaluation.discardReasons;
@@ -705,6 +707,7 @@ public class MediaCodecAudioRenderer extends MediaCodecRenderer implements Media
     }
     audioSink.setPlayerId(getPlayerId());
     audioSink.setClock(getClock());
+    audioSink.setListener(new AudioSinkListener());
   }
 
   @Override

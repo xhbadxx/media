@@ -280,6 +280,7 @@ public class ChunkSampleStream<T extends ChunkSource>
   public void seekToUs(long positionUs) {
     lastSeekPositionUs = positionUs;
     needToEvaluateInitialDiscontinuity = false;
+    hasInitialDiscontinuity = false;
     if (isPendingReset()) {
       // A reset is already pending. We only need to update its position.
       pendingResetPositionUs = positionUs;
@@ -312,6 +313,13 @@ public class ChunkSampleStream<T extends ChunkSource>
       boolean allowTimeBeyondBuffer =
           nextLoadPositionUs == C.TIME_END_OF_SOURCE || positionUs < nextLoadPositionUs;
       seekInsideBuffer = primarySampleQueue.seekTo(positionUs, allowTimeBeyondBuffer);
+    }
+
+    if (seekInsideBuffer && canceledMediaChunk != null) {
+      // Do not allow seeking into a chunk that is being canceled.
+      if (canceledMediaChunk.getFirstSampleIndex(0) <= primarySampleQueue.getReadIndex()) {
+        seekInsideBuffer = false;
+      }
     }
 
     if (seekInsideBuffer) {

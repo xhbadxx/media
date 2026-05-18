@@ -19,6 +19,7 @@ import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkState;
 
 import android.view.Surface;
+import androidx.annotation.GuardedBy;
 import androidx.annotation.Nullable;
 import androidx.media3.common.C;
 import androidx.media3.common.util.UnstableApi;
@@ -26,7 +27,6 @@ import androidx.media3.common.util.Util;
 import androidx.media3.decoder.Decoder;
 import androidx.media3.decoder.DecoderInputBuffer;
 import androidx.media3.decoder.VideoDecoderOutputBuffer;
-import com.google.errorprone.annotations.concurrent.GuardedBy;
 import java.nio.ByteBuffer;
 import java.util.ArrayDeque;
 
@@ -52,13 +52,15 @@ public final class Dav1dDecoder
   @GuardedBy("lock")
   private final ArrayDeque<VideoDecoderOutputBuffer> queuedOutputBuffers;
 
+  private final DecoderInputBuffer[] allInputBuffers;
+
   @GuardedBy("lock")
   private final DecoderInputBuffer[] availableInputBuffers;
 
   @GuardedBy("lock")
   private final VideoDecoderOutputBuffer[] availableOutputBuffers;
 
-  private long dav1dDecoderContext;
+  private volatile long dav1dDecoderContext;
 
   private volatile @C.VideoOutputMode int outputMode;
 
@@ -120,12 +122,14 @@ public final class Dav1dDecoder
     outputStartTimeUs = C.TIME_UNSET;
     queuedInputBuffers = new ArrayDeque<>();
     queuedOutputBuffers = new ArrayDeque<>();
+    allInputBuffers = new DecoderInputBuffer[numInputBuffers];
     availableInputBuffers = new DecoderInputBuffer[numInputBuffers];
     availableInputBufferCount = numInputBuffers;
     for (int i = 0; i < availableInputBufferCount; i++) {
-      availableInputBuffers[i] =
+      allInputBuffers[i] =
           new DecoderInputBuffer(DecoderInputBuffer.BUFFER_REPLACEMENT_MODE_DIRECT);
-      availableInputBuffers[i].ensureSpaceForWrite(initialInputBufferSize);
+      allInputBuffers[i].ensureSpaceForWrite(initialInputBufferSize);
+      availableInputBuffers[i] = allInputBuffers[i];
     }
     availableOutputBuffers = new VideoDecoderOutputBuffer[numOutputBuffers];
     availableOutputBufferCount = numOutputBuffers;
@@ -137,7 +141,7 @@ public final class Dav1dDecoder
           @Override
           public void run() {
             Dav1dDecoder.this.dav1dDecoderContext =
-                dav1dInit(threads, maxFrameDelay, useCustomAllocator);
+                dav1dInit(threads, maxFrameDelay, useCustomAllocator, numInputBuffers);
             if (dav1dCheckError(Dav1dDecoder.this.dav1dDecoderContext) == DAV1D_ERROR) {
               synchronized (lock) {
                 Dav1dDecoder.this.exception =
@@ -247,12 +251,17 @@ public final class Dav1dDecoder
    */
   public void renderToSurface(VideoDecoderOutputBuffer outputBuffer, Surface surface)
       throws Dav1dDecoderException {
-    if (outputMode != C.VIDEO_OUTPUT_MODE_SURFACE_YUV) {
-      throw new Dav1dDecoderException("Unsupported Output Mode.");
-    }
-    int error = dav1dRenderFrame(dav1dDecoderContext, surface, outputBuffer);
-    if (error != DAV1D_OK) {
-      throw new Dav1dDecoderException("Failed to render output buffer to surface.");
+    synchronized (lock) {
+      if (outputMode != C.VIDEO_OUTPUT_MODE_SURFACE_YUV) {
+        throw new Dav1dDecoderException("Unsupported Output Mode.");
+      }
+      int error = dav1dRenderFrame(dav1dDecoderContext, surface, outputBuffer);
+      if (error != DAV1D_OK) {
+        String errorMsg = dav1dGetErrorMessage(dav1dDecoderContext);
+        int jniCode = dav1dGetLastErrorJniStatusCode(dav1dDecoderContext);
+        throw new Dav1dDecoderException(
+            "Failed to render output buffer to surface. " + errorMsg, jniCode);
+      }
     }
   }
 
@@ -330,10 +339,18 @@ public final class Dav1dDecoder
         ByteBuffer inputData = Util.castNonNull(inputBuffer.data);
         int inputOffset = inputData.position();
         int inputSize = inputData.remaining();
+        int bufferIndex = -1;
+        for (int i = 0; i < allInputBuffers.length; i++) {
+          if (allInputBuffers[i] == inputBuffer) {
+            bufferIndex = i;
+            break;
+          }
+        }
         int status =
             dav1dDecode(
                 dav1dDecoderContext,
                 inputBuffer,
+                bufferIndex,
                 inputOffset,
                 inputSize,
                 decodeOnly,
@@ -343,6 +360,13 @@ public final class Dav1dDecoder
         if (status == DAV1D_ERROR) {
           throw new Dav1dDecoderException(
               "dav1dDecode error: " + dav1dGetErrorMessage(dav1dDecoderContext));
+        }
+        // If the decoder is overloaded, we will get EAGAIN. In this case, we will put the input
+        // buffer back into the front of the queue and try again later.
+        if (status == DAV1D_EAGAIN) {
+          synchronized (lock) {
+            queuedInputBuffers.addFirst(inputBuffer);
+          }
         }
         while ((status = dav1dGetFrame(dav1dDecoderContext, outputBuffer)) == DAV1D_OK
             || status == DAV1D_DECODE_ONLY) {
@@ -418,6 +442,16 @@ public final class Dav1dDecoder
     }
   }
 
+  private void releaseInputBuffer(int bufferIndex) {
+    synchronized (lock) {
+      DecoderInputBuffer inputBuffer = allInputBuffers[bufferIndex];
+      // Prevent the EAGAIN double-free race condition:
+      if (!queuedInputBuffers.contains(inputBuffer)) {
+        releaseInputBufferInternal(inputBuffer);
+      }
+    }
+  }
+
   @GuardedBy("lock")
   private void releaseInputBufferInternal(DecoderInputBuffer inputBuffer) {
     inputBuffer.clear();
@@ -481,9 +515,11 @@ public final class Dav1dDecoder
    * @param threads Number of threads to be used by a libdav1d decoder.
    * @param maxFrameDelay Max frame delay permitted for libdav1d decoder.
    * @param useCustomAllocator Whether to use a custom picture allocator.
+   * @param numInputBuffers Number of input buffers to be allocated for the decoder.
    * @return The address of the decoder context or {@link #DAV1D_ERROR} if there was an error.
    */
-  private native long dav1dInit(int threads, int maxFrameDelay, boolean useCustomAllocator);
+  private native long dav1dInit(
+      int threads, int maxFrameDelay, boolean useCustomAllocator, int numInputBuffers);
 
   /**
    * Deallocates the decoder context.
@@ -500,7 +536,7 @@ public final class Dav1dDecoder
    * @param inputOffset Offset of the data buffer.
    * @param inputSize Length of the data buffer
    * @param decodeOnly Whether the input data is decode only.
-   * @param flags {@link androidx.media3.common.C#BufferFlags} Information about output buffer.
+   * @param flags {@link androidx.media3.common.C.BufferFlags} Information about output buffer.
    * @param timeUs Time of input data.
    * @param outputMode Output mode for output buffer.
    * @return {@link #DAV1D_OK} if successful, {@link #DAV1D_ERROR} if an error occurred, {@link
@@ -509,6 +545,7 @@ public final class Dav1dDecoder
   private native int dav1dDecode(
       long context,
       DecoderInputBuffer inputBuffer,
+      int bufferIndex,
       int inputOffset,
       int inputSize,
       boolean decodeOnly,
@@ -552,6 +589,14 @@ public final class Dav1dDecoder
    * @return A string describing the last encountered error.
    */
   private native String dav1dGetErrorMessage(long context);
+
+  /**
+   * Returns the JNI status code of the last error encountered in the given context.
+   *
+   * @param context Decoder context.
+   * @return The JNI status code of the last encountered error.
+   */
+  private native int dav1dGetLastErrorJniStatusCode(long context);
 
   /**
    * Returns whether an error occurred.

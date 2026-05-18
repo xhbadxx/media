@@ -213,6 +213,29 @@ public class MediaControllerWithMediaSessionCompatTest {
   }
 
   @Test
+  public void getAvailableCommands_withSkipToQueueItemAction_containsSeekToMediaItemCommand()
+      throws Exception {
+    PlaybackStateCompat playbackStateCompat =
+        new PlaybackStateCompat.Builder()
+            .setActions(PlaybackStateCompat.ACTION_SKIP_TO_QUEUE_ITEM)
+            .build();
+    session.setPlaybackState(playbackStateCompat);
+    // sessionFlags = 0 (doesn't contain FLAG_HANDLES_QUEUE_COMMANDS)
+    session.setFlags(0);
+    MediaController controller = controllerTestRule.createController(session.getSessionToken());
+
+    threadTestRule
+        .getHandler()
+        .postAndSync(
+            () ->
+                assertThat(
+                        controller
+                            .getAvailableCommands()
+                            .contains(Player.COMMAND_SEEK_TO_MEDIA_ITEM))
+                    .isTrue());
+  }
+
+  @Test
   public void
       createController_alreadyReleasedSession_throwsSecurityExceptionWithoutCallingOnDisconnected()
           throws Exception {
@@ -2120,6 +2143,9 @@ public class MediaControllerWithMediaSessionCompatTest {
     session.setPlaybackState(
         new PlaybackStateCompat.Builder()
             .setState(PlaybackStateCompat.STATE_NONE, /* position= */ 0, /* playbackSpeed= */ 0.0f)
+            .setActions(
+                PlaybackStateCompat.ACTION_PREPARE_FROM_MEDIA_ID
+                    | PlaybackStateCompat.ACTION_PLAY_FROM_MEDIA_ID)
             .build());
     session.setMetadata(
         new MediaMetadataCompat.Builder()
@@ -2163,6 +2189,9 @@ public class MediaControllerWithMediaSessionCompatTest {
         new PlaybackStateCompat.Builder()
             .setActiveQueueItemId(4)
             .setState(PlaybackStateCompat.STATE_NONE, /* position= */ 0, /* playbackSpeed= */ 0.0f)
+            .setActions(
+                PlaybackStateCompat.ACTION_PREPARE_FROM_MEDIA_ID
+                    | PlaybackStateCompat.ACTION_PLAY_FROM_MEDIA_ID)
             .build());
     session.setMetadata(
         new MediaMetadataCompat.Builder()
@@ -2208,6 +2237,7 @@ public class MediaControllerWithMediaSessionCompatTest {
     session.setPlaybackState(
         new PlaybackStateCompat.Builder()
             .setState(PlaybackStateCompat.STATE_NONE, /* position= */ 0, /* playbackSpeed= */ 0.0f)
+            .setActions(PlaybackStateCompat.ACTION_PREPARE | PlaybackStateCompat.ACTION_PLAY)
             .build());
     session.setQueue(testQueue);
     MediaController controller = controllerTestRule.createController(session.getSessionToken());
@@ -2247,6 +2277,7 @@ public class MediaControllerWithMediaSessionCompatTest {
         new PlaybackStateCompat.Builder()
             .setActiveQueueItemId(5)
             .setState(PlaybackStateCompat.STATE_NONE, /* position= */ 0, /* playbackSpeed= */ 0.0f)
+            .setActions(PlaybackStateCompat.ACTION_PREPARE | PlaybackStateCompat.ACTION_PLAY)
             .build());
     session.setQueue(testQueue);
     MediaController controller = controllerTestRule.createController(session.getSessionToken());
@@ -2285,6 +2316,9 @@ public class MediaControllerWithMediaSessionCompatTest {
     session.setPlaybackState(
         new PlaybackStateCompat.Builder()
             .setState(PlaybackStateCompat.STATE_NONE, /* position= */ 0, /* playbackSpeed= */ 0.0f)
+            .setActions(
+                PlaybackStateCompat.ACTION_PREPARE_FROM_MEDIA_ID
+                    | PlaybackStateCompat.ACTION_PLAY_FROM_MEDIA_ID)
             .build());
     session.setMetadata(
         new MediaMetadataCompat.Builder()
@@ -2332,6 +2366,7 @@ public class MediaControllerWithMediaSessionCompatTest {
         new PlaybackStateCompat.Builder()
             .setActiveQueueItemId(4)
             .setState(PlaybackStateCompat.STATE_NONE, /* position= */ 0, /* playbackSpeed= */ 0.0f)
+            .setActions(PlaybackStateCompat.ACTION_PREPARE | PlaybackStateCompat.ACTION_PLAY)
             .build());
     session.setMetadata(
         new MediaMetadataCompat.Builder()
