@@ -171,7 +171,9 @@ public final class HttpMediaDrmCallback implements MediaDrmCallback {
           "SOAPAction", "http://schemas.microsoft.com/DRM/2007/03/protocols/AcquireLicense");
     }
     // Add additional request properties.
+    String contentId = null; // Syncs and publicLicenseInfor's in the different thread (if has)
     synchronized (keyRequestProperties) {
+      contentId = keyRequestProperties.remove("content-id");
       // Checking and editing the KeyRequestProperties.
       if (keyRequestProperties.containsKey("sigma-custom-data")){
         String jsonObjectStr = keyRequestProperties.get("sigma-custom-data");
@@ -201,7 +203,7 @@ public final class HttpMediaDrmCallback implements MediaDrmCallback {
     if (Utils.IS_SIGMA_DRM) {
       try {
         JSONObject jsonObject = new JSONObject(new String(response.data));
-        Utils.publishLicenseInfo(jsonObject);
+        Utils.publishLicenseInfo(jsonObject, contentId);
         // If you don't use feature license encrypt, please comment 3 lines below
         String licenseEncrypted = jsonObject.getString("license");
         byte[] licenseBytes = Base64.decode(licenseEncrypted, Base64.DEFAULT);

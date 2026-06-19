@@ -26,12 +26,12 @@ public class Utils {
    * getString}). An explicit JSON {@code null} is normalized to a real {@code null} rather than the
    * literal string {@code "null"}. Runs on the DRM request (background) thread.
    */
-  public static void publishLicenseInfo(JSONObject jsonObject) {
+  public static void publishLicenseInfo(JSONObject jsonObject, @Nullable String contentId) {
     String securityLevel =
         jsonObject.isNull("securityLevel") ? null : jsonObject.optString("securityLevel");
     String maxHdcpLevel =
         jsonObject.isNull("maxHDCPLevel") ? null : jsonObject.optString("maxHDCPLevel");
-    licenseInfo = new LicenseInfo(securityLevel, maxHdcpLevel);
+    licenseInfo = new LicenseInfo(securityLevel, maxHdcpLevel, contentId);
   }
 
   /** Returns the latest published license metadata, or {@code null} if none has been published or it was cleared. */
@@ -45,14 +45,18 @@ public class Utils {
     licenseInfo = null;
   }
 
-  /** Immutable snapshot of the granted license security info. */
+  /** Immutable snapshot of the granted license security info, bound to the stream that requested it. */
   public static final class LicenseInfo {
     @Nullable public final String securityLevel; // e.g. "L1"
     @Nullable public final String maxHdcpLevel; // e.g. "HDCP_V2_3"
+    /** The request's "content-id"; lets the client drop a late/stale response from a previous stream. */
+    @Nullable public final String contentId;
 
-    public LicenseInfo(@Nullable String securityLevel, @Nullable String maxHdcpLevel) {
+    public LicenseInfo(
+        @Nullable String securityLevel, @Nullable String maxHdcpLevel, @Nullable String contentId) {
       this.securityLevel = securityLevel;
       this.maxHdcpLevel = maxHdcpLevel;
+      this.contentId = contentId;
     }
   }
 }
