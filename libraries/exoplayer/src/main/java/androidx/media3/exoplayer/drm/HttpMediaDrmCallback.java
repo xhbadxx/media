@@ -24,6 +24,7 @@ import static java.nio.charset.StandardCharsets.UTF_8;
 import android.net.Uri;
 import android.text.TextUtils;
 import android.util.Base64;
+import android.util.Log;
 import androidx.annotation.Nullable;
 import androidx.media3.common.C;
 import androidx.media3.common.util.UnstableApi;
@@ -200,6 +201,7 @@ public final class HttpMediaDrmCallback implements MediaDrmCallback {
     if (Utils.IS_SIGMA_DRM) {
       try {
         JSONObject jsonObject = new JSONObject(new String(response.data));
+        Utils.publishLicenseInfo(jsonObject);
         // If you don't use feature license encrypt, please comment 3 lines below
         String licenseEncrypted = jsonObject.getString("license");
         byte[] licenseBytes = Base64.decode(licenseEncrypted, Base64.DEFAULT);
