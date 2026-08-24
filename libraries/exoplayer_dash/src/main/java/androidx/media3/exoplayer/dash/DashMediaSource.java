@@ -469,6 +469,14 @@ public final class DashMediaSource extends BaseMediaSource {
   private long manifestLoadEndTimestampMs;
   private long elapsedRealtimeOffsetMs;
 
+  /**
+   * LL-Core: whether {@link #elapsedRealtimeOffsetMs} came from {@code <UTCTiming>} rather than from
+   * the device-clock fallback in {@link #onUtcTimestampResolutionError}. Per-instance on purpose: two
+   * players resolve independently, and a static flag would let one source's failure silently disable
+   * the other source's request gate — a failure with no log and no error, only extra 404s.
+   */
+  private boolean utcTimingResolved;
+
   private int staleManifestReloadAttempt;
   private long expiredManifestPublishTimeUs;
 
@@ -518,6 +526,7 @@ public final class DashMediaSource extends BaseMediaSource {
     playerEmsgCallback = new DefaultPlayerEmsgCallback();
     expiredManifestPublishTimeUs = C.TIME_UNSET;
     elapsedRealtimeOffsetMs = C.TIME_UNSET;
+    utcTimingResolved = false;
     if (sideloadedManifest) {
       checkState(!manifest.dynamic);
       manifestCallback = null;
@@ -611,7 +620,11 @@ public final class DashMediaSource extends BaseMediaSource {
             drmEventDispatcher,
             loadErrorHandlingPolicy,
             periodEventDispatcher,
-            elapsedRealtimeOffsetMs,
+            // LL-Core: hand C.TIME_UNSET down when the offset came from the device-clock fallback
+            // rather than from <UTCTiming>. Util.getNowUnixTimeMs returns the same wall clock for
+            // both, so playback is unaffected — but it lets the request gate downstream tell the two
+            // apart, which it must, because its other operand comes from the manifest.
+            utcTimingResolved ? elapsedRealtimeOffsetMs : C.TIME_UNSET,
             manifestLoadErrorThrower,
             allocator,
             compositeSequenceableLoaderFactory,
@@ -647,6 +660,7 @@ public final class DashMediaSource extends BaseMediaSource {
       handler = null;
     }
     elapsedRealtimeOffsetMs = C.TIME_UNSET;
+    utcTimingResolved = false;
     staleManifestReloadAttempt = 0;
     expiredManifestPublishTimeUs = C.TIME_UNSET;
     periodsById.clear();
@@ -927,13 +941,19 @@ public final class DashMediaSource extends BaseMediaSource {
 
   private void onUtcTimestampResolved(long elapsedRealtimeOffsetMs) {
     this.elapsedRealtimeOffsetMs = elapsedRealtimeOffsetMs;
+    utcTimingResolved = true;
     processManifest(true);
   }
+
 
   private void onUtcTimestampResolutionError(IOException error) {
     Log.e(TAG, "Failed to resolve time offset.", error);
     // Be optimistic and continue in the hope that the device clock is correct.
     this.elapsedRealtimeOffsetMs = System.currentTimeMillis() - SystemClock.elapsedRealtime();
+    // LL-Core: this is the device clock, not the server's — measured ~500ms off here. Anything
+    // timing-sensitive must know not to trust it.
+    utcTimingResolved = false;
+    // LL-Core: UTCTiming failed → NOT server-synced (raw device clock). Margin from this is
     processManifest(true);
   }
 

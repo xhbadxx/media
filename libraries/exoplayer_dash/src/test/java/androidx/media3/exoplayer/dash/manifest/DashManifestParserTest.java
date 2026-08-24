@@ -21,6 +21,7 @@ import static org.junit.Assert.assertThrows;
 import android.net.Uri;
 import androidx.annotation.Nullable;
 import androidx.media3.common.C;
+import androidx.media3.exoplayer.util.Utils;
 import androidx.media3.common.DrmInitData;
 import androidx.media3.common.Format;
 import androidx.media3.common.Label;
@@ -45,6 +46,8 @@ import java.io.StringReader;
 import java.nio.charset.StandardCharsets;
 import java.util.Collections;
 import java.util.List;
+import org.junit.After;
+import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.xmlpull.v1.XmlPullParser;
@@ -53,6 +56,24 @@ import org.xmlpull.v1.XmlPullParserFactory;
 /** Unit tests for {@link DashManifestParser}. */
 @RunWith(AndroidJUnit4.class)
 public class DashManifestParserTest {
+  /**
+   * LL-Core: {@code Utils.IS_LOW_LATENCY} is a static, mutable, app-level switch that ships {@code
+   * false}. The low-latency tests below turn it on for themselves — class-wide would be wrong, since
+   * the non-LL tests in this same file assert the vanilla counts and start failing the moment it is
+   * on. Captured and restored around every test so nothing leaks into later tests in the same JVM.
+   */
+  @Before
+  public void captureLowLatencyFlag() {
+    wasLowLatency = Utils.IS_LOW_LATENCY;
+  }
+
+  @After
+  public void restoreLowLatencyFlag() {
+    Utils.IS_LOW_LATENCY = wasLowLatency;
+  }
+
+  private boolean wasLowLatency;
+
 
   private static final String SAMPLE_MPD_LIVE = "media/mpd/sample_mpd_live";
   private static final String SAMPLE_MPD_LIVE_LOCATION_REDIRECT_RELATIVE =
@@ -1101,6 +1122,7 @@ public class DashManifestParserTest {
   @Test
   public void parseMediaPresentationDescription_llWithAudioLag_audioCountBumpsToVideoMax()
       throws IOException {
+    Utils.IS_LOW_LATENCY = true;
     DashManifestParser parser = new DashManifestParser();
     DashManifest manifest =
         parser.parse(

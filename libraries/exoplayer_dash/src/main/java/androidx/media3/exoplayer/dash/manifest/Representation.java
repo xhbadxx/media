@@ -394,6 +394,11 @@ public abstract class Representation {
     }
 
     @Override
+    public long getSegmentRequestableTimeUs(long segmentNum, long periodDurationUs) {
+      return segmentBase.getSegmentRequestableTimeUs(segmentNum, periodDurationUs);
+    }
+
+    @Override
     public boolean isExplicit() {
       return segmentBase.isExplicit();
     }

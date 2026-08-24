@@ -262,6 +262,8 @@ public class DefaultDashChunkSource implements DashChunkSource {
     this.trackSelection = trackSelection;
     this.trackType = trackType;
     this.dataSource = dataSource;
+    // LL-Core: attach per-load timing listener to tell WAIT vs immediately-served for beyond-N
+    // segment requests. Self-gated by LowLatencyLog.isEnabled() so it is inert in production.
     this.periodIndex = periodIndex;
     this.elapsedRealtimeOffsetMs = elapsedRealtimeOffsetMs;
     this.maxSegmentsPerLoad = maxSegmentsPerLoad;
@@ -502,8 +504,41 @@ public class DefaultDashChunkSource implements DashChunkSource {
       return;
     }
 
-    if (segmentNum > lastAvailableSegmentNum
-        || (missingLastSegment && segmentNum >= lastAvailableSegmentNum)) {
+    // LL-Core: hold a speculative fetch until the manifest itself says the segment is fetchable,
+    // reusing the existing "nothing to load yet" path. Deliberately not done by shrinking the
+    // available segment count: that count also feeds the live window, the latency target and the
+    // seek range, so delaying one fetch through it distorts all three.
+    //
+    // Gated on elapsedRealtimeOffsetMs being set because both sides of the comparison have to sit on
+    // the same clock: requestableTimeUs comes from the manifest, nowPeriodTimeUs from
+    // Util.getNowUnixTimeMs. DashMediaSource hands C.TIME_UNSET down here when its offset came from
+    // the device-clock fallback rather than from <UTCTiming>, so this check tells the two apart even
+    // though getNowUnixTimeMs returns the same wall clock either way. This fails OPEN
+    // rather than closed — a device clock running behind the server would hold back segments that
+    // are genuinely available and drain the buffer, and an unbounded clock error would stall
+    // playback outright, while the opposite error only risks a 404 that recovers in about three
+    // seconds. An optimisation must not be able to break playback.
+    // LL-Core: the two cheap flags are tested first so a disabled gate, or a stream with no server
+    // clock, never pays for the per-segment call below. On a non-LL stream the call itself returns
+    // immediately, but this keeps even that branch off the hot path.
+    long requestableTimeUs = C.TIME_UNSET;
+    boolean tooEarlyToRequest = false;
+    if (LowLatencyLog.safeRequestGateEnabled && elapsedRealtimeOffsetMs != C.TIME_UNSET) {
+      requestableTimeUs =
+          representationHolder.getSegmentRequestableTimeUs(segmentNum, periodDurationUs);
+      tooEarlyToRequest =
+          requestableTimeUs != C.TIME_UNSET
+              && nowPeriodTimeUs < requestableTimeUs + LowLatencyLog.safeRequestGateMarginMs * 1000L;
+    }
+
+    // LL-Core: kept separate from tooEarlyToRequest so the log can say which of the two actually
+    // caused the wait. Collapsing them would credit this gate for waits that would have happened
+    // anyway, and the whole point of the log is to measure what the gate adds.
+    boolean beyondManifest =
+        segmentNum > lastAvailableSegmentNum
+            || (missingLastSegment && segmentNum >= lastAvailableSegmentNum);
+
+    if (beyondManifest || tooEarlyToRequest) {
       // The segment is beyond the end of the period.
       // LL-Core: log why player stopped downloading
       if (LowLatencyLog.isEnabled()) {
@@ -525,6 +560,16 @@ public class DefaultDashChunkSource implements DashChunkSource {
       }
       out.endOfStream = periodEnded;
       return;
+    }
+    // LL-Core: one line per segment that the gate let through, so the held/passed split can be
+    // recomputed per segment offline instead of per evaluation.
+    if (LowLatencyLog.isEnabled() && requestableTimeUs != C.TIME_UNSET) {
+      LowLatencyLog.d(
+          "SafeGate",
+          "PASS seg#" + segmentNum
+              + " reqAtMs=" + Util.usToMs(requestableTimeUs)
+              + " nowPeriodMs=" + Util.usToMs(nowPeriodTimeUs)
+              + " lateBy=" + Util.usToMs(nowPeriodTimeUs - requestableTimeUs) + "ms");
     }
 
     if (periodEnded && representationHolder.getSegmentStartTimeUs(segmentNum) >= periodDurationUs) {
@@ -1164,6 +1209,20 @@ public class DefaultDashChunkSource implements DashChunkSource {
       return getSegmentStartTimeUs(segmentNum)
           + checkNotNull(segmentIndex)
               .getDurationUs(segmentNum - segmentNumShift, periodDurationUs);
+    }
+
+    /**
+     * See {@link DashSegmentIndex#getSegmentRequestableTimeUs(long, long)}, in this holder's segment
+     * numbering.
+     *
+     * <p>Returns {@link C#TIME_UNSET} rather than asserting when there is no index: this only feeds a
+     * hold-back check, and such a check must never be the thing that stops playback.
+     */
+    public long getSegmentRequestableTimeUs(long segmentNum, long periodDurationUs) {
+      @Nullable DashSegmentIndex index = segmentIndex;
+      return index == null
+          ? C.TIME_UNSET
+          : index.getSegmentRequestableTimeUs(segmentNum - segmentNumShift, periodDurationUs);
     }
 
     public long getSegmentNum(long positionUs) {

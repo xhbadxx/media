@@ -61,6 +61,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.UUID;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -392,7 +393,11 @@ public class DashManifestParser extends DefaultHandler
                 baseUrlAvailabilityTimeOffsetUs,
                 segmentBaseAvailabilityTimeOffsetUs,
                 timeShiftBufferDepthMs,
-                peerMaxCountHolder);
+                peerMaxCountHolder,
+                // LL-Core: a Period-level SegmentTemplate sits outside any AdaptationSet, so there
+                // is no ProducerReferenceTime to attach. It only reaches playback for an
+                // AdaptationSet that declares no template of its own; that track then goes ungated.
+                /* producerAnchorHolder= */ null);
       } else if (XmlPullParserUtil.isStartTag(xpp, "AssetIdentifier")) {
         assetIdentifier = parseDescriptor(xpp, "AssetIdentifier");
       } else {
@@ -533,6 +538,26 @@ public class DashManifestParser extends DefaultHandler
     List<RepresentationInfo> representationInfos = new ArrayList<>();
     ArrayList<BaseUrl> baseUrls = new ArrayList<>();
 
+    // LL-Core: producer anchor from this AdaptationSet's ProducerReferenceTime, read lazily at
+    // request time because the tag may appear after SegmentTemplate. AdaptationSet-scoped rather
+    // than Period-scoped like peerMaxCountHolder: this manifest declares the tag on video only, and
+    // letting audio borrow the video anchor would be wrong exactly where the two tracks diverge,
+    // which is the case that produces audio 404s.
+    //
+    // An AtomicReference holding a whole pair, rather than a mutated long[] like peerMaxCountHolder,
+    // because the writer is the loader thread and the reader is the playback thread and the two
+    // values are only meaningful together. Replacing the pair in one reference write means a reader
+    // sees either both old values or both new ones — never a fresh wall clock beside a stale media
+    // time, which would mispredict by a whole segment and do so silently. It also does not lean on
+    // the happens-before edge from publishing the manifest, so it stays correct if the anchor is
+    // ever refreshed after publication.
+    // LL-Core: allocated only for a low-latency stream. On everything else the holder stays null and
+    // getSegmentRequestableTimeUs returns TIME_UNSET on its first branch, so VOD and plain live pay
+    // nothing for this — not even one object per AdaptationSet per manifest refresh.
+    @Nullable
+    AtomicReference<long[]> producerAnchorHolder =
+        IS_LOW_LATENCY ? new AtomicReference<>() : null;
+
     boolean seenFirstBaseUrl = false;
     do {
       xpp.next();
@@ -590,7 +615,8 @@ public class DashManifestParser extends DefaultHandler
                 segmentBaseAvailabilityTimeOffsetUs,
                 timeShiftBufferDepthMs,
                 dvbProfileDeclared,
-                peerMaxCountHolder);
+                peerMaxCountHolder,
+                producerAnchorHolder);
         contentType =
             checkContentTypeConsistency(
                 contentType, MimeTypes.getTrackType(representationInfo.format.sampleMimeType));
@@ -622,11 +648,37 @@ public class DashManifestParser extends DefaultHandler
                 baseUrlAvailabilityTimeOffsetUs,
                 segmentBaseAvailabilityTimeOffsetUs,
                 timeShiftBufferDepthMs,
-                peerMaxCountHolder);
+                peerMaxCountHolder,
+                producerAnchorHolder);
       } else if (XmlPullParserUtil.isStartTag(xpp, "InbandEventStream")) {
         inbandEventStreams.add(parseDescriptor(xpp, "InbandEventStream"));
       } else if (XmlPullParserUtil.isStartTag(xpp, "Label")) {
         labels.add(parseLabel(xpp));
+      } else if (producerAnchorHolder != null
+          && XmlPullParserUtil.isStartTag(xpp, "ProducerReferenceTime")) {
+        // A non-null holder already means IS_LOW_LATENCY, so a plain live or VOD manifest never
+        // reaches the attribute parsing below — it pays only the tag-name compare that every
+        // other branch in this chain pays anyway.
+        // LL-Core: the only statement in the manifest about when the encoder actually produced
+        // media, as opposed to availabilityStartTime, which is a nominal schedule running roughly
+        // 1.3s ahead of it on this stream. presentationTime shares the absolute timeline with
+        // $Time$, so presentationTimeOffset still has to come off before use — that happens in
+        // SegmentBase, which owns the timescale.
+        //
+        // Parsed defensively. Until now both attributes were only read as strings to log, so a
+        // malformed one cost nothing; parseDateTime and parseLong both throw, and letting either
+        // escape would abort the entire manifest parse and stop playback over a server-side typo in
+        // a field that is only ever an optimisation. Dropping the anchor instead leaves fetches
+        // ungated, exactly as for a manifest that omits the tag.
+        try {
+          long anchorWallClockMs = parseDateTime(xpp, "wallClockTime", C.TIME_UNSET);
+          long anchorPresentationTime = parseLong(xpp, "presentationTime", C.TIME_UNSET);
+          if (anchorWallClockMs != C.TIME_UNSET && anchorPresentationTime != C.TIME_UNSET) {
+            producerAnchorHolder.set(new long[] {anchorWallClockMs, anchorPresentationTime});
+          }
+        } catch (ParserException | NumberFormatException e) {
+          LowLatencyLog.w("PRFT", "Unparseable producer anchor, leaving fetches ungated", e);
+        }
       } else if (XmlPullParserUtil.isStartTag(xpp)) {
         parseAdaptationSetChild(xpp);
       }
@@ -812,7 +864,8 @@ public class DashManifestParser extends DefaultHandler
       long segmentBaseAvailabilityTimeOffsetUs,
       long timeShiftBufferDepthMs,
       boolean dvbProfileDeclared,
-      @Nullable long[] peerMaxCountHolder)
+      @Nullable long[] peerMaxCountHolder,
+      @Nullable AtomicReference<long[]> producerAnchorHolder)
       throws XmlPullParserException, IOException {
     String id = xpp.getAttributeValue(null, "id");
     int bandwidth = parseInt(xpp, "bandwidth", Format.NO_VALUE);
@@ -875,7 +928,8 @@ public class DashManifestParser extends DefaultHandler
                 baseUrlAvailabilityTimeOffsetUs,
                 segmentBaseAvailabilityTimeOffsetUs,
                 timeShiftBufferDepthMs,
-                peerMaxCountHolder);
+                peerMaxCountHolder,
+                producerAnchorHolder);
       } else if (XmlPullParserUtil.isStartTag(xpp, "ContentProtection")) {
         Pair<String, SchemeData> contentProtection = parseContentProtection(xpp);
         if (contentProtection.first != null) {
@@ -1171,7 +1225,8 @@ public class DashManifestParser extends DefaultHandler
       long baseUrlAvailabilityTimeOffsetUs,
       long segmentBaseAvailabilityTimeOffsetUs,
       long timeShiftBufferDepthMs,
-      @Nullable long[] peerMaxCountHolder)
+      @Nullable long[] peerMaxCountHolder,
+      @Nullable AtomicReference<long[]> producerAnchorHolder)
       throws XmlPullParserException, IOException {
     long timescale = parseLong(xpp, "timescale", parent != null ? parent.timescale : 1);
     long presentationTimeOffset =
@@ -1223,7 +1278,8 @@ public class DashManifestParser extends DefaultHandler
         mediaTemplate,
         timeShiftBufferDepthMs,
         periodStartUnixTimeMs,
-        peerMaxCountHolder);
+        peerMaxCountHolder,
+        producerAnchorHolder);
   }
 
   protected SegmentTemplate buildSegmentTemplate(
@@ -1239,7 +1295,8 @@ public class DashManifestParser extends DefaultHandler
       @Nullable UrlTemplate mediaTemplate,
       long timeShiftBufferDepthMs,
       long periodStartUnixTimeMs,
-      @Nullable long[] peerMaxCountHolder) {
+      @Nullable long[] peerMaxCountHolder,
+      @Nullable AtomicReference<long[]> producerAnchorHolder) {
     return new SegmentTemplate(
         initialization,
         timescale,
@@ -1253,7 +1310,8 @@ public class DashManifestParser extends DefaultHandler
         mediaTemplate,
         Util.msToUs(timeShiftBufferDepthMs),
         Util.msToUs(periodStartUnixTimeMs),
-        peerMaxCountHolder);
+        peerMaxCountHolder,
+        producerAnchorHolder);
   }
 
   /**

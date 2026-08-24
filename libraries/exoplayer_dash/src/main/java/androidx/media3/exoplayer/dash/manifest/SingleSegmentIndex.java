@@ -79,4 +79,10 @@ import androidx.media3.exoplayer.dash.DashSegmentIndex;
   public boolean isExplicit() {
     return true;
   }
+
+  @Override
+  public long getSegmentRequestableTimeUs(long segmentNum, long periodDurationUs) {
+    // A single-segment index describes content that already exists in full.
+    return C.TIME_UNSET;
+  }
 }

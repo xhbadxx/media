@@ -26,11 +26,11 @@ import androidx.media3.common.C;
 import androidx.media3.common.util.UnstableApi;
 import androidx.media3.common.util.Util;
 import androidx.media3.exoplayer.dash.DashSegmentIndex;
-import androidx.media3.exoplayer.util.LowLatencyLog;
 import com.google.common.math.BigIntegerMath;
 import java.math.BigInteger;
 import java.math.RoundingMode;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicReference;
 import org.checkerframework.checker.initialization.qual.UnderInitialization;
 
 /** An approximate representation of a SegmentBase manifest element. */
@@ -123,7 +123,8 @@ public abstract class SegmentBase {
     /* package */ final long duration;
     @Nullable /* package */ final List<SegmentTimelineElement> segmentTimeline;
     private final long timeShiftBufferDepthUs;
-    private final long periodStartUnixTimeUs;
+    // LL-Core: package-private (was private) so SegmentTemplate's margin gate can read it.
+    /* package */ final long periodStartUnixTimeUs;
 
     /**
      * Offset to the current realtime at which segments become available, in microseconds, or {@link
@@ -148,6 +149,28 @@ public abstract class SegmentBase {
      * behavior.
      */
     @Nullable /* package */ final long[] peerMaxCountHolder;
+
+    /**
+     * LL-Core: the {@code {wallClockTimeMs, presentationTime}} pair from this AdaptationSet's {@code
+     * ProducerReferenceTime}, or {@code null} while the enclosing AdaptationSet declares none — as
+     * the audio side of this stream does.
+     *
+     * <p>A holder rather than two fields because the tag may appear after {@code SegmentTemplate},
+     * so the value has to be read at query time rather than captured at construction. An {@link
+     * AtomicReference} to an immutable pair rather than a mutated array like {@link
+     * #peerMaxCountHolder} because the parser writes it on the loader thread while playback reads it
+     * on its own thread, and the two numbers only mean anything together: a reader that saw a fresh
+     * wall clock next to a stale media time would be off by a whole segment and would not fail
+     * loudly. Publishing the pair as one reference write makes that impossible.
+     */
+    @Nullable /* package */ final AtomicReference<long[]> producerAnchorHolder;
+
+    /**
+     * Upper bound on a believable producer lag, for {@link #getSegmentRequestableTimeUs}. The
+     * largest legitimate value measured on this service is about 1.4 seconds; a minute means the
+     * anchor is corrupt and must not be allowed to gate requests.
+     */
+    private static final long MAX_SANE_PRODUCER_LAG_US = 60_000_000L;
 
     /**
      * Backward-compatible constructor without peer max holder. Delegates to the primary constructor
@@ -192,7 +215,8 @@ public abstract class SegmentBase {
           availabilityTimeOffsetUs,
           timeShiftBufferDepthUs,
           periodStartUnixTimeUs,
-          /* peerMaxCountHolder= */ null);
+          /* peerMaxCountHolder= */ null,
+          /* producerAnchorHolder= */ null);
     }
 
     /**
@@ -213,7 +237,8 @@ public abstract class SegmentBase {
         long availabilityTimeOffsetUs,
         long timeShiftBufferDepthUs,
         long periodStartUnixTimeUs,
-        @Nullable long[] peerMaxCountHolder) {
+        @Nullable long[] peerMaxCountHolder,
+        @Nullable AtomicReference<long[]> producerAnchorHolder) {
       super(initialization, timescale, presentationTimeOffset);
       this.startNumber = startNumber;
       this.duration = duration;
@@ -222,6 +247,7 @@ public abstract class SegmentBase {
       this.timeShiftBufferDepthUs = timeShiftBufferDepthUs;
       this.periodStartUnixTimeUs = periodStartUnixTimeUs;
       this.peerMaxCountHolder = peerMaxCountHolder;
+      this.producerAnchorHolder = producerAnchorHolder;
     }
 
     /**
@@ -289,6 +315,67 @@ public abstract class SegmentBase {
             ? (periodDurationUs - getSegmentTimeUs(sequenceNumber))
             : ((duration * C.MICROS_PER_SECOND) / timescale);
       }
+    }
+
+    /**
+     * See {@link DashSegmentIndex#getSegmentRequestableTimeUs(long, long)}.
+     *
+     * <p>Anchored on the manifest's own {@code ProducerReferenceTime} rather than on {@code
+     * availabilityStartTime}, because the two disagree by roughly 1.3 seconds on this stream: the
+     * nominal timeline runs that far ahead of anything the encoder has actually produced. Measured
+     * across 27105 {@code prft} boxes the gap sat at 1258ms with a 126ms spread and drifted 21ms
+     * over 74 minutes, and the manifest's own producer anchor independently reported 1394ms. So the
+     * advertised {@code availabilityTimeOffset} is not a statement about when bytes exist, and
+     * anchoring on it puts the answer 1.5s early — early enough that the caller never once held a
+     * request back in a 74-minute capture.
+     *
+     * <p>{@code producerLagUs} is derived from the anchor on every call rather than folded in as a
+     * constant. A constant would be the average of a quantity the manifest already reports exactly,
+     * and the spread is wide enough for that average to be wrong by a fifth of a segment.
+     *
+     * <p>Both terms are period time, so this needs no clock conversion, and {@link
+     * #getSegmentTimeUs} has already applied {@code presentationTimeOffset} — subtracting it again
+     * there is the mistake that once produced margins eleven years wide. The anchor's
+     * {@code presentationTime} is raw, however, and does need it taken off.
+     *
+     * <p>Returns {@link C#TIME_UNSET} for anything it cannot answer: no anchor (this manifest
+     * carries one for video only), a non-low-latency stream, an unknown period start, or a sequence
+     * number below {@code startNumber}, which would index the timeline negatively — the accessors
+     * below do not guard against that. Each of those leaves the caller ungated, which is the only
+     * direction that cannot stall playback.
+     */
+    public final long getSegmentRequestableTimeUs(long sequenceNumber, long periodDurationUs) {
+      if (!isLowLatency()
+          || segmentTimeline == null
+          || segmentTimeline.isEmpty()
+          || sequenceNumber < startNumber
+          || producerAnchorHolder == null
+          || periodStartUnixTimeUs == C.TIME_UNSET) {
+        return C.TIME_UNSET;
+      }
+      // Read the reference once; both numbers then come from one immutable pair, so they cannot
+      // belong to different anchors.
+      @Nullable long[] anchor = producerAnchorHolder.get();
+      if (anchor == null || anchor.length < 2) {
+        return C.TIME_UNSET;
+      }
+      long anchorMediaUs =
+          Util.scaleLargeTimestamp(
+              anchor[1] - presentationTimeOffset, C.MICROS_PER_SECOND, timescale);
+      long producerLagUs = (Util.msToUs(anchor[0]) - periodStartUnixTimeUs) - anchorMediaUs;
+      // A lag outside sanity bounds means the anchor is corrupt — a typo'd wallClockTime, a
+      // wrong-timezone encoder. Gating on garbage would hold every request and stall playback
+      // with no error, so fail open instead, exactly as for a manifest without the tag.
+      // Measured legitimate lag on three channels of this service: 524ms to 1394ms. Negative
+      // lag means production is not behind the nominal timeline, so there is nothing for the
+      // gate to protect against.
+      if (producerLagUs < 0 || producerLagUs > MAX_SANE_PRODUCER_LAG_US) {
+        return C.TIME_UNSET;
+      }
+      return getSegmentTimeUs(sequenceNumber)
+          + producerLagUs
+          + getSegmentDurationUs(sequenceNumber, periodDurationUs)
+          - availabilityTimeOffsetUs;
     }
 
     /** See {@link DashSegmentIndex#getTimeUs(long)}. */
@@ -516,7 +603,8 @@ public abstract class SegmentBase {
           mediaTemplate,
           timeShiftBufferDepthUs,
           periodStartUnixTimeUs,
-          /* peerMaxCountHolder= */ null);
+          /* peerMaxCountHolder= */ null,
+          /* producerAnchorHolder= */ null);
     }
 
     /**
@@ -540,7 +628,8 @@ public abstract class SegmentBase {
         @Nullable UrlTemplate mediaTemplate,
         long timeShiftBufferDepthUs,
         long periodStartUnixTimeUs,
-        @Nullable long[] peerMaxCountHolder) {
+        @Nullable long[] peerMaxCountHolder,
+        @Nullable AtomicReference<long[]> producerAnchorHolder) {
       super(
           initialization,
           timescale,
@@ -551,7 +640,8 @@ public abstract class SegmentBase {
           availabilityTimeOffsetUs,
           timeShiftBufferDepthUs,
           periodStartUnixTimeUs,
-          peerMaxCountHolder);
+          peerMaxCountHolder,
+          producerAnchorHolder);
       this.initializationTemplate = initializationTemplate;
       this.mediaTemplate = mediaTemplate;
       this.endNumber = endNumber;
@@ -605,21 +695,14 @@ public abstract class SegmentBase {
       // can fetch the next in-progress segment via chunked transfer instead of WAIT-ing
       // for the next MPD refresh cycle. In-sync tracks and the fallback path (null or
       // 0 holder) degrade to the original count + 1.
-      if (segmentTimeline != null && isLowLatency()) {
+      // isEmpty: an empty timeline has no last element to extrapolate from — the +1 would make
+      // the player request a segment whose URL and timing both come from get(-1).
+      if (segmentTimeline != null && !segmentTimeline.isEmpty() && isLowLatency()) {
         long peerMax =
             (peerMaxCountHolder != null && peerMaxCountHolder[0] > 0)
                 ? peerMaxCountHolder[0]
                 : 0L;
-        long result = Math.max(count, peerMax) + 1;
-        // LL-Core: Log only when the track-aware bump actually applies (count < peerMax),
-        // so log volume stays bounded — only the lagging track emits under CCU load. In
-        // steady state, all tracks are in sync so this branch is skipped.
-        if (LowLatencyLog.isEnabled() && peerMax > 0 && count < peerMax) {
-          LowLatencyLog.d(
-              "PeerMax",
-              "BUMP: count=" + count + " peerMax=" + peerMax + " → " + result);
-        }
-        return result;
+        return Math.max(count, peerMax) + 1;
       }
       return count;
     }

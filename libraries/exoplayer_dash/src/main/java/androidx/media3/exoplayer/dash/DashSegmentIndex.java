@@ -126,4 +126,20 @@ public interface DashSegmentIndex {
    * @return Whether segments are defined explicitly by the index.
    */
   boolean isExplicit();
+
+  /**
+   * Returns the earliest period time, in microseconds, at which the segment may be requested without
+   * outrunning the packager, or {@link C#TIME_UNSET} if the index carries no such constraint.
+   *
+   * <p>Only meaningful for low-latency streams, where the player deliberately asks for a segment the
+   * server has not finished writing. The manifest states when that becomes safe through its {@code
+   * availabilityTimeOffset}; asking earlier is what produces the 404s the player then has to recover
+   * from, and under the default load error policy each one costs a minute of that rendition.
+   *
+   * @param segmentNum The segment number.
+   * @param periodDurationUs The duration of the enclosing period in microseconds, or {@link
+   *     C#TIME_UNSET} if the period's duration is not yet known.
+   * @return The earliest safe request time, in period time, or {@link C#TIME_UNSET} if unconstrained.
+   */
+  long getSegmentRequestableTimeUs(long segmentNum, long periodDurationUs);
 }

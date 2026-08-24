@@ -89,4 +89,10 @@ public final class DashWrappingSegmentIndex implements DashSegmentIndex {
   public boolean isExplicit() {
     return true;
   }
+
+  @Override
+  public long getSegmentRequestableTimeUs(long segmentNum, long periodDurationUs) {
+    // A wrapped sidx index carries no availability window.
+    return C.TIME_UNSET;
+  }
 }
